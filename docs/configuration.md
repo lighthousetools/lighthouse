@@ -31,7 +31,8 @@ selects the default provider and fallback of a task. Prices are in EUR per milli
 | Key | Meaning |
 |---|---|
 | `transport` | `http` or `stdio` |
-| `read_tools` | Allowlist of read-only tools. Every other tool counts as `write` |
+| `read_tools` | Allowlist of read-only tools |
+| `draft_tools` | Allowlist of reversible tools without external effect. Every tool on neither list counts as `write` |
 | `url`, `auth` | For `http`. `auth` is `none`, `bearer` or `oauth` |
 | `client_id`, `scopes` | Optional OAuth settings, for servers without dynamic client registration |
 | `allow_private_addresses` | Allows OAuth discovery on private addresses |

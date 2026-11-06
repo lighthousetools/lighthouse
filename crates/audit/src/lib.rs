@@ -1,7 +1,11 @@
 //! Immutable log of runs, tool calls and costs.
 //!
 //! Steps are append-only, enforced by a database trigger. A run row only
-//! changes once, when it finishes.
+//! changes when it pauses, resumes or finishes.
+
+mod approvals;
+
+pub use approvals::{Approval, Checkpoint, NewApproval};
 
 use chrono::{DateTime, Utc};
 use lighthouse_core::{RunId, TenantId};
@@ -26,6 +30,8 @@ pub enum AuditError {
 pub enum RunStatus {
     /// Still running.
     Running,
+    /// Paused until the owner decides on its proposals.
+    Waiting,
     /// Finished and delivered.
     Succeeded,
     /// An error stopped the run.
@@ -41,6 +47,7 @@ impl RunStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
+            Self::Waiting => "waiting",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Rejected => "rejected",
@@ -55,6 +62,7 @@ impl FromStr for RunStatus {
     fn from_str(value: &str) -> Result<Self, String> {
         [
             Self::Running,
+            Self::Waiting,
             Self::Succeeded,
             Self::Failed,
             Self::Rejected,

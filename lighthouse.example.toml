@@ -46,7 +46,7 @@ output_eur_per_mtok = 8.0
 provider = "anthropic"
 fallback = "openai"
 
-# Every tool not listed in read_tools counts as `write` and blocks the agent.
+# Every tool on neither read_tools nor draft_tools counts as `write` and needs an approval.
 [connectors.linear]
 transport = "http"
 url = "https://mcp.linear.app/mcp"

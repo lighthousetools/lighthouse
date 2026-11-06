@@ -2,14 +2,17 @@
 
 use axum::Router;
 use base64::Engine;
+use lighthouse_audit::{AuditLog, NewApproval};
 use lighthouse_config::Config;
+use lighthouse_core::{RunId, TenantId};
 use lighthouse_mcp::demo::DemoServer;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use uuid::Uuid;
 
 const TOKEN: &str = "test-admin-token";
 
@@ -27,7 +30,7 @@ fn write_agent(dir: &Path, file: &str, tools: &str) {
     std::fs::write(dir.join(format!("{file}.md")), text).unwrap();
 }
 
-async fn start() -> (String, tempfile::TempDir) {
+async fn start() -> (String, tempfile::TempDir, lighthouse_store::Store) {
     let database = lighthouse_store::testing::fresh_store().await;
     let url: (String,) = lighthouse_store::sqlx::query_as("SELECT current_database()::text")
         .fetch_one(database.pool())
@@ -88,7 +91,7 @@ read_tools = ["list_issues"]
     let app = lighthouse_server::build(Config::load(&path).unwrap())
         .await
         .unwrap();
-    (serve(app.router).await, dir)
+    (serve(app.router).await, dir, database)
 }
 
 async fn run_to_end(base: &str, agent: &str) -> Value {
@@ -122,7 +125,7 @@ async fn run_to_end(base: &str, agent: &str) -> Value {
 
 #[tokio::test]
 async fn read_only_agent_runs_and_write_agent_is_rejected() {
-    let (base, _dir) = start().await;
+    let (base, _dir, _database) = start().await;
     let health: Value = reqwest::get(format!("{base}/health"))
         .await
         .unwrap()
@@ -152,4 +155,50 @@ async fn read_only_agent_runs_and_write_agent_is_rejected() {
         .await
         .unwrap();
     assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn a_decision_through_the_api_finishes_the_paused_run() {
+    let (base, _dir, database) = start().await;
+    let audit = AuditLog::new(database, TenantId::SINGLE);
+    let run = RunId::new();
+    let approval = Uuid::now_v7();
+    audit.start_run(run, "reader", "manual").await.unwrap();
+    let state = json!({
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "Go"}]}],
+        "spent": 0.0,
+        "steps": 0,
+        "saw_external": false,
+        "results": [],
+        "pending": [],
+    });
+    let proposal = NewApproval {
+        id: approval,
+        tool: "demo.delete_issue".to_owned(),
+        input: json!({}),
+        quotes_external: false,
+    };
+    audit
+        .pause_run(run, "reader", &state, &[proposal])
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{base}/approvals/{approval}/decision"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"approve": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    for _ in 0..100 {
+        let detail = audit.run_detail(run.as_uuid()).await.unwrap().unwrap();
+        if detail.run.status == "succeeded" {
+            assert_eq!(detail.run.report.as_deref(), Some("mock answer"));
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the run did not resume");
 }

@@ -29,6 +29,11 @@ impl RunId {
         Self(Uuid::now_v7())
     }
 
+    /// Wraps a stored run ID.
+    pub const fn from_uuid(id: Uuid) -> Self {
+        Self(id)
+    }
+
     /// Returns the underlying UUID.
     pub const fn as_uuid(self) -> Uuid {
         self.0

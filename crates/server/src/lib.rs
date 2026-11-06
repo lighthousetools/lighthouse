@@ -3,7 +3,7 @@
 use anyhow::Context;
 use async_trait::async_trait;
 use lighthouse_api::{ApiState, RunTrigger, TriggerError};
-use lighthouse_audit::{AuditError, AuditLog};
+use lighthouse_audit::{AuditError, AuditLog, RunEnd, RunStatus};
 use lighthouse_auth::Auth;
 use lighthouse_config::{Config, OwnerConfig};
 use lighthouse_core::agent::AgentDefinition;
@@ -19,7 +19,10 @@ use secrecy::ExposeSecret;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
+
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Reads the master key from the configuration.
 pub fn master_key(config: &Config) -> anyhow::Result<MasterKey> {
@@ -63,6 +66,57 @@ impl AgentPool {
     }
 }
 
+impl AgentPool {
+    async fn resume_run(&self, run: Uuid) -> anyhow::Result<()> {
+        let audit = &self.runtime.audit;
+        let Some(checkpoint) = audit.take_checkpoint(run).await? else {
+            return Ok(());
+        };
+        let id = RunId::from_uuid(run);
+        let Some(agent) = self.agents.get(&checkpoint.agent_id).cloned() else {
+            let reason = format!("the agent `{}` no longer exists", checkpoint.agent_id);
+            let end = RunEnd {
+                status: RunStatus::Failed,
+                reason: Some(&reason),
+                report: None,
+            };
+            audit.finish_run(id, end).await?;
+            return Ok(());
+        };
+        let runtime = self.runtime.clone();
+        tokio::spawn(async move {
+            if let Err(error) = runtime.resume(id, &agent, checkpoint.state).await {
+                tracing::error!(agent = %agent.id, %error, "resumed run failed");
+            }
+        });
+        Ok(())
+    }
+
+    /// Expires overdue approvals and resumes runs that wait for nothing anymore.
+    ///
+    /// Resuming from here also recovers runs when the server stopped right
+    /// after a decision.
+    pub async fn maintain(&self) -> anyhow::Result<()> {
+        let audit = &self.runtime.audit;
+        audit.expire_approvals().await?;
+        for run in audit.resumable_runs().await? {
+            self.resume_run(run).await?;
+        }
+        Ok(())
+    }
+
+    /// Runs the maintenance until the process ends.
+    pub async fn run_maintenance(self: Arc<Self>) {
+        let mut ticker = tokio::time::interval(MAINTENANCE_INTERVAL);
+        loop {
+            ticker.tick().await;
+            if let Err(error) = self.maintain().await {
+                tracing::error!(%error, "maintenance failed");
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl RunTrigger for AgentPool {
     async fn trigger(&self, agent_id: &str) -> Result<Uuid, TriggerError> {
@@ -75,6 +129,12 @@ impl RunTrigger for AgentPool {
             .await
             .map_err(|error| TriggerError::Failed(error.to_string()))?;
         Ok(run.as_uuid())
+    }
+
+    async fn resume(&self, run: Uuid) -> Result<(), TriggerError> {
+        self.resume_run(run)
+            .await
+            .map_err(|error| TriggerError::Failed(error.to_string()))
     }
 }
 
@@ -95,6 +155,8 @@ pub struct App {
     pub router: lighthouse_api::Router,
     /// The scheduler, ready to run.
     pub scheduler: Scheduler,
+    /// The agents, for background maintenance.
+    pub pool: Arc<AgentPool>,
 }
 
 /// Connects everything described by the configuration.
@@ -161,11 +223,15 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
     );
     let router = lighthouse_api::router(ApiState {
         audit,
-        trigger: pool,
+        trigger: pool.clone(),
         oauth: Arc::new(oauth),
         auth: Auth::new(auth_store, tenant),
         vault,
         admin_token: config.server.admin_token.clone(),
     });
-    Ok(App { router, scheduler })
+    Ok(App {
+        router,
+        scheduler,
+        pool,
+    })
 }

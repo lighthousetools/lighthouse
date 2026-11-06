@@ -236,6 +236,9 @@ pub struct ConnectorConfig {
     /// Allowlist of tools known to be read-only. Every other tool counts as `write`.
     #[serde(default)]
     pub read_tools: Vec<String>,
+    /// Allowlist of reversible tools without external effect, such as saving a draft.
+    #[serde(default)]
+    pub draft_tools: Vec<String>,
 }
 
 /// Delivery channels.

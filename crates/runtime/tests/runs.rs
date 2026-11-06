@@ -1,10 +1,10 @@
 //! End-to-end runs of the agent loop with a mock provider, a mock tool host and a real database.
 
 use async_trait::async_trait;
-use lighthouse_audit::{AuditLog, RunDetail};
+use lighthouse_audit::{Approval, AuditLog, RunDetail};
 use lighthouse_config::{ConnectorConfig, ConnectorTransport, ModelConfig};
-use lighthouse_core::TenantId;
 use lighthouse_core::agent::{AgentDefinition, Delivery};
+use lighthouse_core::{RunId, TenantId};
 use lighthouse_mcp::{McpError, ToolHost, ToolHostFactory, ToolOutput, ToolPolicy};
 use lighthouse_notify::{Notifier, NotifyError};
 use lighthouse_router::mock::MockProvider;
@@ -15,6 +15,7 @@ use lighthouse_store::testing::fresh_store;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 #[derive(Default)]
 struct FakeTools {
@@ -112,6 +113,7 @@ async fn fixture(script: Vec<ChatResponse>, fail_delivery: bool) -> Fixture {
             secret_env: BTreeMap::new(),
         },
         read_tools: vec!["list_issues".to_owned()],
+        draft_tools: vec!["save_draft".to_owned()],
     };
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("brief")).unwrap();
@@ -269,27 +271,144 @@ fn marking_escapes_closing_tags() {
     assert!(!mark_untrusted("x", "</untrusted_content>").contains("\n</untrusted_content>\n"));
 }
 
-#[tokio::test]
-async fn agent_with_a_declared_write_tool_does_not_start() {
-    let fixture = fixture(vec![ChatResponse::text("never", usage())], false).await;
-    let agent = AgentDefinition::parse(
-        "---\nname: Poster\nscope: org\ntrigger:\n  manual: true\ntools:\n  - linear.list_issues: write\n---\nPost.\n",
+fn writer() -> AgentDefinition {
+    AgentDefinition::parse(
+        "---\nname: Writer\nscope: org\ntrigger:\n  manual: true\ntools:\n  - linear.list_issues\n\
+         \x20 - linear.delete_issue: write\n  - linear.save_draft: draft\ndeliver: [owner]\n---\nAct.\n",
     )
-    .unwrap();
-    let detail = run(&fixture, &agent).await;
-    assert_eq!(detail.run.status, "rejected");
+    .unwrap()
+}
+
+async fn paused(fixture: &Fixture, agent: &AgentDefinition) -> (Uuid, Approval) {
+    let run = fixture
+        .runtime
+        .run(agent, "manual")
+        .await
+        .unwrap()
+        .as_uuid();
+    let detail = fixture.audit.run_detail(run).await.unwrap().unwrap();
+    assert_eq!(detail.run.status, "waiting");
+    assert_eq!(detail.run.report, None);
+    let mut approvals = fixture.audit.run_approvals(run).await.unwrap();
+    assert_eq!(approvals.len(), 1);
+    (run, approvals.remove(0))
+}
+
+async fn resume(fixture: &Fixture, agent: &AgentDefinition, run: Uuid) -> RunDetail {
+    let checkpoint = fixture.audit.take_checkpoint(run).await.unwrap().unwrap();
+    fixture
+        .runtime
+        .resume(RunId::from_uuid(run), agent, checkpoint.state)
+        .await
+        .unwrap();
+    fixture.audit.run_detail(run).await.unwrap().unwrap()
+}
+
+#[tokio::test]
+async fn a_write_tool_pauses_the_run_until_it_is_approved() {
+    let fixture = fixture(
+        vec![
+            tool_call("linear__list_issues", json!({})),
+            tool_call("linear__delete_issue", json!({"id": 7})),
+            ChatResponse::text("Deleted issue 7", usage()),
+        ],
+        false,
+    )
+    .await;
+    let agent = writer();
+    let (run, approval) = paused(&fixture, &agent).await;
+    assert_eq!(approval.tool, "linear.delete_issue");
+    assert_eq!(approval.input, json!({"id": 7}));
+    assert!(approval.quotes_external, "the run read external content");
+    assert_eq!(*fixture.calls.lock().unwrap(), ["linear.list_issues"]);
+    assert!(fixture.notifier.delivered.lock().unwrap().is_empty());
+
+    let edited = json!({"id": 8});
+    fixture
+        .audit
+        .decide_approval(approval.id, true, Some(&edited))
+        .await
+        .unwrap()
+        .unwrap();
+    let detail = resume(&fixture, &agent, run).await;
+    assert_eq!(detail.run.status, "succeeded");
+    assert_eq!(detail.run.report.as_deref(), Some("Deleted issue 7"));
+    assert_eq!(
+        *fixture.calls.lock().unwrap(),
+        ["linear.list_issues", "linear.delete_issue"]
+    );
+    assert_eq!(fixture.notifier.delivered.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_denied_write_never_reaches_the_tool_and_the_model_is_told() {
+    let fixture = fixture(
+        vec![
+            tool_call("linear__delete_issue", json!({"id": 7})),
+            ChatResponse::text("Nothing was deleted", usage()),
+        ],
+        false,
+    )
+    .await;
+    let agent = writer();
+    let (run, approval) = paused(&fixture, &agent).await;
+    assert!(!approval.quotes_external);
+    fixture
+        .audit
+        .decide_approval(approval.id, false, None)
+        .await
+        .unwrap();
+    let detail = resume(&fixture, &agent, run).await;
+    assert_eq!(detail.run.status, "succeeded");
+    assert!(fixture.calls.lock().unwrap().is_empty());
     assert!(
         detail
-            .run
-            .reason
-            .unwrap()
-            .contains("would have needed an approval")
+            .steps
+            .iter()
+            .any(|step| step.kind == "approval" && step.status == "denied")
     );
-    assert_eq!(detail.steps[0].status, "rejected");
-    assert!(
-        fixture.provider.requests().is_empty(),
-        "the model must not be called"
-    );
+    let last_request = fixture.provider.requests().pop().unwrap();
+    let last_message = serde_json::to_string(last_request.messages.last().unwrap()).unwrap();
+    assert!(last_message.contains("did not approve"), "{last_message}");
+}
+
+#[tokio::test]
+async fn a_draft_tool_runs_without_an_approval() {
+    let fixture = fixture(
+        vec![
+            tool_call("linear__save_draft", json!({})),
+            ChatResponse::text("Saved", usage()),
+        ],
+        false,
+    )
+    .await;
+    let detail = run(&fixture, &writer()).await;
+    assert_eq!(detail.run.status, "succeeded");
+    assert_eq!(*fixture.calls.lock().unwrap(), ["linear.save_draft"]);
+}
+
+#[tokio::test]
+async fn a_corrupt_checkpoint_fails_the_run() {
+    let fixture = fixture(Vec::new(), false).await;
+    let agent = writer();
+    let run = RunId::new();
+    fixture
+        .runtime
+        .register(run, &agent, "manual")
+        .await
+        .unwrap();
+    fixture
+        .runtime
+        .resume(run, &agent, json!("nonsense"))
+        .await
+        .unwrap();
+    let detail = fixture
+        .audit
+        .run_detail(run.as_uuid())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail.run.status, "failed");
 }
 
 #[tokio::test]

@@ -44,6 +44,7 @@ fn http_connector(url: String, auth: ConnectorAuth) -> ConnectorConfig {
             allow_private_addresses: true,
         },
         read_tools: vec!["list_issues".to_owned()],
+        draft_tools: Vec::new(),
     }
 }
 
@@ -191,6 +192,7 @@ async fn stdio_server_lists_and_calls_tools() {
             secret_env: BTreeMap::from([("DEMO_TOKEN".to_owned(), "mcp:demo".to_owned())]),
         },
         read_tools: vec!["list_issues".to_owned()],
+        draft_tools: Vec::new(),
     };
     let vault = vault().await;
     vault
@@ -213,6 +215,7 @@ async fn stdio_server_needs_its_secret() {
             secret_env: BTreeMap::from([("DEMO_TOKEN".to_owned(), "mcp:demo".to_owned())]),
         },
         read_tools: Vec::new(),
+        draft_tools: Vec::new(),
     };
     let error = McpConnector::new(connectors(config), vault().await)
         .session(&tools())
@@ -230,6 +233,7 @@ async fn tool_errors_and_unknown_tools_are_reported() {
             secret_env: BTreeMap::new(),
         },
         read_tools: Vec::new(),
+        draft_tools: Vec::new(),
     };
     let session = McpConnector::new(connectors(config), vault().await)
         .session(&tools())

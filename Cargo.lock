@@ -1646,6 +1646,7 @@ dependencies = [
  "lighthouse-core",
  "lighthouse-store",
  "serde",
+ "serde_json",
  "sqlx",
  "thiserror 2.0.21",
  "tokio",
@@ -1792,11 +1793,13 @@ dependencies = [
  "lighthouse-store",
  "lighthouse-vault",
  "secrecy",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

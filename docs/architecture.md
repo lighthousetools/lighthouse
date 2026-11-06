@@ -28,7 +28,8 @@ flowchart LR
 | `lighthouse-config` | `lighthouse.toml` and environment overrides |
 | `lighthouse-store` | Postgres connection and migrations |
 | `lighthouse-vault` | Encrypted credentials |
-| `lighthouse-audit` | Append-only log of runs and steps |
+| `lighthouse-audit` | Append-only log of runs and steps, approvals and paused runs |
+| `lighthouse-auth` | Sign-in of the owner and device tokens |
 | `lighthouse-router` | Provider adapters, routing, fallback, costs |
 | `lighthouse-mcp` | MCP client, OAuth flow, tool classification |
 | `lighthouse-skills` | `SKILL.md` loading |
@@ -49,8 +50,11 @@ flowchart LR
 
 ## Safety
 
-- **Read-only tools:** only tools in a connector's `read_tools` count as read-only. Everything else counts as `write`,
-  whatever the agent file says. The runtime checks this before the start and again on every call.
+- **Tool levels:** only tools in a connector's `read_tools` or `draft_tools` escape `write`, whatever the agent file
+  says. The runtime checks this before the start and again on every call.
+- **Approvals:** a `write` call never runs by itself. The run saves its state and pauses. After the decision it continues
+  with the tool result or a denial. The first decision wins, and a maintenance task expires old proposals and recovers
+  runs after a restart.
 - **Prompt injection:** tool results are wrapped in `<untrusted_content>` tags that their content cannot close, and the
   system prompt tells the model to treat them as data.
 - **Secrets:** keys live in the vault and reach tools on the server side only. They never enter prompts or the log.

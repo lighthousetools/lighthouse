@@ -23,10 +23,12 @@ lighthouse-router.workspace = true
 lighthouse-skills.workspace = true
 lighthouse-vault.workspace = true
 secrecy.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 lighthouse-store = { workspace = true, features = ["testing"] }

@@ -4,11 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Classifies tools by the connector allowlists.
 ///
-/// A tool is `read` only if its connector lists it. Everything else counts as
-/// `write`, whatever the agent file says.
+/// A tool is `read` or `draft` only if its connector lists it. Everything else
+/// counts as `write`, whatever the agent file says.
 #[derive(Clone, Debug, Default)]
 pub struct ToolPolicy {
     read_tools: BTreeMap<String, BTreeSet<String>>,
+    draft_tools: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// A tool that stops an agent from running.
@@ -27,37 +28,55 @@ impl ToolPolicy {
             .iter()
             .map(|(name, connector)| (name.clone(), connector.read_tools.iter().cloned().collect()))
             .collect();
-        Self { read_tools }
+        let draft_tools = connectors
+            .iter()
+            .map(|(name, connector)| {
+                (
+                    name.clone(),
+                    connector.draft_tools.iter().cloned().collect(),
+                )
+            })
+            .collect();
+        Self {
+            read_tools,
+            draft_tools,
+        }
     }
 
     /// Returns the effective level of a qualified tool.
     pub fn level(&self, qualified: &str) -> ToolLevel {
-        let allowed = qualified
-            .split_once('.')
-            .and_then(|(connector, tool)| Some(self.read_tools.get(connector)?.contains(tool)));
-        if allowed == Some(true) {
+        let Some((connector, tool)) = qualified.split_once('.') else {
+            return ToolLevel::Write;
+        };
+        let lists = |tools: &BTreeMap<String, BTreeSet<String>>| {
+            tools.get(connector).is_some_and(|set| set.contains(tool))
+        };
+        if lists(&self.read_tools) {
             ToolLevel::Read
+        } else if lists(&self.draft_tools) {
+            ToolLevel::Draft
         } else {
             ToolLevel::Write
         }
     }
 
-    /// Returns every tool of an agent that is above `read`.
+    /// Returns every tool whose real level exceeds what the agent file declares.
+    ///
+    /// The file has to admit that an agent acts, so a tool it declares as `read`
+    /// cannot turn out to write.
     pub fn blocked(&self, agent: &AgentDefinition) -> Vec<BlockedTool> {
         agent
             .tools
             .iter()
             .filter_map(|grant| {
-                let reason = if grant.level != ToolLevel::Read {
-                    format!("the agent file declares it as {:?}", grant.level).to_lowercase()
-                } else if self.level(&grant.name) != ToolLevel::Read {
-                    "the connector does not list it as read-only".to_owned()
-                } else {
-                    return None;
-                };
-                Some(BlockedTool {
+                let level = self.level(&grant.name);
+                (level > grant.level).then(|| BlockedTool {
                     tool: grant.name.clone(),
-                    reason,
+                    reason: if level == ToolLevel::Write {
+                        "the connector does not list it as read-only".to_owned()
+                    } else {
+                        "the agent file declares it below its level".to_owned()
+                    },
                 })
             })
             .collect()
@@ -77,6 +96,7 @@ mod tests {
                 secret_env: BTreeMap::new(),
             },
             read_tools: vec!["list_issues".to_owned()],
+            draft_tools: vec!["save_draft".to_owned()],
         };
         ToolPolicy::new(&BTreeMap::from([("linear".to_owned(), connector)]))
     }
@@ -114,12 +134,21 @@ mod tests {
     }
 
     #[test]
-    fn declared_write_and_draft_are_blocked_even_on_read_tools() {
-        let blocked = policy().blocked(&agent(
-            "  - linear.list_issues: write\n  - linear.list_issues: draft",
-        ));
-        assert_eq!(blocked.len(), 2);
-        assert!(blocked[0].reason.contains("write"));
-        assert!(blocked[1].reason.contains("draft"));
+    fn a_tool_declared_at_its_level_or_above_is_not_blocked() {
+        let policy = policy();
+        assert_eq!(policy.level("linear.save_draft"), ToolLevel::Draft);
+        let agent = agent(
+            "  - linear.list_issues: write\n  - linear.save_draft: draft\n  - linear.delete_issue: write",
+        );
+        assert!(policy.blocked(&agent).is_empty());
+    }
+
+    #[test]
+    fn a_tool_declared_below_its_level_is_blocked() {
+        let policy = policy();
+        let blocked = policy.blocked(&agent("  - linear.save_draft"));
+        assert!(blocked[0].reason.contains("below its level"));
+        let blocked = policy.blocked(&agent("  - linear.delete_issue: draft"));
+        assert!(blocked[0].reason.contains("does not list it"));
     }
 }

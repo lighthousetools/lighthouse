@@ -41,9 +41,21 @@ Unknown fields are errors, so an unsupported feature is never silently ignored.
 
 ## Tools
 
-A tool without a suffix is read-only. An agent that names a tool with `draft` or `write`, or a tool its connector does
-not list in `read_tools`, does not start. The run appears in the log as `rejected`, with the reason "would have needed
-an approval".
+An agent file declares the level of each tool, and the connector configuration decides the real one:
+
+| Level | Connector | What happens |
+|---|---|---|
+| `read` | Listed in `read_tools` | Runs directly |
+| `draft` | Listed in `draft_tools` | Runs directly. Use it for reversible actions without external effect |
+| `write` | Everything else | The run pauses and proposes the call. It continues after your decision |
+
+A tool without a suffix is `read`. An agent that declares a tool below its real level does not start, so a file can
+never hide that it acts. The run appears in the log as `rejected`, with the reason "would have needed an approval".
+
+Proposals appear under `GET /approvals` and in the apps. You can approve, deny or edit the arguments. If you approve, the
+tool runs with the final arguments. If you deny, the model is told that the action did not happen and continues. Open
+proposals count as denied after 72 hours. `quotes_external` marks proposals from runs that had read external content, so
+check those with extra care.
 
 Use `lht connectors tools <connector>` to see the real tool names of a server.
 

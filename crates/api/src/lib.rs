@@ -4,8 +4,10 @@
 //! Everything else needs a device token or the admin token, because runs and
 //! reports contain private data. Setting the password needs the admin token.
 
+mod approvals;
 mod auth;
 
+pub use approvals::{BatchDecision, BatchResult, Decision};
 pub use auth::{
     AuthStatus, Caller, CredentialValue, LoginRequest, SetupRequest, TokenIssued, TokenRequest,
 };
@@ -19,7 +21,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 
 pub use axum::Router;
-use lighthouse_audit::{AuditLog, RunDetail, RunRecord, StepRecord};
+use lighthouse_audit::{Approval, AuditLog, RunDetail, RunRecord, StepRecord};
 use lighthouse_auth::{Auth, Device, DeviceKind};
 use lighthouse_mcp::{McpError, OAuthFlows};
 use lighthouse_vault::Vault;
@@ -49,6 +51,9 @@ pub enum TriggerError {
 pub trait RunTrigger: Send + Sync {
     /// Starts a run in the background and returns its ID.
     async fn trigger(&self, agent_id: &str) -> Result<Uuid, TriggerError>;
+
+    /// Continues a paused run in the background if no decision is open.
+    async fn resume(&self, run: Uuid) -> Result<(), TriggerError>;
 }
 
 /// Shared state of the API.
@@ -284,11 +289,12 @@ impl utoipa::Modify for SecurityAddon {
         auth::status, auth::setup, auth::login, auth::issue_token, auth::logout,
         auth::devices, auth::revoke_device,
         auth::list_credentials, auth::put_credential, auth::delete_credential,
+        approvals::list, approvals::decide, approvals::decide_batch,
     ),
     components(schemas(
         Health, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
         AuthStatus, SetupRequest, LoginRequest, TokenRequest, TokenIssued, CredentialValue,
-        Device, DeviceKind,
+        Device, DeviceKind, Approval, Decision, BatchDecision, BatchResult,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -314,6 +320,9 @@ pub fn router(state: ApiState) -> Router {
         .route("/auth/logout", post(auth::logout))
         .route("/auth/devices", get(auth::devices))
         .route("/auth/devices/{id}", delete(auth::revoke_device))
+        .route("/approvals", get(approvals::list))
+        .route("/approvals/decisions", post(approvals::decide_batch))
+        .route("/approvals/{id}/decision", post(approvals::decide))
         .route("/credentials", get(auth::list_credentials))
         .route(
             "/credentials/{name}",
@@ -343,16 +352,18 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use axum::http::Request as HttpRequest;
     use base64::Engine;
+    use lighthouse_audit::NewApproval;
     use lighthouse_core::{RunId, TenantId};
     use lighthouse_store::testing::fresh_store;
     use lighthouse_vault::{MasterKey, Vault};
     use serde_json::Value;
     use std::collections::BTreeMap;
+    use std::sync::Mutex;
     use tower::ServiceExt;
 
     const TOKEN: &str = "test-admin-token";
 
-    struct FakeTrigger(Uuid);
+    struct FakeTrigger(Uuid, Arc<Mutex<Vec<Uuid>>>);
 
     #[async_trait]
     impl RunTrigger for FakeTrigger {
@@ -363,9 +374,20 @@ mod tests {
                 Err(TriggerError::UnknownAgent(agent_id.to_owned()))
             }
         }
+
+        async fn resume(&self, run: Uuid) -> Result<(), TriggerError> {
+            self.1.lock().unwrap().push(run);
+            Ok(())
+        }
     }
 
     async fn app(token: Option<&str>) -> (Router, AuditLog) {
+        let (router, audit, _) = app_with_resumes(token).await;
+        (router, audit)
+    }
+
+    async fn app_with_resumes(token: Option<&str>) -> (Router, AuditLog, Arc<Mutex<Vec<Uuid>>>) {
+        let resumed = Arc::new(Mutex::new(Vec::new()));
         let store = fresh_store().await;
         let key = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
         let vault = Vault::new(
@@ -376,7 +398,7 @@ mod tests {
         let audit = AuditLog::new(store.clone(), TenantId::SINGLE);
         let state = ApiState {
             audit: audit.clone(),
-            trigger: Arc::new(FakeTrigger(Uuid::nil())),
+            trigger: Arc::new(FakeTrigger(Uuid::nil(), resumed.clone())),
             oauth: Arc::new(OAuthFlows::new(
                 BTreeMap::new(),
                 vault.clone(),
@@ -386,7 +408,7 @@ mod tests {
             vault,
             admin_token: token.map(|token| SecretString::from(token.to_owned())),
         };
-        (router(state), audit)
+        (router(state), audit, resumed)
     }
 
     async fn call(
@@ -660,6 +682,71 @@ mod tests {
         assert_eq!(
             call(&app, "DELETE", uri, Some(&token)).await.0,
             StatusCode::NOT_FOUND
+        );
+    }
+
+    async fn proposals(audit: &AuditLog, count: usize) -> (Uuid, Vec<Uuid>) {
+        let run = RunId::new();
+        audit.start_run(run, "mailer", "manual").await.unwrap();
+        let new: Vec<_> = (0..count)
+            .map(|_| NewApproval {
+                id: Uuid::now_v7(),
+                tool: "mail.send".to_owned(),
+                input: json!({"to": "a"}),
+                quotes_external: false,
+            })
+            .collect();
+        audit
+            .pause_run(run, "mailer", &json!({}), &new)
+            .await
+            .unwrap();
+        (run.as_uuid(), new.into_iter().map(|item| item.id).collect())
+    }
+
+    #[tokio::test]
+    async fn a_decision_resumes_the_run_and_a_second_one_conflicts() {
+        let (app, audit, resumed) = app_with_resumes(Some(TOKEN)).await;
+        let (run, ids) = proposals(&audit, 1).await;
+        let (status, body) = call(&app, "GET", "/approvals?status=pending", Some(TOKEN)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("mail.send"));
+        let uri = format!("/approvals/{}/decision", ids[0]);
+        let decision = json!({"approve": true, "input": {"to": "b"}});
+        let (status, body) = send(&app, "POST", &uri, Some(TOKEN), Some(decision.clone())).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"to\":\"b\""));
+        assert_eq!(*resumed.lock().unwrap(), [run]);
+        let (status, _) = send(&app, "POST", &uri, Some(TOKEN), Some(decision)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn a_batch_reports_what_it_decided_and_resumes_each_run_once() {
+        let (app, audit, resumed) = app_with_resumes(Some(TOKEN)).await;
+        let (run, ids) = proposals(&audit, 2).await;
+        let unknown = Uuid::now_v7();
+        let batch = json!({"ids": [ids[0], ids[1], unknown], "approve": false});
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/approvals/decisions",
+            Some(TOKEN),
+            Some(batch),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let result: BatchResult = serde_json::from_str(&body).unwrap();
+        assert_eq!(result.decided, ids);
+        assert_eq!(result.skipped, [unknown]);
+        assert_eq!(*resumed.lock().unwrap(), [run]);
+    }
+
+    #[tokio::test]
+    async fn approvals_need_a_sign_in() {
+        let (app, _) = app(Some(TOKEN)).await;
+        assert_eq!(
+            call(&app, "GET", "/approvals", None).await.0,
+            StatusCode::UNAUTHORIZED
         );
     }
 }
