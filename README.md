@@ -1,20 +1,30 @@
 # Lighthouse by Lighthouse Tools
 
 Lighthouse is an open-source personal assistant and agent system written in Rust. It runs self-hosted with your own
-API keys, reads from your tools through [MCP](https://modelcontextprotocol.io), and delivers a daily brief and a weekly
-report by email or Slack. Every run is logged with all tool calls, tokens and costs.
+API keys, reads from your tools through [MCP](https://modelcontextprotocol.io), keeps a Second Brain of what you know, and
+watches your Claude Code sessions. Every run is logged with all tool calls, tokens and costs.
 
-> **Status:** early development. The first version only reads. Agents cannot change anything in your tools.
+> **Status:** early development. Connections to real providers and services are not fully tested yet.
 
 ## Features
 
-- **Agents as files:** Markdown with frontmatter, readable and versionable.
+- **Agents as files:** Markdown with frontmatter, or written for you from a description.
+- **Approvals:** anything with external effect pauses the run until you decide, from any device.
+- **Second Brain:** Markdown files with hybrid search, covering text, PDF, images and audio. See [docs/brain.md](docs/brain.md).
+- **Claude Code:** see sessions and answer permission prompts remotely, using official hooks. See
+  [docs/desktop-agent.md](docs/desktop-agent.md).
 - **Bring your own key:** Anthropic and OpenAI, with a model per task and a fallback.
 - **MCP connectors:** stdio and Streamable HTTP, with bearer tokens or the full OAuth flow.
-- **Read-only by design:** a tool counts as read-only only if its connector lists it.
 - **Skills:** the open `SKILL.md` format, loaded on demand.
 - **Encrypted vault:** API keys and OAuth tokens are stored with AES-256-GCM.
 - **Audit log:** an append-only record of every step, with cost limits per run.
+
+## Apps
+
+| Repository | Content |
+|---|---|
+| [`lighthouse-web`](https://github.com/lighthousetools/lighthouse-web) | Web app, also installable as a PWA |
+| [`lighthouse-apple`](https://github.com/lighthousetools/lighthouse-apple) | Mac app with menu bar item, iOS app |
 
 ## Quickstart
 
