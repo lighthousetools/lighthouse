@@ -329,6 +329,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::result_large_err)]
     fn environment_overrides_the_file() {
         Jail::expect_with(|jail| {
             jail.create_file("lighthouse.toml", EXAMPLE)?;

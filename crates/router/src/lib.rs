@@ -322,7 +322,7 @@ mod tests {
         assert!(matches!(error, RouterError::NoRoute(_)));
         let preference = RouteOverride {
             provider: Some("nobody".to_owned()),
-            fallback: None,
+            fallback: Some("nobody".to_owned()),
         };
         let error = router
             .complete("text", &preference, &ChatRequest::default())
