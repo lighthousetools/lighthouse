@@ -1,0 +1,21 @@
+[package]
+name = "lighthouse-config"
+description = "Configuration of Lighthouse."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+figment.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+figment = { workspace = true, features = ["test"] }
+tempfile.workspace = true

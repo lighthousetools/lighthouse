@@ -1,0 +1,77 @@
+# Example configuration. Copy to lighthouse.toml and adjust.
+# Any value can be overridden with LIGHTHOUSE_<SECTION>__<KEY>.
+
+[server]
+bind = "0.0.0.0:8080"
+public_url = "https://lighthouse.example.com"
+timezone = "Europe/Berlin"
+# Set the admin token with LIGHTHOUSE_SERVER__ADMIN_TOKEN.
+
+[database]
+url = "postgres://lighthouse:lighthouse@localhost:5432/lighthouse"
+
+[vault]
+# Create the file with `lht keys init`.
+master_key_file = "/var/lib/lighthouse/master.key"
+
+[owner]
+name = "Alex Example"
+email = "alex@example.com"
+
+[owner.accounts]
+linear = "alex"
+github = "alex-example"
+
+[paths]
+agents = "agents"
+skills = "skills"
+
+[providers.anthropic]
+kind = "anthropic"
+
+[providers.anthropic.tasks.text]
+model = "set-a-model-name"
+input_eur_per_mtok = 3.0
+output_eur_per_mtok = 15.0
+
+[providers.openai]
+kind = "openai"
+
+[providers.openai.tasks.text]
+model = "set-a-model-name"
+input_eur_per_mtok = 2.0
+output_eur_per_mtok = 8.0
+
+[routing.text]
+provider = "anthropic"
+fallback = "openai"
+
+# Every tool not listed in read_tools counts as `write` and blocks the agent.
+[connectors.linear]
+transport = "http"
+url = "https://mcp.linear.app/mcp"
+auth = "oauth"
+read_tools = ["list_issues", "get_issue", "list_cycles"]
+
+[connectors.github]
+transport = "http"
+url = "https://api.githubcopilot.com/mcp/"
+auth = "oauth"
+read_tools = ["list_pull_requests", "list_releases", "search_issues"]
+
+[connectors.grafana]
+transport = "stdio"
+command = "mcp-grafana"
+read_tools = ["list_alert_rules", "query_prometheus"]
+
+[connectors.grafana.secret_env]
+GRAFANA_API_KEY = "mcp:grafana"
+
+[delivery]
+slack_channels = ["#weekly"]
+
+[delivery.smtp]
+host = "smtp.example.com"
+port = 587
+username = "lighthouse"
+from = "lighthouse@example.com"
