@@ -7,12 +7,17 @@
 mod approvals;
 mod auth;
 mod brain;
+mod catalog;
 
 pub use approvals::{BatchDecision, BatchResult, Decision};
 pub use auth::{
     AuthStatus, Caller, CredentialValue, LoginRequest, SetupRequest, TokenIssued, TokenRequest,
 };
 pub use brain::{AskAnswer, AskRequest, EntryDetail};
+pub use catalog::{
+    AgentChangeError, AgentDraftRequest, AgentInfo, AgentSource, AgentTool, Catalog, ConnectorInfo,
+    SkillInfo,
+};
 
 use async_trait::async_trait;
 use axum::Json;
@@ -23,7 +28,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 
 pub use axum::Router;
-use lighthouse_audit::{Approval, AuditLog, RunDetail, RunRecord, StepRecord};
+use lighthouse_audit::{Approval, AuditLog, DailyCost, RunDetail, RunRecord, StepRecord};
 use lighthouse_auth::{Auth, Device, DeviceKind};
 use lighthouse_brain::{Brain, Entry, EntryPatch, EntrySummary, NewEntry, SearchHit, Source};
 use lighthouse_mcp::{McpError, OAuthFlows};
@@ -84,6 +89,8 @@ pub struct ApiState {
     pub brain: Brain,
     /// Answers questions.
     pub assistant: Arc<dyn Assistant>,
+    /// Agents, connectors and skills.
+    pub catalog: Arc<dyn Catalog>,
     /// Admin token. Without one, the password can only be set by the CLI.
     pub admin_token: Option<SecretString>,
 }
@@ -307,6 +314,9 @@ impl utoipa::Modify for SecurityAddon {
         approvals::list, approvals::decide, approvals::decide_batch,
         brain::search, brain::ask, brain::list, brain::create, brain::get, brain::update,
         brain::delete, brain::upload, brain::download,
+        catalog::agents, catalog::agent, catalog::agent_runs, catalog::draft_agent,
+        catalog::save_agent, catalog::delete_agent, catalog::connectors, catalog::skills,
+        catalog::costs,
     ),
     components(schemas(
         Health, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -314,6 +324,7 @@ impl utoipa::Modify for SecurityAddon {
         Device, DeviceKind, Approval, Decision, BatchDecision, BatchResult,
         Entry, EntryDetail, EntryPatch, EntrySummary, NewEntry, SearchHit, Source,
         AskRequest, AskAnswer,
+        AgentInfo, AgentTool, ConnectorInfo, SkillInfo, AgentDraftRequest, AgentSource, DailyCost,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -333,7 +344,17 @@ pub fn router(state: ApiState) -> Router {
     let signed_in = Router::new()
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
+        .route("/agents", get(catalog::agents).post(catalog::save_agent))
+        .route("/agents/draft", post(catalog::draft_agent))
+        .route(
+            "/agents/{id}",
+            get(catalog::agent).delete(catalog::delete_agent),
+        )
+        .route("/agents/{id}/runs", get(catalog::agent_runs))
         .route("/agents/{id}/run", post(run_agent))
+        .route("/connectors", get(catalog::connectors))
+        .route("/skills", get(catalog::skills))
+        .route("/costs", get(catalog::costs))
         .route("/connectors/{id}/connect", post(connect))
         .route("/auth/tokens", post(auth::issue_token))
         .route("/auth/logout", post(auth::logout))
@@ -410,6 +431,74 @@ mod tests {
         }
     }
 
+    fn agent_info(id: &str) -> AgentInfo {
+        AgentInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            schedule: None,
+            next_run: None,
+            tools: Vec::new(),
+            skills: Vec::new(),
+            deliver: Vec::new(),
+            blocked: Vec::new(),
+            editable: true,
+            source: "file".to_owned(),
+        }
+    }
+
+    struct FakeCatalog;
+
+    #[async_trait]
+    impl Catalog for FakeCatalog {
+        fn agents(&self) -> Vec<AgentInfo> {
+            vec![agent_info("brief")]
+        }
+
+        fn agent(&self, id: &str) -> Option<AgentInfo> {
+            (id == "brief").then(|| agent_info(id))
+        }
+
+        async fn draft_agent(&self, description: &str) -> Result<String, String> {
+            if description == "fail" {
+                Err("no model".to_owned())
+            } else {
+                Ok(format!("file for {description}"))
+            }
+        }
+
+        async fn save_agent(&self, source: &str) -> Result<AgentInfo, AgentChangeError> {
+            if source == "bad" {
+                Err(AgentChangeError::Rejected("invalid".to_owned()))
+            } else {
+                Ok(agent_info("saved"))
+            }
+        }
+
+        async fn delete_agent(&self, id: &str) -> Result<bool, AgentChangeError> {
+            match id {
+                "fixed" => Err(AgentChangeError::Rejected("read-only".to_owned())),
+                _ => Ok(id == "brief"),
+            }
+        }
+
+        async fn connectors(&self) -> Result<Vec<ConnectorInfo>, String> {
+            Ok(vec![ConnectorInfo {
+                name: "linear".to_owned(),
+                auth: "oauth".to_owned(),
+                connected: false,
+                read_tools: Vec::new(),
+                draft_tools: Vec::new(),
+            }])
+        }
+
+        fn skills(&self) -> Vec<SkillInfo> {
+            vec![SkillInfo {
+                name: "brief".to_owned(),
+                description: "Briefs".to_owned(),
+            }]
+        }
+    }
+
     struct FakeTrigger(Uuid, Arc<Mutex<Vec<Uuid>>>);
 
     #[async_trait]
@@ -459,6 +548,7 @@ mod tests {
             vault,
             brain: Brain::new(store, TenantId::SINGLE, brain_root()).unwrap(),
             assistant: Arc::new(FakeAssistant),
+            catalog: Arc::new(FakeCatalog),
             admin_token: token.map(|token| SecretString::from(token.to_owned())),
         };
         (router(state), audit, resumed)
@@ -890,5 +980,82 @@ mod tests {
                 StatusCode::UNAUTHORIZED
             );
         }
+    }
+
+    #[tokio::test]
+    async fn agents_can_be_listed_drafted_saved_and_deleted() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let (_, body) = call(&app, "GET", "/agents", Some(TOKEN)).await;
+        assert!(body.contains("brief"));
+        assert_eq!(
+            call(&app, "GET", "/agents/brief", Some(TOKEN)).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(&app, "GET", "/agents/nobody", Some(TOKEN)).await.0,
+            StatusCode::NOT_FOUND
+        );
+        let (status, body) = call(&app, "GET", "/agents/brief/runs", Some(TOKEN)).await;
+        assert_eq!((status, body.as_str()), (StatusCode::OK, "[]"));
+
+        let draft = |text: &str| json!({"description": text});
+        let (_, body) = send(
+            &app,
+            "POST",
+            "/agents/draft",
+            Some(TOKEN),
+            Some(draft("watch")),
+        )
+        .await;
+        assert!(body.contains("file for watch"));
+        let (status, _) = send(&app, "POST", "/agents/draft", Some(TOKEN), Some(draft(" "))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, _) = send(
+            &app,
+            "POST",
+            "/agents/draft",
+            Some(TOKEN),
+            Some(draft("fail")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+
+        let file = |source: &str| json!({"source": source});
+        let (status, _) = send(&app, "POST", "/agents", Some(TOKEN), Some(file("ok"))).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = send(&app, "POST", "/agents", Some(TOKEN), Some(file("bad"))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        for (uri, expected) in [
+            ("/agents/brief", StatusCode::NO_CONTENT),
+            ("/agents/nobody", StatusCode::NOT_FOUND),
+            ("/agents/fixed", StatusCode::UNPROCESSABLE_ENTITY),
+        ] {
+            assert_eq!(call(&app, "DELETE", uri, Some(TOKEN)).await.0, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn connectors_skills_and_costs_are_listed() {
+        let (app, audit) = app(Some(TOKEN)).await;
+        let run = RunId::new();
+        audit.start_run(run, "brief", "manual").await.unwrap();
+        let step = lighthouse_audit::NewStep {
+            kind: "model".to_owned(),
+            name: "m".to_owned(),
+            status: "ok".to_owned(),
+            detail: Some("provider=anthropic fallback=false".to_owned()),
+            cost_eur: 0.5,
+            ..Default::default()
+        };
+        audit.record_step(run, &step).await.unwrap();
+        let (_, body) = call(&app, "GET", "/costs?days=7", Some(TOKEN)).await;
+        let costs: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(costs[0]["provider"], "anthropic");
+        assert_eq!(costs[0]["cost_eur"], 0.5);
+        let (_, body) = call(&app, "GET", "/connectors", Some(TOKEN)).await;
+        assert!(body.contains("linear"));
+        let (_, body) = call(&app, "GET", "/skills", Some(TOKEN)).await;
+        assert!(body.contains("Briefs"));
     }
 }

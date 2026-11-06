@@ -97,6 +97,11 @@ impl SkillLibrary {
         Ok(Self { skills })
     }
 
+    /// Returns the names of all skills.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.skills.keys().map(String::as_str)
+    }
+
     /// Returns a skill by name.
     pub fn get(&self, name: &str) -> Option<&Skill> {
         self.skills.get(name)

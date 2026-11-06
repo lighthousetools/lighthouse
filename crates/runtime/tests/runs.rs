@@ -547,3 +547,56 @@ async fn a_failed_question_is_logged_as_failed() {
     let runs = fixture.audit.list_runs(1).await.unwrap();
     assert_eq!(runs[0].status, "failed");
 }
+
+const VALID_FILE: &str = "---\nname: Watcher\nscope: org\ntrigger:\n  cron: \"0 8 * * 1-5\"\ntools:\n  - linear.list_issues\n---\nWatch.\n";
+
+#[tokio::test]
+async fn an_agent_is_drafted_from_a_description() {
+    let fenced = format!("```markdown\n{VALID_FILE}```");
+    let fixture = fixture(vec![ChatResponse::text(&fenced, usage())], false).await;
+    let tools = ["linear.list_issues".to_owned()];
+    let file = fixture
+        .runtime
+        .draft_agent("Watch my issues", &tools)
+        .await
+        .unwrap();
+    assert_eq!(file, VALID_FILE);
+    let request = fixture.provider.requests().pop().unwrap();
+    assert!(request.system.contains("linear.list_issues"));
+    assert!(request.system.contains("- brief"), "{}", request.system);
+    assert_eq!(
+        fixture.audit.list_runs(1).await.unwrap()[0].agent_id,
+        "agent-draft"
+    );
+}
+
+#[tokio::test]
+async fn the_model_can_correct_an_invalid_draft() {
+    let hidden_write = VALID_FILE.replace("linear.list_issues", "linear.delete_issue");
+    let fixture = fixture(
+        vec![
+            ChatResponse::text("no agent", usage()),
+            ChatResponse::text(&hidden_write, usage()),
+            ChatResponse::text(VALID_FILE, usage()),
+        ],
+        false,
+    )
+    .await;
+    let file = fixture.runtime.draft_agent("Watch", &[]).await.unwrap();
+    assert_eq!(file, VALID_FILE);
+    let request = fixture.provider.requests().pop().unwrap();
+    let last = serde_json::to_string(request.messages.last().unwrap()).unwrap();
+    assert!(last.contains("real level"), "{last}");
+}
+
+#[tokio::test]
+async fn a_draft_gives_up_after_three_attempts() {
+    let answers = vec![ChatResponse::text("no agent", usage()); 3];
+    let fixture = fixture(answers, false).await;
+    let error = fixture.runtime.draft_agent("Watch", &[]).await.unwrap_err();
+    assert!(error.contains("no valid agent"), "{error}");
+    assert_eq!(
+        fixture.audit.list_runs(1).await.unwrap()[0].status,
+        "failed"
+    );
+}

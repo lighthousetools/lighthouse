@@ -116,6 +116,13 @@ pub struct PathsConfig {
     /// Directory with skills.
     #[serde(default = "default_skills_dir")]
     pub skills: PathBuf,
+    /// Writable directory for agents created in the apps.
+    #[serde(default = "default_created_agents_dir")]
+    pub created_agents: PathBuf,
+}
+
+fn default_created_agents_dir() -> PathBuf {
+    PathBuf::from("agents-created")
 }
 
 fn default_agents_dir() -> PathBuf {
@@ -131,6 +138,7 @@ impl Default for PathsConfig {
         Self {
             agents: default_agents_dir(),
             skills: default_skills_dir(),
+            created_agents: default_created_agents_dir(),
         }
     }
 }

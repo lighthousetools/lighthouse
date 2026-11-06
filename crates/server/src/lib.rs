@@ -2,23 +2,27 @@
 
 use anyhow::Context;
 use async_trait::async_trait;
-use lighthouse_api::{ApiState, AskAnswer, Assistant, RunTrigger, TriggerError};
+use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
+use lighthouse_api::{
+    AgentChangeError, AgentInfo, AgentTool, ApiState, AskAnswer, Assistant, Catalog, ConnectorInfo,
+    RunTrigger, SkillInfo, TriggerError,
+};
 use lighthouse_audit::{AuditError, AuditLog, RunEnd, RunStatus};
 use lighthouse_auth::Auth;
 use lighthouse_brain::{Brain, BrainToolFactory, Embedder, MediaError, MediaReader};
-use lighthouse_config::{Config, OwnerConfig};
-use lighthouse_core::agent::AgentDefinition;
+use lighthouse_config::{Config, ConnectorAuth, ConnectorTransport, OwnerConfig};
+use lighthouse_core::agent::{AgentDefinition, Delivery, ToolLevel, Trigger, parse_cron};
 use lighthouse_core::{RunId, TenantId};
 use lighthouse_mcp::{McpConnector, OAuthFlows, ToolHostFactory, ToolPolicy};
 use lighthouse_notify::ChannelNotifier;
 use lighthouse_router::media::OpenAiMedia;
-use lighthouse_runtime::{Runtime, VaultRouterSource, load_agents};
-use lighthouse_scheduler::{AgentRunner, Scheduler};
+use lighthouse_runtime::{AgentRegistry, LoadedAgent, RegistryError, Runtime, VaultRouterSource};
+use lighthouse_scheduler::{AgentRunner, ScheduleHandle, Scheduler};
 use lighthouse_skills::SkillLibrary;
 use lighthouse_store::Store;
 use lighthouse_vault::{MasterKey, Vault};
 use secrecy::ExposeSecret;
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,7 +55,7 @@ fn owner_context(owner: &OwnerConfig) -> String {
 /// Starts runs of the loaded agents in the background.
 pub struct AgentPool {
     runtime: Arc<Runtime>,
-    agents: HashMap<String, Arc<AgentDefinition>>,
+    agents: Arc<AgentRegistry>,
 }
 
 impl AgentPool {
@@ -75,7 +79,11 @@ impl AgentPool {
             return Ok(());
         };
         let id = RunId::from_uuid(run);
-        let Some(agent) = self.agents.get(&checkpoint.agent_id).cloned() else {
+        let Some(agent) = self
+            .agents
+            .get(&checkpoint.agent_id)
+            .map(|known| known.agent)
+        else {
             let reason = format!("the agent `{}` no longer exists", checkpoint.agent_id);
             let end = RunEnd {
                 status: RunStatus::Failed,
@@ -122,12 +130,12 @@ impl AgentPool {
 #[async_trait]
 impl RunTrigger for AgentPool {
     async fn trigger(&self, agent_id: &str) -> Result<Uuid, TriggerError> {
-        let agent = self
+        let known = self
             .agents
             .get(agent_id)
             .ok_or_else(|| TriggerError::UnknownAgent(agent_id.to_owned()))?;
         let run = self
-            .spawn(agent.clone(), "manual")
+            .spawn(known.agent, "manual")
             .await
             .map_err(|error| TriggerError::Failed(error.to_string()))?;
         Ok(run.as_uuid())
@@ -143,11 +151,199 @@ impl RunTrigger for AgentPool {
 #[async_trait]
 impl AgentRunner for AgentPool {
     async fn start(&self, agent_id: &str, trigger: &str) {
-        if let Some(agent) = self.agents.get(agent_id)
-            && let Err(error) = self.spawn(agent.clone(), trigger).await
+        if let Some(known) = self.agents.get(agent_id)
+            && let Err(error) = self.spawn(known.agent, trigger).await
         {
             tracing::error!(agent = %agent_id, %error, "cannot start run");
         }
+    }
+}
+
+/// Answers what the apps ask about agents and connections.
+struct ServerCatalog {
+    config: Arc<Config>,
+    vault: Vault,
+    runtime: Arc<Runtime>,
+    agents: Arc<AgentRegistry>,
+    schedules: ScheduleHandle,
+    zone: Tz,
+}
+
+fn level_name(level: ToolLevel) -> &'static str {
+    match level {
+        ToolLevel::Read => "read",
+        ToolLevel::Draft => "draft",
+        ToolLevel::Write => "write",
+    }
+}
+
+fn delivery_name(delivery: &Delivery) -> String {
+    match delivery {
+        Delivery::Owner => "owner".to_owned(),
+        Delivery::Mail(address) => address.clone(),
+        Delivery::Slack(alias) => format!("slack:{alias}"),
+    }
+}
+
+impl ServerCatalog {
+    fn next_run(&self, expression: &str) -> Option<DateTime<Utc>> {
+        let now = Utc::now().with_timezone(&self.zone);
+        let next = parse_cron(expression)
+            .ok()?
+            .find_next_occurrence(&now, false)
+            .ok()?;
+        Some(next.with_timezone(&Utc))
+    }
+
+    fn info(&self, known: &LoadedAgent) -> AgentInfo {
+        let agent = &known.agent;
+        let schedule = match &agent.trigger {
+            Trigger::Cron(expression) => Some(expression.clone()),
+            Trigger::Manual => None,
+        };
+        AgentInfo {
+            id: agent.id.clone(),
+            name: agent.name.clone(),
+            next_run: schedule.as_deref().and_then(|cron| self.next_run(cron)),
+            schedule,
+            tools: agent
+                .tools
+                .iter()
+                .map(|grant| AgentTool {
+                    name: grant.name.clone(),
+                    level: level_name(grant.level).to_owned(),
+                })
+                .collect(),
+            skills: agent.skills.clone(),
+            deliver: agent.deliver.iter().map(delivery_name).collect(),
+            blocked: self
+                .runtime
+                .policy
+                .blocked(agent)
+                .into_iter()
+                .map(|tool| format!("{}: {}", tool.tool, tool.reason))
+                .collect(),
+            editable: known.editable,
+            source: known.source.clone(),
+        }
+    }
+
+    fn refresh_schedules(&self) -> Result<(), AgentChangeError> {
+        let agents: Vec<AgentDefinition> = self
+            .agents
+            .list()
+            .iter()
+            .map(|known| (*known.agent).clone())
+            .collect();
+        self.schedules
+            .update(&agents)
+            .map_err(|error| AgentChangeError::Failed(error.to_string()))
+    }
+
+    fn known_tools(&self) -> Vec<String> {
+        let mut tools = vec![
+            "brain.search".to_owned(),
+            "brain.get".to_owned(),
+            "brain.remember: draft".to_owned(),
+            "brain.link: draft".to_owned(),
+        ];
+        for (name, connector) in &self.config.connectors {
+            tools.extend(
+                connector
+                    .read_tools
+                    .iter()
+                    .map(|tool| format!("{name}.{tool}")),
+            );
+            tools.extend(
+                connector
+                    .draft_tools
+                    .iter()
+                    .map(|tool| format!("{name}.{tool}: draft")),
+            );
+        }
+        tools
+    }
+}
+
+fn registry_error(error: RegistryError) -> AgentChangeError {
+    match error {
+        RegistryError::Io(_) => AgentChangeError::Failed(error.to_string()),
+        other => AgentChangeError::Rejected(other.to_string()),
+    }
+}
+
+#[async_trait]
+impl Catalog for ServerCatalog {
+    fn agents(&self) -> Vec<AgentInfo> {
+        self.agents
+            .list()
+            .iter()
+            .map(|known| self.info(known))
+            .collect()
+    }
+
+    fn agent(&self, id: &str) -> Option<AgentInfo> {
+        self.agents.get(id).map(|known| self.info(&known))
+    }
+
+    async fn draft_agent(&self, description: &str) -> Result<String, String> {
+        self.runtime
+            .draft_agent(description, &self.known_tools())
+            .await
+    }
+
+    async fn save_agent(&self, source: &str) -> Result<AgentInfo, AgentChangeError> {
+        let agent = self.agents.save(source).map_err(registry_error)?;
+        self.refresh_schedules()?;
+        self.agents
+            .get(&agent.id)
+            .map(|known| self.info(&known))
+            .ok_or_else(|| AgentChangeError::Failed("the agent did not load".to_owned()))
+    }
+
+    async fn delete_agent(&self, id: &str) -> Result<bool, AgentChangeError> {
+        let deleted = self.agents.delete(id).map_err(registry_error)?;
+        self.refresh_schedules()?;
+        Ok(deleted)
+    }
+
+    async fn connectors(&self) -> Result<Vec<ConnectorInfo>, String> {
+        let stored = self.vault.list().await.map_err(|error| error.to_string())?;
+        Ok(self
+            .config
+            .connectors
+            .iter()
+            .map(|(name, connector)| {
+                let has = |key: String| stored.contains(&key);
+                let (auth, connected) = match &connector.transport {
+                    ConnectorTransport::Stdio { .. } => ("process", true),
+                    ConnectorTransport::Http { auth, .. } => match auth {
+                        ConnectorAuth::None => ("none", true),
+                        ConnectorAuth::Bearer => ("bearer", has(format!("mcp:{name}"))),
+                        ConnectorAuth::Oauth => ("oauth", has(format!("oauth:{name}"))),
+                    },
+                };
+                ConnectorInfo {
+                    name: name.clone(),
+                    auth: auth.to_owned(),
+                    connected,
+                    read_tools: connector.read_tools.clone(),
+                    draft_tools: connector.draft_tools.clone(),
+                }
+            })
+            .collect())
+    }
+
+    fn skills(&self) -> Vec<SkillInfo> {
+        let library = &self.runtime.skills;
+        library
+            .names()
+            .filter_map(|name| library.get(name))
+            .map(|skill| SkillInfo {
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+            })
+            .collect()
     }
 }
 
@@ -312,6 +508,11 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         smtp: config.delivery.smtp.clone(),
         slack_channels: config.delivery.slack_channels.clone(),
     };
+    let zone: Tz = config
+        .server
+        .timezone
+        .parse()
+        .map_err(|_| anyhow::anyhow!("unknown time zone"))?;
     let brain = open_brain(&config, store.clone(), &vault)?;
     let report = brain.sync().await.context("cannot read the Brain")?;
     tracing::info!(?report, "Brain ready");
@@ -332,36 +533,37 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         notifier: Arc::new(ChannelNotifier::from_config(delivery, vault.clone())?),
         owner_context: owner_context(&config.owner),
         owner_email: config.owner.email.clone(),
-        zone: config
-            .server
-            .timezone
-            .parse()
-            .map_err(|_| anyhow::anyhow!("unknown time zone"))?,
+        zone,
     });
-    let mut agents = Vec::new();
-    for file in load_agents(&config.paths.agents)? {
-        match file.agent {
-            Ok(agent) => agents.push(agent),
-            Err(error) => {
-                tracing::error!(path = %file.path.display(), %error, "skipping invalid agent")
-            }
-        }
-    }
-    tracing::info!(count = agents.len(), "agents loaded");
+    let agents = Arc::new(AgentRegistry::load(
+        config.paths.agents.clone(),
+        config.paths.created_agents.clone(),
+    )?);
+    let definitions: Vec<AgentDefinition> = agents
+        .list()
+        .iter()
+        .map(|known| (*known.agent).clone())
+        .collect();
+    tracing::info!(count = definitions.len(), "agents loaded");
     let pool = Arc::new(AgentPool {
         runtime,
-        agents: agents
-            .iter()
-            .map(|agent| (agent.id.clone(), Arc::new(agent.clone())))
-            .collect(),
+        agents: agents.clone(),
     });
     let scheduler = Scheduler::new(
         store,
         tenant,
         &config.server.timezone,
-        &agents,
+        &definitions,
         pool.clone(),
     )?;
+    let catalog = Arc::new(ServerCatalog {
+        config: config.clone(),
+        vault: vault.clone(),
+        runtime: pool.runtime.clone(),
+        agents,
+        schedules: scheduler.handle(),
+        zone,
+    });
     let oauth = OAuthFlows::new(
         config.connectors.clone(),
         vault.clone(),
@@ -379,6 +581,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         vault,
         brain: brain.clone(),
         assistant,
+        catalog,
         admin_token: config.server.admin_token.clone(),
     });
     Ok(App {

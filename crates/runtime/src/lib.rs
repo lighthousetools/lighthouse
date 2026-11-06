@@ -1,8 +1,10 @@
 //! Agent loop with limits for steps, cost and time.
 
 mod agents;
+mod registry;
 
 pub use agents::{AgentFile, load_agents};
+pub use registry::{AgentRegistry, LoadedAgent, RegistryError};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -29,6 +31,10 @@ use uuid::Uuid;
 const TASK: &str = "text";
 const LOAD_SKILL: &str = "load_skill";
 const ASK_AGENT: &str = "brain-ask";
+const DRAFT_AGENT: &str = "agent-draft";
+/// Tries to get a valid agent file from the model.
+const DRAFT_ATTEMPTS: usize = 3;
+const AGENT_FORMAT: &str = include_str!("agent_format.md");
 const APPROVAL_NOTE: &str = "would have needed an approval";
 
 /// Provides the current router.
@@ -138,6 +144,25 @@ impl Stop {
     fn failed(error: impl std::fmt::Display) -> Self {
         Self::Failed(error.to_string())
     }
+}
+
+fn stop_reason(stop: Stop) -> String {
+    match stop {
+        Stop::Limit(reason) | Stop::Failed(reason) => reason,
+        Stop::Paused(..) => "the call paused".to_owned(),
+    }
+}
+
+/// Removes a code fence around a file, which models tend to add.
+fn clean_agent_file(text: &str) -> String {
+    let text = text.trim();
+    let inner = text
+        .strip_prefix("```markdown")
+        .or_else(|| text.strip_prefix("```md"))
+        .or_else(|| text.strip_prefix("```"))
+        .and_then(|rest| rest.strip_suffix("```"))
+        .unwrap_or(text);
+    format!("{}\n", inner.trim())
 }
 
 /// Marks external content as untrusted, so that the model never treats it as instructions.
@@ -510,6 +535,92 @@ impl Runtime {
         }
     }
 
+    /// Writes an agent file from a description. Costs land in the log as a run.
+    ///
+    /// The model sees parse errors and can correct itself. The file is not saved.
+    pub async fn draft_agent(&self, description: &str, tools: &[String]) -> Result<String, String> {
+        let run = RunId::new();
+        self.audit
+            .start_run(run, DRAFT_AGENT, "draft")
+            .await
+            .map_err(|error| error.to_string())?;
+        let result = self.write_agent(run, description, tools).await;
+        let (status, reason, report) = match &result {
+            Ok(file) => (RunStatus::Succeeded, None, Some(file.as_str())),
+            Err(reason) => (RunStatus::Failed, Some(reason.as_str()), None),
+        };
+        let end = RunEnd {
+            status,
+            reason,
+            report,
+        };
+        self.audit
+            .finish_run(run, end)
+            .await
+            .map_err(|error| error.to_string())?;
+        result
+    }
+
+    async fn write_agent(
+        &self,
+        run: RunId,
+        description: &str,
+        tools: &[String],
+    ) -> Result<String, String> {
+        let router = self
+            .router
+            .router()
+            .await
+            .map_err(|error| error.to_string())?;
+        let skills: Vec<_> = self
+            .skills
+            .names()
+            .map(|name| format!("- {name}"))
+            .collect();
+        let system = format!(
+            "{AGENT_FORMAT}\n\nAvailable tools:\n{}\n\nAvailable skills:\n{}\n\n{}",
+            tools.join("\n"),
+            skills.join("\n"),
+            self.owner_context
+        );
+        let mut messages = vec![Message::user(description)];
+        let mut problem = String::new();
+        for _ in 0..DRAFT_ATTEMPTS {
+            let request = ChatRequest {
+                system: system.clone(),
+                messages: messages.clone(),
+                ..ChatRequest::default()
+            };
+            let completion = self
+                .call_model(run, &router, &RouteOverride::default(), &request)
+                .await
+                .map_err(stop_reason)?;
+            let file = clean_agent_file(&completion.response.text_content());
+            problem = match AgentDefinition::parse(&file) {
+                Ok(agent) => {
+                    let blocked = self.policy.blocked(&agent);
+                    if blocked.is_empty() {
+                        return Ok(file);
+                    }
+                    let names: Vec<_> = blocked.iter().map(|tool| tool.tool.as_str()).collect();
+                    format!(
+                        "declare these tools at their real level: {}",
+                        names.join(", ")
+                    )
+                }
+                Err(error) => error.to_string(),
+            };
+            messages.push(Message {
+                role: Role::Assistant,
+                content: vec![Block::Text { text: file }],
+            });
+            messages.push(Message::user(format!(
+                "That file is invalid: {problem}. Answer with the corrected file only."
+            )));
+        }
+        Err(format!("the model wrote no valid agent: {problem}"))
+    }
+
     /// Answers a question from the given context. Costs land in the log as a run.
     pub async fn ask(&self, question: &str, context: &str) -> Result<(RunId, String), String> {
         let run = RunId::new();
@@ -535,10 +646,6 @@ impl Runtime {
     }
 
     async fn answer(&self, run: RunId, question: &str, context: &str) -> Result<String, String> {
-        let failed = |stop: Stop| match stop {
-            Stop::Limit(reason) | Stop::Failed(reason) => reason,
-            Stop::Paused(..) => "the question paused".to_owned(),
-        };
         let router = self
             .router
             .router()
@@ -558,7 +665,7 @@ impl Runtime {
         let completion = self
             .call_model(run, &router, &RouteOverride::default(), &request)
             .await
-            .map_err(failed)?;
+            .map_err(stop_reason)?;
         Ok(completion.response.text_content())
     }
 

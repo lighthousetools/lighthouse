@@ -12,7 +12,7 @@ use lighthouse_core::TenantId;
 use lighthouse_core::agent::{AgentDefinition, Trigger, parse_cron};
 use lighthouse_store::Store;
 use lighthouse_store::sqlx;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 const CATCH_UP_LIMIT: Duration = Duration::hours(1);
 const TICK: std::time::Duration = std::time::Duration::from_secs(15);
@@ -66,8 +66,34 @@ pub struct Scheduler {
     store: Store,
     tenant: TenantId,
     zone: Tz,
-    agents: Vec<(String, Cron)>,
+    agents: Schedules,
     runner: Arc<dyn AgentRunner>,
+}
+
+type Schedules = Arc<RwLock<Vec<(String, Cron)>>>;
+
+fn schedules_of(agents: &[AgentDefinition]) -> Result<Vec<(String, Cron)>, SchedulerError> {
+    let mut schedules = Vec::new();
+    for agent in agents {
+        if let Trigger::Cron(expression) = &agent.trigger {
+            let cron = parse_cron(expression)
+                .map_err(|error| SchedulerError::Schedule(error.to_string()))?;
+            schedules.push((agent.id.clone(), cron));
+        }
+    }
+    Ok(schedules)
+}
+
+/// Changes the schedules of a running scheduler.
+#[derive(Clone, Debug)]
+pub struct ScheduleHandle(Schedules);
+
+impl ScheduleHandle {
+    /// Replaces all schedules.
+    pub fn update(&self, agents: &[AgentDefinition]) -> Result<(), SchedulerError> {
+        *self.0.write().expect("schedules lock") = schedules_of(agents)?;
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for Scheduler {
@@ -90,21 +116,18 @@ impl Scheduler {
         let zone = zone
             .parse()
             .map_err(|_| SchedulerError::Schedule(format!("unknown time zone `{zone}`")))?;
-        let mut schedules = Vec::new();
-        for agent in agents {
-            if let Trigger::Cron(expression) = &agent.trigger {
-                let cron = parse_cron(expression)
-                    .map_err(|error| SchedulerError::Schedule(error.to_string()))?;
-                schedules.push((agent.id.clone(), cron));
-            }
-        }
         Ok(Self {
             store,
             tenant,
             zone,
-            agents: schedules,
+            agents: Arc::new(RwLock::new(schedules_of(agents)?)),
             runner,
         })
+    }
+
+    /// Returns a handle to change the schedules while the scheduler runs.
+    pub fn handle(&self) -> ScheduleHandle {
+        ScheduleHandle(self.agents.clone())
     }
 
     async fn last_fire(&self, agent: &str) -> Result<Option<DateTime<Utc>>, SchedulerError> {
@@ -133,7 +156,8 @@ impl Scheduler {
 
     /// Checks all agents once.
     pub async fn tick(&self, now: DateTime<Utc>) -> Result<(), SchedulerError> {
-        for (agent, cron) in &self.agents {
+        let schedules = self.agents.read().expect("schedules lock").clone();
+        for (agent, cron) in &schedules {
             let Some(last_fire) = self.last_fire(agent).await? else {
                 self.set_last_fire(agent, now).await?;
                 continue;
@@ -279,7 +303,7 @@ mod tests {
             Arc::new(Recorder::default()),
         )
         .unwrap();
-        assert!(scheduler.agents.is_empty());
+        assert!(scheduler.agents.read().unwrap().is_empty());
         let error = Scheduler::new(
             store,
             TenantId::SINGLE,

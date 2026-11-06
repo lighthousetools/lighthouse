@@ -48,6 +48,8 @@ automatically. A pending authorization lives in the server's memory, so finish i
 `GET /openapi.json` describes the API. Everything except `/health`, `/openapi.json`, `/auth/status`, `/auth/login` and
 `/oauth/callback` needs a device token or the admin token as a bearer token.
 
+Other endpoints: `/agents`, `/connectors`, `/skills` and `/costs`.
+
 ## Sign-in
 
 Lighthouse has one owner with one password of at least 12 characters. Set it once with the admin token:

@@ -25,6 +25,7 @@ services:
       LIGHTHOUSE_SERVER__ADMIN_TOKEN: ${LIGHTHOUSE_ADMIN_TOKEN:?set LIGHTHOUSE_ADMIN_TOKEN in .env}
       LHT_SERVER: http://lighthouse:8080
       LIGHTHOUSE_BRAIN__PATH: /var/lib/lighthouse/data/brain
+      LIGHTHOUSE_PATHS__CREATED_AGENTS: /var/lib/lighthouse/data/agents
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

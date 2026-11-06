@@ -69,6 +69,7 @@ name = "Alex Example"
 email = "alex@example.com"
 [paths]
 agents = "{agents}"
+created_agents = "{created}"
 skills = "{skills}"
 [providers.mock]
 kind = "mock"
@@ -86,6 +87,7 @@ read_tools = ["list_issues"]
 path = "{brain}"
 "#,
         agents = agents.display(),
+        created = dir.path().join("created").display(),
         brain = dir.path().join("brain").display(),
         skills = dir.path().join("skills").display(),
     );
@@ -230,4 +232,63 @@ async fn a_question_is_answered_from_the_brain() {
         .unwrap();
     assert_eq!(answer["answer"], "mock answer", "{answer}");
     assert_eq!(answer["sources"][0]["title"], "Rule");
+}
+
+#[tokio::test]
+async fn an_agent_created_through_the_api_runs_without_a_restart() {
+    let (base, _dir, _database) = start().await;
+    let client = reqwest::Client::new();
+    let source = "---\nname: Created\nscope: org\ntrigger:\n  cron: \"0 8 * * *\"\n---\nGo.\n";
+    let response = client
+        .post(format!("{base}/agents"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"source": source}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let saved: Value = response.json().await.unwrap();
+    assert_eq!(saved["id"], "created");
+    assert!(saved["next_run"].is_string(), "{saved}");
+    assert_eq!(saved["editable"], true);
+
+    let detail = run_to_end(&base, "created").await;
+    assert_eq!(detail["run"]["status"], "succeeded", "{detail}");
+
+    let agents: Value = client
+        .get(format!("{base}/agents"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let deleter = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["id"] == "deleter")
+        .unwrap();
+    assert_eq!(deleter["blocked"].as_array().unwrap().len(), 1);
+    assert_eq!(deleter["editable"], false);
+
+    let response = client
+        .delete(format!("{base}/agents/deleter"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 422, "managed files stay untouched");
+    let connectors: Value = client
+        .get(format!("{base}/connectors"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(connectors[0]["name"], "demo");
+    assert_eq!(connectors[0]["connected"], true);
 }

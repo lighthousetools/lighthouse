@@ -63,3 +63,10 @@ Use `lht connectors tools <connector>` to see the real tool names of a server.
 
 Cron expressions use the configured time zone. A run missed during a restart is caught up once if it is at most one
 hour old. Older runs are skipped.
+
+## Creating agents in the apps
+
+`POST /agents/draft` turns a description into an agent file with the model, without saving it. The model only sees tool
+names, and a draft that hides a tool's real level is sent back for correction. `POST /agents` validates and stores a file
+in `paths.created_agents`, and it takes effect at once, including its schedule. Files in `paths.agents` stay yours: the
+apps show them but cannot change them.

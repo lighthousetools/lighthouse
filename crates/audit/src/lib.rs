@@ -167,6 +167,21 @@ pub struct RunEnd<'a> {
     pub report: Option<&'a str>,
 }
 
+/// Model costs of one day and provider.
+#[derive(Clone, Debug, Serialize, FromRow, ToSchema)]
+pub struct DailyCost {
+    /// The day, as `YYYY-MM-DD` in UTC.
+    pub day: String,
+    /// Provider name.
+    pub provider: String,
+    /// Costs in EUR.
+    pub cost_eur: f64,
+    /// Input tokens.
+    pub input_tokens: i64,
+    /// Output tokens.
+    pub output_tokens: i64,
+}
+
 /// Writes and reads the audit log of one tenant.
 #[derive(Clone, Debug)]
 pub struct AuditLog {
@@ -247,6 +262,41 @@ impl AuditLog {
             .execute(self.store.pool())
             .await?;
         Ok(())
+    }
+
+    /// Sums the model costs per day and provider, latest day first.
+    pub async fn daily_costs(&self, days: i32) -> Result<Vec<DailyCost>, AuditError> {
+        Ok(sqlx::query_as(
+            "SELECT (created_at AT TIME ZONE 'UTC')::date::text AS day, \
+             COALESCE(substring(detail FROM 'provider=([^ ]+)'), 'unknown') AS provider, \
+             SUM(cost_eur) AS cost_eur, SUM(input_tokens)::bigint AS input_tokens, \
+             SUM(output_tokens)::bigint AS output_tokens \
+             FROM run_steps WHERE tenant_id = $1 AND kind = 'model' \
+             AND created_at > now() - make_interval(days => $2) \
+             GROUP BY 1, 2 ORDER BY 1 DESC, 2",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(days)
+        .fetch_all(self.store.pool())
+        .await?)
+    }
+
+    /// Lists the latest runs of an agent.
+    pub async fn list_agent_runs(
+        &self,
+        agent: &str,
+        limit: i64,
+    ) -> Result<Vec<RunRecord>, AuditError> {
+        let query = format!(
+            "SELECT {RUN_COLUMNS} FROM runs WHERE tenant_id = $1 AND agent_id = $2 \
+             ORDER BY started_at DESC LIMIT $3"
+        );
+        Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant.as_uuid())
+            .bind(agent)
+            .bind(limit)
+            .fetch_all(self.store.pool())
+            .await?)
     }
 
     /// Lists the latest runs.
