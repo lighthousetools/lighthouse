@@ -46,7 +46,7 @@ flowchart LR
 ## A run
 
 1. Cron or an API call registers a run in the audit log.
-2. The runtime checks every tool of the agent. If one is above `read`, the run ends as `rejected`.
+2. The runtime checks every tool of the agent. If one is declared below its real level, the run ends as `rejected`.
 3. The runtime connects to the MCP servers and offers the granted tools to the model.
 4. Model and tools take turns until the model answers without a tool call, or until a limit stops the run.
 5. The report goes to the delivery targets. Tokens, costs and every step stay in the log.
