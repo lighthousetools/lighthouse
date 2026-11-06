@@ -19,6 +19,7 @@ use lighthouse_notify::ChannelNotifier;
 use lighthouse_router::media::OpenAiMedia;
 use lighthouse_runtime::{AgentRegistry, LoadedAgent, RegistryError, Runtime, VaultRouterSource};
 use lighthouse_scheduler::{AgentRunner, ScheduleHandle, Scheduler};
+use lighthouse_sessions::Sessions;
 use lighthouse_skills::SkillLibrary;
 use lighthouse_store::Store;
 use lighthouse_vault::{MasterKey, Vault};
@@ -504,6 +505,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
     let vault = Vault::new(store.clone(), tenant, &master_key(&config)?);
     let audit = AuditLog::new(store.clone(), tenant);
     let auth_store = store.clone();
+    let session_store = store.clone();
     let delivery = lighthouse_config::DeliveryConfig {
         smtp: config.delivery.smtp.clone(),
         slack_channels: config.delivery.slack_channels.clone(),
@@ -582,6 +584,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         brain: brain.clone(),
         assistant,
         catalog,
+        sessions: Sessions::new(session_store, tenant),
         admin_token: config.server.admin_token.clone(),
     });
     Ok(App {

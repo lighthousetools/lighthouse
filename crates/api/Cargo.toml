@@ -18,6 +18,7 @@ lighthouse-audit.workspace = true
 lighthouse-auth.workspace = true
 lighthouse-brain.workspace = true
 lighthouse-mcp.workspace = true
+lighthouse-sessions.workspace = true
 lighthouse-vault.workspace = true
 secrecy.workspace = true
 serde.workspace = true

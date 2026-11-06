@@ -1914,6 +1914,7 @@ dependencies = [
  "lighthouse-config",
  "lighthouse-core",
  "lighthouse-mcp",
+ "lighthouse-sessions",
  "lighthouse-store",
  "lighthouse-vault",
  "secrecy",
@@ -2153,6 +2154,7 @@ dependencies = [
  "lighthouse-router",
  "lighthouse-runtime",
  "lighthouse-scheduler",
+ "lighthouse-sessions",
  "lighthouse-skills",
  "lighthouse-store",
  "lighthouse-vault",
@@ -2164,6 +2166,22 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "lighthouse-sessions"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "lighthouse-core",
+ "lighthouse-store",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.21",
+ "tokio",
+ "utoipa",
  "uuid",
 ]
 

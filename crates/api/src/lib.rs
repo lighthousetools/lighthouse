@@ -8,6 +8,7 @@ mod approvals;
 mod auth;
 mod brain;
 mod catalog;
+mod sessions;
 
 pub use approvals::{BatchDecision, BatchResult, Decision};
 pub use auth::{
@@ -18,6 +19,7 @@ pub use catalog::{
     AgentChangeError, AgentDraftRequest, AgentInfo, AgentSource, AgentTool, Catalog, ConnectorInfo,
     SkillInfo,
 };
+pub use sessions::{NodeChange, PermissionDecision};
 
 use async_trait::async_trait;
 use axum::Json;
@@ -25,13 +27,16 @@ use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware;
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 
 pub use axum::Router;
 use lighthouse_audit::{Approval, AuditLog, DailyCost, RunDetail, RunRecord, StepRecord};
 use lighthouse_auth::{Auth, Device, DeviceKind};
 use lighthouse_brain::{Brain, Entry, EntryPatch, EntrySummary, NewEntry, SearchHit, Source};
 use lighthouse_mcp::{McpError, OAuthFlows};
+use lighthouse_sessions::{
+    NewPermission, Node, NodeReport, NodeState, Permission, Session, SessionReport, Sessions,
+};
 use lighthouse_vault::Vault;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
@@ -91,6 +96,8 @@ pub struct ApiState {
     pub assistant: Arc<dyn Assistant>,
     /// Agents, connectors and skills.
     pub catalog: Arc<dyn Catalog>,
+    /// Desktop agents and their sessions.
+    pub sessions: Sessions,
     /// Admin token. Without one, the password can only be set by the CLI.
     pub admin_token: Option<SecretString>,
 }
@@ -317,6 +324,8 @@ impl utoipa::Modify for SecurityAddon {
         catalog::agents, catalog::agent, catalog::agent_runs, catalog::draft_agent,
         catalog::save_agent, catalog::delete_agent, catalog::connectors, catalog::skills,
         catalog::costs,
+        sessions::report, sessions::request, sessions::await_decision, sessions::nodes,
+        sessions::update_node, sessions::sessions, sessions::permissions, sessions::decide,
     ),
     components(schemas(
         Health, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -325,6 +334,8 @@ impl utoipa::Modify for SecurityAddon {
         Entry, EntryDetail, EntryPatch, EntrySummary, NewEntry, SearchHit, Source,
         AskRequest, AskAnswer,
         AgentInfo, AgentTool, ConnectorInfo, SkillInfo, AgentDraftRequest, AgentSource, DailyCost,
+        Node, NodeChange, NodeReport, NodeState, NewPermission, Permission, PermissionDecision,
+        Session, SessionReport,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -352,6 +363,14 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/agents/{id}/runs", get(catalog::agent_runs))
         .route("/agents/{id}/run", post(run_agent))
+        .route("/node/report", post(sessions::report))
+        .route("/node/permissions", post(sessions::request))
+        .route("/node/permissions/{id}", get(sessions::await_decision))
+        .route("/nodes", get(sessions::nodes))
+        .route("/nodes/{id}", patch(sessions::update_node))
+        .route("/sessions", get(sessions::sessions))
+        .route("/permissions", get(sessions::permissions))
+        .route("/permissions/{id}/decision", post(sessions::decide))
         .route("/connectors", get(catalog::connectors))
         .route("/skills", get(catalog::skills))
         .route("/costs", get(catalog::costs))
@@ -546,7 +565,8 @@ mod tests {
             )),
             auth: Auth::new(store.clone(), TenantId::SINGLE),
             vault,
-            brain: Brain::new(store, TenantId::SINGLE, brain_root()).unwrap(),
+            brain: Brain::new(store.clone(), TenantId::SINGLE, brain_root()).unwrap(),
+            sessions: Sessions::new(store, TenantId::SINGLE),
             assistant: Arc::new(FakeAssistant),
             catalog: Arc::new(FakeCatalog),
             admin_token: token.map(|token| SecretString::from(token.to_owned())),
@@ -1057,5 +1077,109 @@ mod tests {
         assert!(body.contains("linear"));
         let (_, body) = call(&app, "GET", "/skills", Some(TOKEN)).await;
         assert!(body.contains("Briefs"));
+    }
+
+    #[tokio::test]
+    async fn a_node_reports_asks_and_receives_the_decision() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let owner = signed_in(&app).await;
+        let (_, body) = send(
+            &app,
+            "POST",
+            "/auth/tokens",
+            Some(&owner),
+            Some(json!({"name": "mac", "kind": "node"})),
+        )
+        .await;
+        let node: TokenIssued = serde_json::from_str(&body).unwrap();
+        let report = json!({"name": "mac", "sessions": [{
+            "id": "s1", "project": "billing", "branch": null, "status": "running",
+            "summary": null,
+        }]});
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/node/report",
+            Some(&node.token),
+            Some(report),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"paused\":false"));
+        let (_, body) = call(&app, "GET", "/sessions", Some(&owner)).await;
+        assert!(body.contains("billing"));
+
+        let ask = json!({"session_id": "s1", "project": "billing", "tool": "Bash",
+                         "input": {"command": "ls"}});
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/node/permissions",
+            Some(&node.token),
+            Some(ask),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let asked: Value = serde_json::from_str(&body).unwrap();
+        let id = asked["id"].as_str().unwrap();
+
+        let waiting = format!("/node/permissions/{id}?wait=0");
+        let (_, body) = call(&app, "GET", &waiting, Some(&node.token)).await;
+        assert!(body.contains("pending"));
+        let (_, body) = call(&app, "GET", "/permissions?status=pending", Some(&owner)).await;
+        assert!(body.contains("Bash"));
+
+        let uri = format!("/permissions/{id}/decision");
+        let (status, _) = send(
+            &app,
+            "POST",
+            &uri,
+            Some(&owner),
+            Some(json!({"allow": true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = send(
+            &app,
+            "POST",
+            &uri,
+            Some(&owner),
+            Some(json!({"allow": false})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (_, body) = call(&app, "GET", &waiting, Some(&node.token)).await;
+        assert!(body.contains("allowed"));
+
+        let (_, body) = call(&app, "GET", "/nodes", Some(&owner)).await;
+        let nodes: Value = serde_json::from_str(&body).unwrap();
+        let uri = format!("/nodes/{}", nodes[0]["id"].as_str().unwrap());
+        let (status, _) = send(
+            &app,
+            "PATCH",
+            &uri,
+            Some(&owner),
+            Some(json!({"paused": true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn node_endpoints_need_a_device_token() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let report = json!({"name": "mac", "sessions": []});
+        let (status, _) = send(&app, "POST", "/node/report", Some(TOKEN), Some(report)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let uri = format!("/nodes/{}", Uuid::now_v7());
+        let (status, _) = send(
+            &app,
+            "PATCH",
+            &uri,
+            Some(TOKEN),
+            Some(json!({"paused": true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }
