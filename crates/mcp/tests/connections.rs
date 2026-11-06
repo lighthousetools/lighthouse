@@ -261,6 +261,14 @@ async fn http_server_without_auth() {
         .await
         .unwrap();
     assert_works(&session).await;
+    let names: Vec<_> = session
+        .all_tools("demo")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+    assert_eq!(names, ["list_issues", "echo", "delete_issue"]);
 }
 
 #[tokio::test]

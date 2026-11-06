@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use lighthouse_audit::{AuditLog, RunDetail};
 use lighthouse_config::Config;
 use lighthouse_core::TenantId;
-use lighthouse_mcp::ToolPolicy;
+use lighthouse_mcp::{McpConnector, ToolPolicy};
 use lighthouse_runtime::load_agents;
 use lighthouse_store::Store;
 use lighthouse_vault::{MasterKey, Vault};
@@ -51,6 +51,18 @@ enum Command {
     Runs(RunsCommand),
     /// Starts the OAuth flow of a connector.
     Connect {
+        /// Connector name.
+        connector: String,
+    },
+    /// Inspects connectors.
+    #[command(subcommand)]
+    Connectors(ConnectorsCommand),
+}
+
+#[derive(Subcommand)]
+enum ConnectorsCommand {
+    /// Lists the tools a connector offers and how they are classified.
+    Tools {
         /// Connector name.
         connector: String,
     },
@@ -203,6 +215,22 @@ fn list_agents(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn connector_tools(config: &Config, connector: &str) -> anyhow::Result<()> {
+    let policy = ToolPolicy::new(&config.connectors);
+    let mcp = McpConnector::new(config.connectors.clone(), vault(config).await?);
+    let session = mcp.session(&[format!("{connector}.any")]).await?;
+    for tool in session.all_tools(connector).await? {
+        let level = policy.level(&format!("{connector}.{}", tool.name));
+        let summary = tool.description.lines().next().unwrap_or_default();
+        println!(
+            "{:<5}  {:<40}  {summary}",
+            format!("{level:?}").to_lowercase(),
+            tool.name
+        );
+    }
+    Ok(())
+}
+
 fn server_url(config: &Config, flag: Option<String>) -> String {
     flag.unwrap_or_else(|| {
         format!(
@@ -307,6 +335,9 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Runs(command) => runs(&config, command).await,
+        Command::Connectors(ConnectorsCommand::Tools { connector }) => {
+            connector_tools(&config, &connector).await
+        }
         Command::Connect { connector } => {
             let body = post(
                 &config,

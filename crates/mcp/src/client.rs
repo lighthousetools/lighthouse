@@ -155,6 +155,26 @@ pub struct McpSession {
 }
 
 impl McpSession {
+    /// Lists every tool a connector offers, with unqualified names.
+    pub async fn all_tools(&self, connector: &str) -> Result<Vec<ToolSpec>, McpError> {
+        let tools = self
+            .client(connector)?
+            .list_all_tools()
+            .await
+            .map_err(|error| McpError::Call {
+                connector: connector.to_owned(),
+                detail: error.to_string(),
+            })?;
+        Ok(tools
+            .into_iter()
+            .map(|tool| ToolSpec {
+                name: tool.name.to_string(),
+                description: tool.description.as_deref().unwrap_or_default().to_owned(),
+                input_schema: Value::Object((*tool.input_schema).clone()),
+            })
+            .collect())
+    }
+
     fn client(&self, connector: &str) -> Result<&Client, McpError> {
         self.clients
             .get(connector)
