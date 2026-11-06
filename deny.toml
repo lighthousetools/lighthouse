@@ -7,3 +7,10 @@ multiple-versions = "warn"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+[advisories]
+ignore = [
+    # Unmaintained, with no known vulnerability. Pulled in by pdf-extract, which
+    # only reads files the signed-in owner uploads.
+    { id = "RUSTSEC-2026-0192", reason = "unmaintained only, reached through owner uploads" },
+]

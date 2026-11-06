@@ -2,6 +2,11 @@ use lighthouse_config::ConnectorConfig;
 use lighthouse_core::agent::{AgentDefinition, ToolLevel};
 use std::collections::{BTreeMap, BTreeSet};
 
+const BRAIN: &str = "brain";
+const BRAIN_READ_TOOLS: [&str; 2] = ["search", "get"];
+/// Changes to the Brain are reversible and never leave the instance.
+const BRAIN_DRAFT_TOOLS: [&str; 2] = ["remember", "link"];
+
 /// Classifies tools by the connector allowlists.
 ///
 /// A tool is `read` or `draft` only if its connector lists it. Everything else
@@ -22,13 +27,13 @@ pub struct BlockedTool {
 }
 
 impl ToolPolicy {
-    /// Builds the policy from the connector configuration.
+    /// Builds the policy from the connector configuration and the built-in tools.
     pub fn new(connectors: &BTreeMap<String, ConnectorConfig>) -> Self {
-        let read_tools = connectors
+        let mut read_tools: BTreeMap<String, BTreeSet<String>> = connectors
             .iter()
             .map(|(name, connector)| (name.clone(), connector.read_tools.iter().cloned().collect()))
             .collect();
-        let draft_tools = connectors
+        let mut draft_tools: BTreeMap<String, BTreeSet<String>> = connectors
             .iter()
             .map(|(name, connector)| {
                 (
@@ -37,6 +42,9 @@ impl ToolPolicy {
                 )
             })
             .collect();
+        let builtin = |tools: &[&str]| tools.iter().map(|tool| (*tool).to_owned()).collect();
+        read_tools.insert(BRAIN.to_owned(), builtin(&BRAIN_READ_TOOLS));
+        draft_tools.insert(BRAIN.to_owned(), builtin(&BRAIN_DRAFT_TOOLS));
         Self {
             read_tools,
             draft_tools,
@@ -115,6 +123,14 @@ mod tests {
         assert_eq!(policy.level("linear.delete_issue"), ToolLevel::Write);
         assert_eq!(policy.level("github.list_issues"), ToolLevel::Write);
         assert_eq!(policy.level("nonsense"), ToolLevel::Write);
+    }
+
+    #[test]
+    fn brain_tools_are_built_in() {
+        let policy = policy();
+        assert_eq!(policy.level("brain.search"), ToolLevel::Read);
+        assert_eq!(policy.level("brain.remember"), ToolLevel::Draft);
+        assert_eq!(policy.level("brain.delete"), ToolLevel::Write);
     }
 
     #[test]

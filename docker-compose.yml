@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17
+    image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
       POSTGRES_USER: lighthouse
@@ -24,6 +24,7 @@ services:
       LIGHTHOUSE_DATABASE__URL: postgres://lighthouse:${POSTGRES_PASSWORD}@postgres:5432/lighthouse
       LIGHTHOUSE_SERVER__ADMIN_TOKEN: ${LIGHTHOUSE_ADMIN_TOKEN:?set LIGHTHOUSE_ADMIN_TOKEN in .env}
       LHT_SERVER: http://lighthouse:8080
+      LIGHTHOUSE_BRAIN__PATH: /var/lib/lighthouse/data/brain
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

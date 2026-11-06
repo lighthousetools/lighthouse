@@ -6,15 +6,17 @@
 
 mod approvals;
 mod auth;
+mod brain;
 
 pub use approvals::{BatchDecision, BatchResult, Decision};
 pub use auth::{
     AuthStatus, Caller, CredentialValue, LoginRequest, SetupRequest, TokenIssued, TokenRequest,
 };
+pub use brain::{AskAnswer, AskRequest, EntryDetail};
 
 use async_trait::async_trait;
 use axum::Json;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware;
 use axum::response::{Html, IntoResponse, Response};
@@ -23,6 +25,7 @@ use axum::routing::{delete, get, post, put};
 pub use axum::Router;
 use lighthouse_audit::{Approval, AuditLog, RunDetail, RunRecord, StepRecord};
 use lighthouse_auth::{Auth, Device, DeviceKind};
+use lighthouse_brain::{Brain, Entry, EntryPatch, EntrySummary, NewEntry, SearchHit, Source};
 use lighthouse_mcp::{McpError, OAuthFlows};
 use lighthouse_vault::Vault;
 use secrecy::{ExposeSecret, SecretString};
@@ -34,6 +37,7 @@ use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
 const DEFAULT_LIMIT: i64 = 50;
+const MAX_UPLOAD_BYTES: usize = 100 * 1024 * 1024;
 
 /// Errors when starting a run.
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +60,13 @@ pub trait RunTrigger: Send + Sync {
     async fn resume(&self, run: Uuid) -> Result<(), TriggerError>;
 }
 
+/// Answers questions from the Second Brain.
+#[async_trait]
+pub trait Assistant: Send + Sync {
+    /// Answers a question. The error text is safe to show to the owner.
+    async fn ask(&self, question: &str) -> Result<AskAnswer, String>;
+}
+
 /// Shared state of the API.
 #[derive(Clone)]
 pub struct ApiState {
@@ -69,6 +80,10 @@ pub struct ApiState {
     pub auth: Auth,
     /// Encrypted credentials.
     pub vault: Vault,
+    /// The Second Brain.
+    pub brain: Brain,
+    /// Answers questions.
+    pub assistant: Arc<dyn Assistant>,
     /// Admin token. Without one, the password can only be set by the CLI.
     pub admin_token: Option<SecretString>,
 }
@@ -290,11 +305,15 @@ impl utoipa::Modify for SecurityAddon {
         auth::devices, auth::revoke_device,
         auth::list_credentials, auth::put_credential, auth::delete_credential,
         approvals::list, approvals::decide, approvals::decide_batch,
+        brain::search, brain::ask, brain::list, brain::create, brain::get, brain::update,
+        brain::delete, brain::upload, brain::download,
     ),
     components(schemas(
         Health, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
         AuthStatus, SetupRequest, LoginRequest, TokenRequest, TokenIssued, CredentialValue,
         Device, DeviceKind, Approval, Decision, BatchDecision, BatchResult,
+        Entry, EntryDetail, EntryPatch, EntrySummary, NewEntry, SearchHit, Source,
+        AskRequest, AskAnswer,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -323,6 +342,18 @@ pub fn router(state: ApiState) -> Router {
         .route("/approvals", get(approvals::list))
         .route("/approvals/decisions", post(approvals::decide_batch))
         .route("/approvals/{id}/decision", post(approvals::decide))
+        .route("/brain/search", get(brain::search))
+        .route("/brain/ask", post(brain::ask))
+        .route("/brain/entries", get(brain::list).post(brain::create))
+        .route(
+            "/brain/entries/{id}",
+            get(brain::get).patch(brain::update).delete(brain::delete),
+        )
+        .route(
+            "/brain/files",
+            post(brain::upload).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
+        )
+        .route("/brain/files/{id}", get(brain::download))
         .route("/credentials", get(auth::list_credentials))
         .route(
             "/credentials/{name}",
@@ -363,6 +394,22 @@ mod tests {
 
     const TOKEN: &str = "test-admin-token";
 
+    struct FakeAssistant;
+
+    #[async_trait]
+    impl Assistant for FakeAssistant {
+        async fn ask(&self, question: &str) -> Result<AskAnswer, String> {
+            if question == "fail" {
+                return Err("no model".to_owned());
+            }
+            Ok(AskAnswer {
+                run_id: Uuid::nil(),
+                answer: format!("You asked {question}"),
+                sources: Vec::new(),
+            })
+        }
+    }
+
     struct FakeTrigger(Uuid, Arc<Mutex<Vec<Uuid>>>);
 
     #[async_trait]
@@ -379,6 +426,10 @@ mod tests {
             self.1.lock().unwrap().push(run);
             Ok(())
         }
+    }
+
+    fn brain_root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("lighthouse-api-test-{}", Uuid::now_v7()))
     }
 
     async fn app(token: Option<&str>) -> (Router, AuditLog) {
@@ -404,8 +455,10 @@ mod tests {
                 vault.clone(),
                 "https://lighthouse.test",
             )),
-            auth: Auth::new(store, TenantId::SINGLE),
+            auth: Auth::new(store.clone(), TenantId::SINGLE),
             vault,
+            brain: Brain::new(store, TenantId::SINGLE, brain_root()).unwrap(),
+            assistant: Arc::new(FakeAssistant),
             admin_token: token.map(|token| SecretString::from(token.to_owned())),
         };
         (router(state), audit, resumed)
@@ -748,5 +801,94 @@ mod tests {
             call(&app, "GET", "/approvals", None).await.0,
             StatusCode::UNAUTHORIZED
         );
+    }
+
+    #[tokio::test]
+    async fn the_brain_stores_finds_changes_and_deletes() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let new = json!({"type": "note", "title": "Rule", "body": "Due in January"});
+        let (status, body) = send(&app, "POST", "/brain/entries", Some(TOKEN), Some(new)).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let entry: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(entry["body"], "Due in January");
+        assert_eq!(entry["sources"][0]["kind"], "app");
+        let uri = format!("/brain/entries/{}", entry["id"].as_str().unwrap());
+
+        let (_, body) = call(&app, "GET", "/brain/search?q=january", Some(TOKEN)).await;
+        assert!(body.contains("Rule"), "{body}");
+        let (_, body) = call(&app, "GET", "/brain/entries?type=note", Some(TOKEN)).await;
+        assert!(body.contains("Rule"), "{body}");
+        let (_, body) = call(&app, "GET", &uri, Some(TOKEN)).await;
+        assert!(body.contains("Due in January"));
+
+        let patch = json!({"status": "archived"});
+        let (status, body) = send(&app, "PATCH", &uri, Some(TOKEN), Some(patch)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("archived"));
+        assert_eq!(
+            call(&app, "DELETE", &uri, Some(TOKEN)).await.0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            call(&app, "GET", &uri, Some(TOKEN)).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_entries_are_refused() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let new = json!({"type": "secret", "title": "x", "body": "y"});
+        let (status, _) = send(&app, "POST", "/brain/entries", Some(TOKEN), Some(new)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn uploads_return_their_original() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/brain/files?name=memo.txt")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(Body::from("plain content"))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let entry: Value = serde_json::from_slice(&body).unwrap();
+        let uri = format!("/brain/files/{}", entry["id"].as_str().unwrap());
+        let (status, body) = call(&app, "GET", &uri, Some(TOKEN)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "plain content");
+        let unknown = format!("/brain/files/{}", Uuid::now_v7());
+        assert_eq!(
+            call(&app, "GET", &unknown, Some(TOKEN)).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn questions_reach_the_assistant() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let ask = |question: &str| json!({"question": question});
+        let (status, body) = send(&app, "POST", "/brain/ask", Some(TOKEN), Some(ask("why"))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("You asked why"));
+        let (status, _) = send(&app, "POST", "/brain/ask", Some(TOKEN), Some(ask(" "))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, _) = send(&app, "POST", "/brain/ask", Some(TOKEN), Some(ask("fail"))).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn the_brain_needs_a_sign_in() {
+        let (app, _) = app(Some(TOKEN)).await;
+        for uri in ["/brain/search?q=x", "/brain/entries"] {
+            assert_eq!(
+                call(&app, "GET", uri, None).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
     }
 }

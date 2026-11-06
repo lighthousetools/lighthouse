@@ -10,6 +10,7 @@ pub use oauth::OAuthFlows;
 pub use policy::{BlockedTool, ToolPolicy};
 
 use async_trait::async_trait;
+use lighthouse_core::RunId;
 use lighthouse_router::ToolSpec;
 use serde_json::Value;
 
@@ -76,8 +77,8 @@ pub trait ToolHost: Send + Sync {
 /// Opens tool hosts for runs.
 #[async_trait]
 pub trait ToolHostFactory: Send + Sync {
-    /// Connects to everything the given qualified tools need.
-    async fn open(&self, tools: &[String]) -> Result<Box<dyn ToolHost>, McpError>;
+    /// Connects to everything the given qualified tools need for a run.
+    async fn open(&self, tools: &[String], run: RunId) -> Result<Box<dyn ToolHost>, McpError>;
 }
 
 pub(crate) fn split_tool(qualified: &str) -> Result<(&str, &str), McpError> {

@@ -48,6 +48,9 @@ pub struct Config {
     /// Delivery channels.
     #[serde(default)]
     pub delivery: DeliveryConfig,
+    /// Second Brain.
+    #[serde(default)]
+    pub brain: BrainConfig,
 }
 
 /// HTTP server settings.
@@ -239,6 +242,45 @@ pub struct ConnectorConfig {
     /// Allowlist of reversible tools without external effect, such as saving a draft.
     #[serde(default)]
     pub draft_tools: Vec<String>,
+}
+
+/// Second Brain settings.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrainConfig {
+    /// Directory with the Markdown files.
+    #[serde(default = "default_brain_dir")]
+    pub path: PathBuf,
+    /// Provider for embeddings, images and audio. It needs an OpenAI-compatible
+    /// API and uses the key of that provider. Without it, search is lexical and
+    /// images and audio are refused.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Embedding model.
+    #[serde(default)]
+    pub embedding_model: Option<String>,
+    /// Vision model for images.
+    #[serde(default)]
+    pub vision_model: Option<String>,
+    /// Transcription model for audio.
+    #[serde(default)]
+    pub transcription_model: Option<String>,
+}
+
+fn default_brain_dir() -> PathBuf {
+    PathBuf::from("brain")
+}
+
+impl Default for BrainConfig {
+    fn default() -> Self {
+        Self {
+            path: default_brain_dir(),
+            provider: None,
+            embedding_model: None,
+            vision_model: None,
+            transcription_model: None,
+        }
+    }
 }
 
 /// Delivery channels.

@@ -1,0 +1,34 @@
+[package]
+name = "lighthouse-brain"
+description = "Second Brain: Markdown files with hybrid search."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+lighthouse-core.workspace = true
+lighthouse-mcp.workspace = true
+lighthouse-router.workspace = true
+lighthouse-store.workspace = true
+pdf-extract.workspace = true
+serde.workspace = true
+serde-saphyr.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tantivy.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+lighthouse-store = { workspace = true, features = ["testing"] }
+tempfile.workspace = true

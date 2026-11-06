@@ -1,0 +1,308 @@
+//! The Second Brain.
+
+use crate::{ApiError, ApiState, internal};
+use axum::Json;
+use axum::body::Bytes;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use lighthouse_brain::{BrainError, Entry, EntryPatch, EntrySummary, NewEntry, SearchHit, Source};
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+use uuid::Uuid;
+
+const DEFAULT_LIMIT: i64 = 50;
+const DEFAULT_HITS: usize = 10;
+
+fn brain_error(error: BrainError) -> ApiError {
+    match error {
+        BrainError::Invalid(_) | BrainError::Media(_) => {
+            ApiError(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
+        }
+        other => internal(other),
+    }
+}
+
+fn not_found() -> ApiError {
+    ApiError(StatusCode::NOT_FOUND, "unknown entry".to_owned())
+}
+
+fn app_source() -> Source {
+    Source {
+        kind: "app".to_owned(),
+        reference: "manual".to_owned(),
+    }
+}
+
+/// Parameters of a search.
+#[derive(Deserialize)]
+pub(crate) struct SearchQuery {
+    q: String,
+    limit: Option<usize>,
+}
+
+/// Parameters of the entry list.
+#[derive(Deserialize)]
+pub(crate) struct EntriesQuery {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    limit: Option<i64>,
+}
+
+/// Parameters of an upload.
+#[derive(Deserialize)]
+pub(crate) struct UploadQuery {
+    name: String,
+}
+
+/// A question to the Brain.
+#[derive(Deserialize, ToSchema)]
+pub struct AskRequest {
+    /// The question.
+    pub question: String,
+}
+
+/// An answer from the Brain.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct AskAnswer {
+    /// Run that holds the costs of this answer.
+    pub run_id: Uuid,
+    /// The answer in Markdown.
+    pub answer: String,
+    /// The entries it is based on.
+    pub sources: Vec<EntrySummary>,
+}
+
+/// Searches the Brain.
+#[utoipa::path(
+    get,
+    path = "/brain/search",
+    params(
+        ("q" = String, Query, description = "Search terms"),
+        ("limit" = Option<usize>, Query, description = "Maximum number of hits")
+    ),
+    responses((status = 200, body = Vec<SearchHit>)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn search(
+    State(state): State<ApiState>,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<Vec<SearchHit>>, ApiError> {
+    let limit = query.limit.unwrap_or(DEFAULT_HITS).clamp(1, 50);
+    let hits = state
+        .brain
+        .search(&query.q, limit)
+        .await
+        .map_err(brain_error)?;
+    Ok(Json(hits))
+}
+
+/// Asks a question and answers from the stored entries.
+#[utoipa::path(
+    post,
+    path = "/brain/ask",
+    request_body = AskRequest,
+    responses(
+        (status = 200, body = AskAnswer),
+        (status = 502, description = "The model could not answer")
+    ),
+    security(("bearer" = []))
+)]
+pub(crate) async fn ask(
+    State(state): State<ApiState>,
+    Json(request): Json<AskRequest>,
+) -> Result<Json<AskAnswer>, ApiError> {
+    if request.question.trim().is_empty() {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "the question is empty".to_owned(),
+        ));
+    }
+    state
+        .assistant
+        .ask(&request.question)
+        .await
+        .map(Json)
+        .map_err(|error| {
+            tracing::warn!(%error, "question failed");
+            ApiError(StatusCode::BAD_GATEWAY, error)
+        })
+}
+
+/// Lists entries, latest first.
+#[utoipa::path(
+    get,
+    path = "/brain/entries",
+    params(
+        ("type" = Option<String>, Query, description = "Entry kind"),
+        ("limit" = Option<i64>, Query, description = "Maximum number of entries")
+    ),
+    responses((status = 200, body = Vec<EntrySummary>)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn list(
+    State(state): State<ApiState>,
+    Query(query): Query<EntriesQuery>,
+) -> Result<Json<Vec<EntrySummary>>, ApiError> {
+    let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 500);
+    let entries = state
+        .brain
+        .list(query.kind.as_deref(), limit)
+        .await
+        .map_err(brain_error)?;
+    Ok(Json(entries))
+}
+
+/// Full entry with its text.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct EntryDetail {
+    /// The entry.
+    #[serde(flatten)]
+    pub entry: Entry,
+    /// Markdown text.
+    pub body: String,
+}
+
+impl From<Entry> for EntryDetail {
+    fn from(entry: Entry) -> Self {
+        let body = entry.body.clone();
+        Self { entry, body }
+    }
+}
+
+/// Stores an entry. Without sources it counts as entered in the app.
+#[utoipa::path(
+    post,
+    path = "/brain/entries",
+    request_body = NewEntry,
+    responses(
+        (status = 201, body = EntryDetail),
+        (status = 422, description = "Invalid entry")
+    ),
+    security(("bearer" = []))
+)]
+pub(crate) async fn create(
+    State(state): State<ApiState>,
+    Json(mut new): Json<NewEntry>,
+) -> Result<(StatusCode, Json<EntryDetail>), ApiError> {
+    if new.sources.is_empty() {
+        new.sources.push(app_source());
+    }
+    let entry = state.brain.remember(new).await.map_err(brain_error)?;
+    Ok((StatusCode::CREATED, Json(entry.into())))
+}
+
+/// Reads an entry.
+#[utoipa::path(
+    get,
+    path = "/brain/entries/{id}",
+    params(("id" = Uuid, Path, description = "Entry ID")),
+    responses((status = 200, body = EntryDetail), (status = 404, description = "Unknown entry")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn get(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<EntryDetail>, ApiError> {
+    let entry = state.brain.get(id).await.map_err(brain_error)?;
+    Ok(Json(entry.ok_or_else(not_found)?.into()))
+}
+
+/// Changes an entry.
+#[utoipa::path(
+    patch,
+    path = "/brain/entries/{id}",
+    params(("id" = Uuid, Path, description = "Entry ID")),
+    request_body = EntryPatch,
+    responses((status = 200, body = EntryDetail), (status = 404, description = "Unknown entry")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn update(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+    Json(patch): Json<EntryPatch>,
+) -> Result<Json<EntryDetail>, ApiError> {
+    let entry = state.brain.update(id, patch).await.map_err(brain_error)?;
+    Ok(Json(entry.ok_or_else(not_found)?.into()))
+}
+
+/// Deletes an entry for real, with its original and all index data.
+#[utoipa::path(
+    delete,
+    path = "/brain/entries/{id}",
+    params(("id" = Uuid, Path, description = "Entry ID")),
+    responses((status = 204), (status = 404, description = "Unknown entry")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn delete(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    if state.brain.delete(id).await.map_err(brain_error)? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(not_found())
+    }
+}
+
+/// Uploads a file. The body is the file, `Content-Type` its type.
+#[utoipa::path(
+    post,
+    path = "/brain/files",
+    params(("name" = String, Query, description = "File name")),
+    request_body(content = Vec<u8>, content_type = "application/octet-stream"),
+    responses(
+        (status = 201, body = EntryDetail),
+        (status = 422, description = "Unsupported file, or no model for it")
+    ),
+    security(("bearer" = []))
+)]
+pub(crate) async fn upload(
+    State(state): State<ApiState>,
+    Query(query): Query<UploadQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<(StatusCode, Json<EntryDetail>), ApiError> {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream");
+    let entry = state
+        .brain
+        .ingest_file(&query.name, content_type, body.to_vec(), app_source())
+        .await
+        .map_err(brain_error)?;
+    Ok((StatusCode::CREATED, Json(entry.into())))
+}
+
+/// Downloads the original of a file.
+#[utoipa::path(
+    get,
+    path = "/brain/files/{id}",
+    params(("id" = Uuid, Path, description = "Entry ID")),
+    responses((status = 200, description = "The file"), (status = 404, description = "No file")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn download(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let (name, bytes) = state
+        .brain
+        .original(id)
+        .await
+        .map_err(brain_error)?
+        .ok_or_else(not_found)?;
+    let disposition = format!(
+        "attachment; filename=\"{}\"",
+        name.replace(['"', '\\'], "_")
+    );
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+            (header::CONTENT_DISPOSITION, disposition),
+        ],
+        bytes,
+    )
+        .into_response())
+}

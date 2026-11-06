@@ -75,3 +75,12 @@ host = "smtp.example.com"
 port = 587
 username = "lighthouse"
 from = "lighthouse@example.com"
+
+# Second Brain, see docs/brain.md. Without a provider, search is lexical and
+# images and audio are refused.
+[brain]
+path = "brain"
+# provider = "openai"
+# embedding_model = ""
+# vision_model = ""
+# transcription_model = ""

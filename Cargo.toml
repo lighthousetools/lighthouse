@@ -13,6 +13,7 @@ publish = false
 lighthouse-api = { path = "crates/api" }
 lighthouse-audit = { path = "crates/audit" }
 lighthouse-auth = { path = "crates/auth" }
+lighthouse-brain = { path = "crates/brain" }
 lighthouse-config = { path = "crates/config" }
 lighthouse-core = { path = "crates/core" }
 lighthouse-mcp = { path = "crates/mcp" }
@@ -36,9 +37,10 @@ clap = { version = "4", features = ["derive", "env"] }
 croner = "4"
 figment = { version = "0.10", features = ["toml", "env"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "pool", "smtp-transport", "tokio1", "tokio1-rustls", "rustls-native-certs", "aws-lc-rs"] }
+pdf-extract = "0.12"
 pulldown-cmark = "0.13"
 rand = "0.10"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls"] }
 rmcp = { version = "3", features = ["client", "server", "macros", "auth", "transport-child-process", "transport-io", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 rpassword = "7"
 schemars = "1"
@@ -49,6 +51,7 @@ serde-saphyr = "2"
 sha2 = "0.11"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
 subtle = "2"
+tantivy = "0.27"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

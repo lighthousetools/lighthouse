@@ -1,6 +1,7 @@
 //! Model providers, task routing and cost tracking.
 
 pub mod anthropic;
+pub mod media;
 pub mod mock;
 pub mod openai;
 mod types;

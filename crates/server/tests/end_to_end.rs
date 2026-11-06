@@ -82,8 +82,11 @@ provider = "mock"
 transport = "http"
 url = "{mcp}/mcp"
 read_tools = ["list_issues"]
+[brain]
+path = "{brain}"
 "#,
         agents = agents.display(),
+        brain = dir.path().join("brain").display(),
         skills = dir.path().join("skills").display(),
     );
     let path = dir.path().join("lighthouse.toml");
@@ -201,4 +204,30 @@ async fn a_decision_through_the_api_finishes_the_paused_run() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("the run did not resume");
+}
+
+#[tokio::test]
+async fn a_question_is_answered_from_the_brain() {
+    let (base, _dir, _database) = start().await;
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{base}/brain/entries"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"type": "note", "title": "Rule", "body": "Due in January"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+    let answer: Value = client
+        .post(format!("{base}/brain/ask"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"question": "january"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(answer["answer"], "mock answer", "{answer}");
+    assert_eq!(answer["sources"][0]["title"], "Rule");
 }

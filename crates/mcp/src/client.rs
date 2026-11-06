@@ -2,6 +2,7 @@ use crate::oauth::VaultCredentialStore;
 use crate::{McpError, ToolHost, ToolHostFactory, ToolOutput, split_tool};
 use async_trait::async_trait;
 use lighthouse_config::{ConnectorAuth, ConnectorConfig, ConnectorTransport};
+use lighthouse_core::RunId;
 use lighthouse_router::ToolSpec;
 use lighthouse_vault::Vault;
 use rmcp::model::CallToolRequestParams;
@@ -143,7 +144,7 @@ impl McpConnector {
 
 #[async_trait]
 impl ToolHostFactory for McpConnector {
-    async fn open(&self, tools: &[String]) -> Result<Box<dyn ToolHost>, McpError> {
+    async fn open(&self, tools: &[String], _run: RunId) -> Result<Box<dyn ToolHost>, McpError> {
         Ok(Box::new(self.session(tools).await?))
     }
 }

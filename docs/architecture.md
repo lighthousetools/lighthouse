@@ -30,6 +30,7 @@ flowchart LR
 | `lighthouse-vault` | Encrypted credentials |
 | `lighthouse-audit` | Append-only log of runs and steps, approvals and paused runs |
 | `lighthouse-auth` | Sign-in of the owner and device tokens |
+| `lighthouse-brain` | Second Brain: Markdown files, hybrid search, ingestion and `brain.*` tools, see [brain.md](brain.md) |
 | `lighthouse-router` | Provider adapters, routing, fallback, costs |
 | `lighthouse-mcp` | MCP client, OAuth flow, tool classification |
 | `lighthouse-skills` | `SKILL.md` loading |
