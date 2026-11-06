@@ -119,36 +119,30 @@ impl std::fmt::Debug for Router {
 
 impl Router {
     /// Builds a router from the configuration. `keys` holds the API key per provider name.
-    pub fn from_config(
-        config: &Config,
-        keys: &HashMap<String, SecretString>,
-    ) -> Result<Self, RouterError> {
+    ///
+    /// A provider without a key stays registered and fails when called, so the
+    /// fallback still works and the error names what is missing.
+    pub fn from_config(config: &Config, keys: &HashMap<String, SecretString>) -> Self {
         let mut router = Self::default();
         for (name, provider) in &config.providers {
-            let key = || {
-                keys.get(name)
-                    .cloned()
-                    .ok_or_else(|| RouterError::MissingKey(name.clone()))
-            };
-            let adapter: Arc<dyn Provider> = match provider.kind {
-                ProviderKind::Anthropic => Arc::new(anthropic::Anthropic::new(
-                    name,
-                    key()?,
-                    provider.base_url.as_deref(),
-                )),
-                ProviderKind::Openai => Arc::new(openai::OpenAi::new(
-                    name,
-                    key()?,
-                    provider.base_url.as_deref(),
-                )),
-                ProviderKind::Mock => Arc::new(mock::MockProvider::echo()),
+            let key = keys.get(name).cloned();
+            let base_url = provider.base_url.as_deref();
+            let adapter: Arc<dyn Provider> = match (provider.kind, key) {
+                (ProviderKind::Mock, _) => Arc::new(mock::MockProvider::echo()),
+                (ProviderKind::Anthropic, Some(key)) => {
+                    Arc::new(anthropic::Anthropic::new(name, key, base_url))
+                }
+                (ProviderKind::Openai, Some(key)) => {
+                    Arc::new(openai::OpenAi::new(name, key, base_url))
+                }
+                (_, None) => Arc::new(MissingKey(name.clone())),
             };
             router.add_provider(name, adapter, provider.tasks.clone());
         }
         for (task, route) in &config.routing {
             router.set_route(task, &route.provider, route.fallback.as_deref());
         }
-        Ok(router)
+        router
     }
 
     /// Registers a provider.
@@ -219,6 +213,19 @@ impl Router {
             }
             (Err(error), _) => Err(error),
         }
+    }
+}
+
+struct MissingKey(String);
+
+#[async_trait]
+impl Provider for MissingKey {
+    async fn complete(
+        &self,
+        _model: &str,
+        _request: &ChatRequest,
+    ) -> Result<ChatResponse, RouterError> {
+        Err(RouterError::MissingKey(self.0.clone()))
     }
 }
 
@@ -310,6 +317,25 @@ mod tests {
             .unwrap();
         assert_eq!(completion.provider, "backup");
         assert!(!completion.used_fallback);
+    }
+
+    #[tokio::test]
+    async fn provider_without_a_key_fails_with_a_clear_error() {
+        let mut router = Router::default();
+        router.add_provider(
+            "primary",
+            Arc::new(MissingKey("primary".to_owned())),
+            tasks("model-a"),
+        );
+        router.set_route("text", "primary", None);
+        let error = router
+            .complete("text", &RouteOverride::default(), &ChatRequest::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "no API key stored for provider `primary`"
+        );
     }
 
     #[tokio::test]
