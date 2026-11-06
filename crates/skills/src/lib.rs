@@ -64,7 +64,7 @@ fn parse(text: &str, path: &str) -> Result<Skill, SkillError> {
         .split_once("\n---\n")
         .ok_or_else(|| invalid("unterminated frontmatter".to_owned()))?;
     let parsed: Frontmatter =
-        serde_yaml_ng::from_str(frontmatter).map_err(|error| invalid(error.to_string()))?;
+        serde_saphyr::from_str(frontmatter).map_err(|error| invalid(error.to_string()))?;
     Ok(Skill {
         name: parsed.name,
         description: parsed.description,
