@@ -9,3 +9,33 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono-tz.workspace = true
+lighthouse-api.workspace = true
+lighthouse-audit.workspace = true
+lighthouse-config.workspace = true
+lighthouse-core.workspace = true
+lighthouse-mcp.workspace = true
+lighthouse-notify.workspace = true
+lighthouse-runtime.workspace = true
+lighthouse-scheduler.workspace = true
+lighthouse-skills.workspace = true
+lighthouse-store.workspace = true
+lighthouse-vault.workspace = true
+secrecy.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+base64.workspace = true
+lighthouse-store = { workspace = true, features = ["testing"] }
+reqwest.workspace = true
+rmcp.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
