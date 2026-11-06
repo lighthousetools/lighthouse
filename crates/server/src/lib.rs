@@ -10,7 +10,7 @@ use lighthouse_api::{
 };
 use lighthouse_audit::{AuditError, AuditLog, RunEnd, RunStatus};
 use lighthouse_auth::Auth;
-use lighthouse_brain::{Brain, BrainToolFactory, Embedder, MediaError, MediaReader};
+use lighthouse_brain::{Brain, BrainToolFactory, Embedder, MediaError, MediaReader, SearchHit};
 use lighthouse_config::{Config, ConnectorAuth, ConnectorTransport, OwnerConfig};
 use lighthouse_core::agent::{AgentDefinition, Delivery, ToolLevel, Trigger, parse_cron};
 use lighthouse_core::{RunId, TenantId};
@@ -27,6 +27,7 @@ use secrecy::ExposeSecret;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60);
@@ -357,9 +358,8 @@ struct BrainAssistant {
     runtime: Arc<Runtime>,
 }
 
-#[async_trait]
-impl Assistant for BrainAssistant {
-    async fn ask(&self, question: &str) -> Result<AskAnswer, String> {
+impl BrainAssistant {
+    async fn context(&self, question: &str) -> Result<(Vec<SearchHit>, String), String> {
         let hits = self
             .brain
             .search(question, ASK_ENTRIES)
@@ -371,7 +371,35 @@ impl Assistant for BrainAssistant {
                 let _ = writeln!(context, "## {}\n{}\n", entry.title, entry.body);
             }
         }
+        Ok((hits, context))
+    }
+}
+
+#[async_trait]
+impl Assistant for BrainAssistant {
+    async fn ask(&self, question: &str) -> Result<AskAnswer, String> {
+        let (hits, context) = self.context(question).await?;
         let (run, answer) = self.runtime.ask(question, &context).await?;
+        Ok(AskAnswer {
+            run_id: run.as_uuid(),
+            answer,
+            sources: hits.into_iter().map(|hit| hit.entry).collect(),
+        })
+    }
+
+    async fn ask_stream(
+        &self,
+        question: &str,
+        deltas: UnboundedSender<String>,
+    ) -> Result<AskAnswer, String> {
+        let (hits, context) = self.context(question).await?;
+        let sink = move |text: String| {
+            let _ = deltas.send(text);
+        };
+        let (run, answer) = self
+            .runtime
+            .ask_streaming(question, &context, &sink)
+            .await?;
         Ok(AskAnswer {
             run_id: run.as_uuid(),
             answer,

@@ -1,6 +1,9 @@
 //! Adapter for the Anthropic Messages API.
 
-use crate::{Block, ChatRequest, ChatResponse, Provider, Role, RouterError, Usage, shorten};
+use crate::{
+    Block, ChatRequest, ChatResponse, Provider, Role, RouterError, TextSink, Usage, for_each_event,
+    shorten,
+};
 use async_trait::async_trait;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
@@ -75,6 +78,30 @@ fn encode_request(model: &str, request: &ChatRequest) -> Value {
     body
 }
 
+/// Reads one streamed event into the text and usage so far.
+fn apply_event(data: &str, text: &mut String, usage: &mut Usage, sink: &TextSink<'_>) {
+    let Ok(event) = serde_json::from_str::<Value>(data) else {
+        return;
+    };
+    match event["type"].as_str() {
+        Some("message_start") => {
+            usage.input_tokens = event["message"]["usage"]["input_tokens"]
+                .as_u64()
+                .unwrap_or(0);
+        }
+        Some("content_block_delta") => {
+            if let Some(piece) = event["delta"]["text"].as_str() {
+                text.push_str(piece);
+                sink(piece.to_owned());
+            }
+        }
+        Some("message_delta") => {
+            usage.output_tokens = event["usage"]["output_tokens"].as_u64().unwrap_or(0);
+        }
+        _ => {}
+    }
+}
+
 #[derive(Deserialize)]
 struct ApiResponse {
     content: Vec<ApiBlock>,
@@ -104,6 +131,44 @@ enum ApiBlock {
 
 #[async_trait]
 impl Provider for Anthropic {
+    async fn stream(
+        &self,
+        model: &str,
+        request: &ChatRequest,
+        sink: &TextSink<'_>,
+    ) -> Result<ChatResponse, RouterError> {
+        let mut body = encode_request(model, request);
+        body["stream"] = json!(true);
+        let response = self
+            .http
+            .post(format!("{}/v1/messages", self.base_url))
+            .header("x-api-key", self.key.expose_secret())
+            .header("anthropic-version", API_VERSION)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|source| RouterError::Http {
+                provider: self.name.clone(),
+                source,
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(RouterError::Status {
+                provider: self.name.clone(),
+                status: status.as_u16(),
+                body: shorten(&body),
+            });
+        }
+        let mut text = String::new();
+        let mut usage = Usage::default();
+        for_each_event(response, &self.name, |data| {
+            apply_event(data, &mut text, &mut usage, sink);
+        })
+        .await?;
+        Ok(ChatResponse::text(text, usage))
+    }
+
     async fn complete(
         &self,
         model: &str,
@@ -292,5 +357,24 @@ mod tests {
         );
         let error = provider.complete("model-x", &request()).await.unwrap_err();
         assert!(matches!(error, RouterError::Http { .. }));
+    }
+
+    #[test]
+    fn stream_events_build_text_and_usage() {
+        let seen = std::sync::Mutex::new(String::new());
+        let sink = |piece: String| seen.lock().unwrap().push_str(&piece);
+        let (mut text, mut usage) = (String::new(), Usage::default());
+        for data in [
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":7}}}"#,
+            r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}"#,
+            r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"lo"}}"#,
+            r#"{"type":"message_delta","usage":{"output_tokens":2}}"#,
+            "not json",
+        ] {
+            apply_event(data, &mut text, &mut usage, &sink);
+        }
+        assert_eq!(text, "Hello");
+        assert_eq!(*seen.lock().unwrap(), "Hello");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (7, 2));
     }
 }

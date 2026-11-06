@@ -536,6 +536,35 @@ impl Brain {
         Ok(true)
     }
 
+    /// Lists entries that link here with `[[Title]]`.
+    pub async fn backlinks(&self, id: Uuid) -> Result<Vec<EntrySummary>, BrainError> {
+        let rows = sqlx::query(
+            "SELECT e.id, e.kind, e.title, e.status, e.body, e.original, e.updated_at \
+             FROM brain_entries e JOIN brain_entries target ON target.id = $1 \
+             WHERE e.tenant_id = $2 AND e.id <> $1 \
+             AND position('[[' || lower(target.title) || ']]' IN lower(e.body)) > 0 \
+             ORDER BY e.updated_at DESC",
+        )
+        .bind(id)
+        .bind(self.tenant.as_uuid())
+        .fetch_all(self.store.pool())
+        .await?;
+        Ok(rows.iter().map(summary).collect())
+    }
+
+    /// Finds an entry by its title, for following `[[Title]]`.
+    pub async fn find_by_title(&self, title: &str) -> Result<Option<Uuid>, BrainError> {
+        let row = sqlx::query(
+            "SELECT id FROM brain_entries WHERE tenant_id = $1 AND lower(title) = lower($2) \
+             ORDER BY updated_at DESC LIMIT 1",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(title)
+        .fetch_optional(self.store.pool())
+        .await?;
+        Ok(row.map(|row| row.get(0)))
+    }
+
     /// Lists entries, latest first.
     pub async fn list(
         &self,

@@ -14,7 +14,7 @@ pub use approvals::{BatchDecision, BatchResult, Decision};
 pub use auth::{
     AuthStatus, Caller, CredentialValue, LoginRequest, SetupRequest, TokenIssued, TokenRequest,
 };
-pub use brain::{AskAnswer, AskRequest, EntryDetail};
+pub use brain::{AskAnswer, AskRequest, EntryDetail, ResolvedEntry};
 pub use catalog::{
     AgentChangeError, AgentDraftRequest, AgentInfo, AgentSource, AgentTool, Catalog, ConnectorInfo,
     SkillInfo,
@@ -26,6 +26,7 @@ use axum::Json;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 
@@ -41,12 +42,17 @@ use lighthouse_vault::Vault;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 use subtle::ConstantTimeEq;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio_stream::wrappers::ReceiverStream;
 use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
 const DEFAULT_LIMIT: i64 = 50;
+const EVENT_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_UPLOAD_BYTES: usize = 100 * 1024 * 1024;
 
 /// Errors when starting a run.
@@ -75,6 +81,13 @@ pub trait RunTrigger: Send + Sync {
 pub trait Assistant: Send + Sync {
     /// Answers a question. The error text is safe to show to the owner.
     async fn ask(&self, question: &str) -> Result<AskAnswer, String>;
+
+    /// Answers a question and sends the text as it arrives.
+    async fn ask_stream(
+        &self,
+        question: &str,
+        deltas: UnboundedSender<String>,
+    ) -> Result<AskAnswer, String>;
 }
 
 /// Shared state of the API.
@@ -204,6 +217,40 @@ async fn me(State(state): State<ApiState>) -> Json<Me> {
     Json(Me {
         name: state.owner_name.clone(),
     })
+}
+
+/// Tells a client when to reload, as a stream of server-sent events.
+///
+/// A `changed` event means something the apps show has changed.
+#[utoipa::path(
+    get,
+    path = "/events",
+    responses((status = 200, description = "Server-sent events", content_type = "text/event-stream")),
+    security(("bearer" = []))
+)]
+async fn events(State(state): State<ApiState>) -> impl IntoResponse {
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(4);
+    tokio::spawn(async move {
+        let mut last = None;
+        let mut ticker = tokio::time::interval(EVENT_INTERVAL);
+        loop {
+            ticker.tick().await;
+            if sender.is_closed() {
+                return;
+            }
+            let Ok(revision) = state.audit.revision().await else {
+                continue;
+            };
+            if last.as_ref() != Some(&revision) {
+                last = Some(revision);
+                let event = Event::default().event("changed").data("{}");
+                if sender.send(Ok(event)).await.is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    Sse::new(ReceiverStream::new(receiver)).keep_alive(KeepAlive::default())
 }
 
 /// Lists the latest runs.
@@ -336,12 +383,12 @@ impl utoipa::Modify for SecurityAddon {
 #[openapi(
     info(title = "Lighthouse API"),
     paths(
-        health, me, list_runs, get_run, run_agent, connect,
+        health, me, events, list_runs, get_run, run_agent, connect,
         auth::status, auth::setup, auth::login, auth::issue_token, auth::logout,
         auth::devices, auth::revoke_device,
         auth::list_credentials, auth::put_credential, auth::delete_credential,
         approvals::list, approvals::decide, approvals::decide_batch,
-        brain::search, brain::ask, brain::list, brain::create, brain::get, brain::update,
+        brain::search, brain::ask, brain::ask_stream, brain::resolve, brain::list, brain::create, brain::get, brain::update,
         brain::delete, brain::upload, brain::download,
         catalog::agents, catalog::agent, catalog::agent_runs, catalog::draft_agent,
         catalog::save_agent, catalog::delete_agent, catalog::connectors, catalog::skills,
@@ -354,7 +401,7 @@ impl utoipa::Modify for SecurityAddon {
         AuthStatus, SetupRequest, LoginRequest, TokenRequest, TokenIssued, CredentialValue,
         Device, DeviceKind, Approval, Decision, BatchDecision, BatchResult,
         Entry, EntryDetail, EntryPatch, EntrySummary, NewEntry, SearchHit, Source,
-        AskRequest, AskAnswer,
+        AskRequest, AskAnswer, ResolvedEntry,
         AgentInfo, AgentTool, ConnectorInfo, SkillInfo, AgentDraftRequest, AgentSource, DailyCost,
         Node, NodeChange, NodeReport, NodeState, NewPermission, Permission, PermissionDecision,
         Session, SessionReport,
@@ -382,6 +429,7 @@ pub fn with_web_app(router: Router, directory: &std::path::Path) -> Router {
 pub fn router(state: ApiState) -> Router {
     let signed_in = Router::new()
         .route("/me", get(me))
+        .route("/events", get(events))
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
         .route("/agents", get(catalog::agents).post(catalog::save_agent))
@@ -413,6 +461,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/approvals/{id}/decision", post(approvals::decide))
         .route("/brain/search", get(brain::search))
         .route("/brain/ask", post(brain::ask))
+        .route("/brain/ask/stream", post(brain::ask_stream))
+        .route("/brain/resolve", get(brain::resolve))
         .route("/brain/entries", get(brain::list).post(brain::create))
         .route(
             "/brain/entries/{id}",
@@ -459,6 +509,7 @@ mod tests {
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::Mutex;
+    use tokio_stream::StreamExt;
     use tower::ServiceExt;
 
     const TOKEN: &str = "test-admin-token";
@@ -476,6 +527,16 @@ mod tests {
                 answer: format!("You asked {question}"),
                 sources: Vec::new(),
             })
+        }
+
+        async fn ask_stream(
+            &self,
+            question: &str,
+            deltas: UnboundedSender<String>,
+        ) -> Result<AskAnswer, String> {
+            deltas.send("You ".to_owned()).unwrap();
+            deltas.send("asked".to_owned()).unwrap();
+            self.ask(question).await
         }
     }
 
@@ -923,6 +984,8 @@ mod tests {
                 tool: "mail.send".to_owned(),
                 input: json!({"to": "a"}),
                 quotes_external: false,
+                reason: None,
+                consulted: Vec::new(),
             })
             .collect();
         audit
@@ -1247,5 +1310,73 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn answers_stream_their_text_and_end_with_the_result() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let question = json!({"question": "why"});
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/brain/ask/stream",
+            Some(TOKEN),
+            Some(question),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("event: delta"), "{body}");
+        assert!(body.contains("event: done"), "{body}");
+        let question = json!({"question": "fail"});
+        let (_, body) = send(
+            &app,
+            "POST",
+            "/brain/ask/stream",
+            Some(TOKEN),
+            Some(question),
+        )
+        .await;
+        assert!(body.contains("event: failed"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn the_event_stream_announces_the_first_state() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let request = HttpRequest::builder()
+            .uri("/events")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let bytes = tokio::time::timeout(Duration::from_secs(5), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("event: changed"));
+    }
+
+    #[tokio::test]
+    async fn wiki_links_resolve() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let new = json!({"type": "note", "title": "Tax logic", "body": "Rules"});
+        send(&app, "POST", "/brain/entries", Some(TOKEN), Some(new)).await;
+        let new = json!({"type": "note", "title": "Meeting", "body": "See [[Tax logic]]"});
+        send(&app, "POST", "/brain/entries", Some(TOKEN), Some(new)).await;
+        let (status, body) =
+            call(&app, "GET", "/brain/resolve?title=tax%20logic", Some(TOKEN)).await;
+        assert_eq!(status, StatusCode::OK);
+        let resolved: ResolvedEntry = serde_json::from_str(&body).unwrap();
+        let uri = format!("/brain/entries/{}", resolved.id);
+        let (_, body) = call(&app, "GET", &uri, Some(TOKEN)).await;
+        assert!(body.contains("Meeting"), "{body}");
+        assert_eq!(
+            call(&app, "GET", "/brain/resolve?title=nobody", Some(TOKEN))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
     }
 }

@@ -320,6 +320,7 @@ async fn a_write_tool_pauses_the_run_until_it_is_approved() {
     assert_eq!(approval.tool, "linear.delete_issue");
     assert_eq!(approval.input, json!({"id": 7}));
     assert!(approval.quotes_external, "the run read external content");
+    assert_eq!(approval.consulted, ["linear.list_issues"]);
     assert_eq!(*fixture.calls.lock().unwrap(), ["linear.list_issues"]);
     assert!(fixture.notifier.delivered.lock().unwrap().is_empty());
 
@@ -599,4 +600,19 @@ async fn a_draft_gives_up_after_three_attempts() {
         fixture.audit.list_runs(1).await.unwrap()[0].status,
         "failed"
     );
+}
+
+#[tokio::test]
+async fn a_streamed_question_delivers_its_text() {
+    let fixture = fixture(vec![ChatResponse::text("In January", usage())], false).await;
+    let seen = Mutex::new(String::new());
+    let (_, answer) = fixture
+        .runtime
+        .ask_streaming("When?", "Due in January", &|text| {
+            seen.lock().unwrap().push_str(&text);
+        })
+        .await
+        .unwrap();
+    assert_eq!(answer, "In January");
+    assert_eq!(*seen.lock().unwrap(), "In January");
 }

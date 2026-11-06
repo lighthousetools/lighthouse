@@ -116,6 +116,8 @@ pub struct RunRecord {
     pub output_tokens: i64,
     /// Total cost in EUR.
     pub cost_eur: f64,
+    /// Name of the latest step, which says what a running agent is doing.
+    pub activity: Option<String>,
     /// Start time.
     pub started_at: DateTime<Utc>,
     /// End time.
@@ -190,7 +192,9 @@ pub struct AuditLog {
 }
 
 const RUN_COLUMNS: &str = "id, agent_id, trigger, status, reason, report, input_tokens, output_tokens, \
-                           cost_eur, started_at, finished_at";
+                           cost_eur, started_at, finished_at, \
+                           (SELECT name FROM run_steps s WHERE s.run_id = runs.id \
+                            ORDER BY seq DESC LIMIT 1) AS activity";
 
 impl AuditLog {
     /// Creates the log.
@@ -279,6 +283,23 @@ impl AuditLog {
         .bind(days)
         .fetch_all(self.store.pool())
         .await?)
+    }
+
+    /// Returns a value that changes whenever anything the apps show changes.
+    pub async fn revision(&self) -> Result<String, AuditError> {
+        let (revision,): (String,) = sqlx::query_as(
+            "SELECT concat_ws('/', \
+             (SELECT count(*) FROM run_steps WHERE tenant_id = $1), \
+             (SELECT count(*) || max(finished_at)::text FROM runs WHERE tenant_id = $1), \
+             (SELECT count(*) FROM approvals WHERE tenant_id = $1 AND status = 'pending'), \
+             (SELECT count(*) FROM permission_requests WHERE tenant_id = $1 AND status = 'pending'), \
+             (SELECT max(updated_at)::text FROM sessions WHERE tenant_id = $1), \
+             (SELECT count(*) || max(updated_at)::text FROM brain_entries WHERE tenant_id = $1))",
+        )
+        .bind(self.tenant.as_uuid())
+        .fetch_one(self.store.pool())
+        .await?;
+        Ok(revision)
     }
 
     /// Fails runs a stopped server left behind. Paused runs keep waiting.

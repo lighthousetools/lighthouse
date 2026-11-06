@@ -267,6 +267,26 @@ async fn an_edit_is_searchable_and_links_do_not_repeat() {
 }
 
 #[tokio::test]
+async fn wiki_links_resolve_and_show_up_as_backlinks() {
+    let fixture = fixture().await;
+    let brain = &fixture.brain;
+    let target = brain.remember(note("Tax logic", "Rules")).await.unwrap();
+    let source = brain
+        .remember(note("Meeting", "See [[tax logic]] for details"))
+        .await
+        .unwrap();
+    brain.remember(note("Other", "Nothing")).await.unwrap();
+    let links = brain.backlinks(target.id).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].id, source.id);
+    assert_eq!(
+        brain.find_by_title("TAX LOGIC").await.unwrap(),
+        Some(target.id)
+    );
+    assert_eq!(brain.find_by_title("missing").await.unwrap(), None);
+}
+
+#[tokio::test]
 async fn deletion_removes_everything_but_the_fact() {
     let fixture = fixture().await;
     let brain = &fixture.brain;

@@ -5,9 +5,14 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use lighthouse_brain::{BrainError, Entry, EntryPatch, EntrySummary, NewEntry, SearchHit, Source};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::convert::Infallible;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -53,6 +58,19 @@ pub(crate) struct EntriesQuery {
 #[derive(Deserialize)]
 pub(crate) struct UploadQuery {
     name: String,
+}
+
+/// Parameters of a link lookup.
+#[derive(Deserialize)]
+pub(crate) struct ResolveQuery {
+    title: String,
+}
+
+/// The entry behind a link.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ResolvedEntry {
+    /// Entry ID.
+    pub id: Uuid,
 }
 
 /// A question to the Brain.
@@ -164,12 +182,19 @@ pub struct EntryDetail {
     pub entry: Entry,
     /// Markdown text.
     pub body: String,
+    /// Entries that link here.
+    #[serde(default)]
+    pub backlinks: Vec<EntrySummary>,
 }
 
 impl From<Entry> for EntryDetail {
     fn from(entry: Entry) -> Self {
         let body = entry.body.clone();
-        Self { entry, body }
+        Self {
+            entry,
+            body,
+            backlinks: Vec::new(),
+        }
     }
 }
 
@@ -210,7 +235,76 @@ pub(crate) async fn get(
     Path(id): Path<Uuid>,
 ) -> Result<Json<EntryDetail>, ApiError> {
     let entry = state.brain.get(id).await.map_err(brain_error)?;
-    Ok(Json(entry.ok_or_else(not_found)?.into()))
+    let mut detail = EntryDetail::from(entry.ok_or_else(not_found)?);
+    detail.backlinks = state.brain.backlinks(id).await.map_err(brain_error)?;
+    Ok(Json(detail))
+}
+
+/// Finds the entry behind a `[[Title]]` link.
+#[utoipa::path(
+    get,
+    operation_id = "resolve_entry",
+    path = "/brain/resolve",
+    params(("title" = String, Query, description = "Entry title")),
+    responses((status = 200, body = ResolvedEntry), (status = 404, description = "Unknown title")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn resolve(
+    State(state): State<ApiState>,
+    Query(query): Query<ResolveQuery>,
+) -> Result<Json<ResolvedEntry>, ApiError> {
+    let id = state
+        .brain
+        .find_by_title(&query.title)
+        .await
+        .map_err(brain_error)?;
+    Ok(Json(ResolvedEntry {
+        id: id.ok_or_else(not_found)?,
+    }))
+}
+
+/// Answers a question as a stream of server-sent events.
+///
+/// `delta` events carry text, and a final `done` or `failed` event ends it.
+#[utoipa::path(
+    post,
+    operation_id = "ask_brain_stream",
+    path = "/brain/ask/stream",
+    request_body = AskRequest,
+    responses((status = 200, description = "Server-sent events", content_type = "text/event-stream")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn ask_stream(
+    State(state): State<ApiState>,
+    Json(request): Json<AskRequest>,
+) -> impl IntoResponse {
+    let (sender, receiver) = mpsc::channel::<Result<Event, Infallible>>(256);
+    tokio::spawn(async move {
+        let (deltas, mut incoming) = mpsc::unbounded_channel();
+        let relay = sender.clone();
+        let forward = tokio::spawn(async move {
+            while let Some(text) = incoming.recv().await {
+                let event = Event::default()
+                    .event("delta")
+                    .data(json!({"text": text}).to_string());
+                if relay.send(Ok(event)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let result = state.assistant.ask_stream(&request.question, deltas).await;
+        let _ = forward.await;
+        let event = match result {
+            Ok(answer) => Event::default()
+                .event("done")
+                .data(serde_json::to_string(&answer).unwrap_or_default()),
+            Err(error) => Event::default()
+                .event("failed")
+                .data(json!({"error": error}).to_string()),
+        };
+        let _ = sender.send(Ok(event)).await;
+    });
+    Sse::new(ReceiverStream::new(receiver)).keep_alive(KeepAlive::default())
 }
 
 /// Changes an entry.

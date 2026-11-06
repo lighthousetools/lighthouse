@@ -13,6 +13,7 @@ use lighthouse_config::{Config, ModelConfig, ProviderKind};
 use secrecy::SecretString;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Errors from model calls. They never contain API keys.
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +73,48 @@ pub trait Provider: Send + Sync {
         model: &str,
         request: &ChatRequest,
     ) -> Result<ChatResponse, RouterError>;
+
+    /// Sends a request and passes text to `sink` as it arrives.
+    ///
+    /// The default delivers the whole answer at once.
+    async fn stream(
+        &self,
+        model: &str,
+        request: &ChatRequest,
+        sink: &TextSink<'_>,
+    ) -> Result<ChatResponse, RouterError> {
+        let response = self.complete(model, request).await?;
+        sink(response.text_content());
+        Ok(response)
+    }
+}
+
+/// Receives pieces of an answer.
+pub type TextSink<'a> = dyn Fn(String) + Send + Sync + 'a;
+
+/// Calls `handle` with the data of every server-sent event in a response.
+pub(crate) async fn for_each_event(
+    mut response: reqwest::Response,
+    provider: &str,
+    mut handle: impl FnMut(&str),
+) -> Result<(), RouterError> {
+    let mut buffer = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|source| RouterError::Http {
+        provider: provider.to_owned(),
+        source,
+    })? {
+        buffer.extend_from_slice(&chunk);
+        while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = buffer.drain(..=end).collect();
+            if let Some(data) = String::from_utf8_lossy(&line)
+                .trim_end()
+                .strip_prefix("data: ")
+            {
+                handle(data);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The outcome of a routed call.
@@ -209,6 +252,65 @@ impl Router {
             (Err(error), Some(fallback)) if fallback != primary => {
                 tracing::warn!(provider = %primary, %error, "falling back");
                 let mut completion = self.call(fallback, task, request).await?;
+                completion.used_fallback = true;
+                Ok(completion)
+            }
+            (Err(error), _) => Err(error),
+        }
+    }
+}
+
+impl Router {
+    async fn call_stream(
+        &self,
+        name: &str,
+        task: &str,
+        request: &ChatRequest,
+        sink: &TextSink<'_>,
+    ) -> Result<Completion, RouterError> {
+        let unknown = || RouterError::UnknownTarget {
+            provider: name.to_owned(),
+            task: task.to_owned(),
+        };
+        let entry = self.providers.get(name).ok_or_else(unknown)?;
+        let model = entry.tasks.get(task).ok_or_else(unknown)?;
+        let response = entry.provider.stream(&model.model, request, sink).await?;
+        Ok(Completion {
+            cost_eur: response.usage.cost_eur(model),
+            response,
+            provider: name.to_owned(),
+            model: model.model.clone(),
+            used_fallback: false,
+        })
+    }
+
+    /// Runs a request and streams its text. The fallback only takes over while
+    /// nothing has been delivered, so a reader never sees two answers.
+    pub async fn stream(
+        &self,
+        task: &str,
+        request: &ChatRequest,
+        sink: &TextSink<'_>,
+    ) -> Result<Completion, RouterError> {
+        let route = self
+            .routes
+            .get(task)
+            .ok_or_else(|| RouterError::NoRoute(task.to_owned()))?;
+        let delivered = AtomicBool::new(false);
+        let tracking = |text: String| {
+            delivered.store(true, Ordering::Relaxed);
+            sink(text);
+        };
+        match (
+            self.call_stream(&route.0, task, request, &tracking).await,
+            &route.1,
+        ) {
+            (Ok(completion), _) => Ok(completion),
+            (Err(error), Some(fallback))
+                if fallback != &route.0 && !delivered.load(Ordering::Relaxed) =>
+            {
+                tracing::warn!(provider = %route.0, %error, "falling back");
+                let mut completion = self.call_stream(fallback, task, request, sink).await?;
                 completion.used_fallback = true;
                 Ok(completion)
             }
@@ -356,5 +458,20 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, RouterError::UnknownTarget { .. }));
+    }
+
+    #[tokio::test]
+    async fn streaming_delivers_text_and_falls_back_before_any_text() {
+        let answer = || ChatResponse::text("from backup", Usage::default());
+        let router = router(MockProvider::new([]), MockProvider::new([answer()]));
+        let seen = std::sync::Mutex::new(Vec::new());
+        let completion = router
+            .stream("text", &ChatRequest::default(), &|text| {
+                seen.lock().unwrap().push(text);
+            })
+            .await
+            .unwrap();
+        assert!(completion.used_fallback);
+        assert_eq!(*seen.lock().unwrap(), ["from backup"]);
     }
 }

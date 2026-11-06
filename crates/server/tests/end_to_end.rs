@@ -182,6 +182,8 @@ async fn a_decision_through_the_api_finishes_the_paused_run() {
         tool: "demo.delete_issue".to_owned(),
         input: json!({}),
         quotes_external: false,
+        reason: None,
+        consulted: Vec::new(),
     };
     audit
         .pause_run(run, "reader", &state, &[proposal])

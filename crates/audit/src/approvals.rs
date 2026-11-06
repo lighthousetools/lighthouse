@@ -12,8 +12,8 @@ use uuid::Uuid;
 /// Hours until an open approval counts as denied.
 const EXPIRY_HOURS: i64 = 72;
 
-const COLUMNS: &str = "id, run_id, agent_id, tool, input, quotes_external, status, created_at, \
-                       expires_at, decided_at";
+const COLUMNS: &str = "id, run_id, agent_id, tool, input, quotes_external, reason, consulted, status, \
+                       created_at, expires_at, decided_at";
 
 /// A proposed tool call.
 #[derive(Clone, Debug, Serialize, Deserialize, FromRow, ToSchema)]
@@ -30,6 +30,10 @@ pub struct Approval {
     pub input: Value,
     /// Whether the run had read external content, which may have shaped the proposal.
     pub quotes_external: bool,
+    /// What the agent said before it proposed the call.
+    pub reason: Option<String>,
+    /// Tools the run had used before the proposal.
+    pub consulted: Vec<String>,
     /// `pending`, `approved`, `denied` or `expired`.
     pub status: String,
     /// When it was proposed.
@@ -51,6 +55,10 @@ pub struct NewApproval {
     pub input: Value,
     /// Whether the run had read external content.
     pub quotes_external: bool,
+    /// What the agent said before it proposed the call.
+    pub reason: Option<String>,
+    /// Tools the run had used before the proposal.
+    pub consulted: Vec<String>,
 }
 
 /// A saved run, taken by the one caller that resumes it.
@@ -86,8 +94,8 @@ impl AuditLog {
         for proposal in proposals {
             sqlx::query(
                 "INSERT INTO approvals (id, tenant_id, run_id, agent_id, tool, input, \
-                 quotes_external, status, expires_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)",
+                 quotes_external, status, expires_at, reason, consulted) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10)",
             )
             .bind(proposal.id)
             .bind(self.tenant.as_uuid())
@@ -97,6 +105,8 @@ impl AuditLog {
             .bind(&proposal.input)
             .bind(proposal.quotes_external)
             .bind(expires)
+            .bind(&proposal.reason)
+            .bind(&proposal.consulted)
             .execute(&mut *transaction)
             .await?;
         }
@@ -235,6 +245,8 @@ mod tests {
                 tool: "mail.send".to_owned(),
                 input: json!({"to": "a"}),
                 quotes_external: true,
+                reason: Some("The customer asked".to_owned()),
+                consulted: vec!["mail.read".to_owned()],
             })
             .collect();
         log.pause_run(run, "mailer", &json!({"step": 1}), &proposals)

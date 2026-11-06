@@ -1,6 +1,9 @@
 //! Adapter for the OpenAI Chat Completions API.
 
-use crate::{Block, ChatRequest, ChatResponse, Provider, Role, RouterError, Usage, shorten};
+use crate::{
+    Block, ChatRequest, ChatResponse, Provider, Role, RouterError, TextSink, Usage, for_each_event,
+    shorten,
+};
 use async_trait::async_trait;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
@@ -126,8 +129,61 @@ struct ApiFunction {
     arguments: String,
 }
 
+/// Reads one streamed chunk into the text and usage so far.
+fn apply_chunk(data: &str, text: &mut String, usage: &mut Usage, sink: &TextSink<'_>) {
+    let Ok(chunk) = serde_json::from_str::<Value>(data) else {
+        return;
+    };
+    if let Some(piece) = chunk["choices"][0]["delta"]["content"].as_str() {
+        text.push_str(piece);
+        sink(piece.to_owned());
+    }
+    if let Some(input) = chunk["usage"]["prompt_tokens"].as_u64() {
+        usage.input_tokens = input;
+        usage.output_tokens = chunk["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+    }
+}
+
 #[async_trait]
 impl Provider for OpenAi {
+    async fn stream(
+        &self,
+        model: &str,
+        request: &ChatRequest,
+        sink: &TextSink<'_>,
+    ) -> Result<ChatResponse, RouterError> {
+        let mut body = encode_request(model, request);
+        body["stream"] = json!(true);
+        body["stream_options"] = json!({"include_usage": true});
+        let response = self
+            .http
+            .post(format!("{}/v1/chat/completions", self.base_url))
+            .bearer_auth(self.key.expose_secret())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|source| RouterError::Http {
+                provider: self.name.clone(),
+                source,
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(RouterError::Status {
+                provider: self.name.clone(),
+                status: status.as_u16(),
+                body: shorten(&body),
+            });
+        }
+        let mut text = String::new();
+        let mut usage = Usage::default();
+        for_each_event(response, &self.name, |data| {
+            apply_chunk(data, &mut text, &mut usage, sink);
+        })
+        .await?;
+        Ok(ChatResponse::text(text, usage))
+    }
+
     async fn complete(
         &self,
         model: &str,
@@ -327,5 +383,20 @@ mod tests {
             provider.complete("m", &request()).await,
             Err(RouterError::Decode { .. })
         ));
+    }
+
+    #[test]
+    fn stream_chunks_build_text_and_usage() {
+        let sink = |_: String| {};
+        let (mut text, mut usage) = (String::new(), Usage::default());
+        for data in [
+            r#"{"choices":[{"delta":{"content":"Hi"}}]}"#,
+            r#"{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1}}"#,
+            "[DONE]",
+        ] {
+            apply_chunk(data, &mut text, &mut usage, &sink);
+        }
+        assert_eq!(text, "Hi");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (3, 1));
     }
 }
