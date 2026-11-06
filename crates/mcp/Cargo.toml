@@ -9,3 +9,27 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "lighthouse-demo-mcp"
+path = "src/bin/demo.rs"
+
+[dependencies]
+async-trait.workspace = true
+lighthouse-config.workspace = true
+lighthouse-core.workspace = true
+lighthouse-router.workspace = true
+lighthouse-vault.workspace = true
+reqwest.workspace = true
+rmcp.workspace = true
+secrecy.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+base64.workspace = true
+lighthouse-store = { workspace = true, features = ["testing"] }
