@@ -4,6 +4,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use lighthouse_api::{ApiState, RunTrigger, TriggerError};
 use lighthouse_audit::{AuditError, AuditLog};
+use lighthouse_auth::Auth;
 use lighthouse_config::{Config, OwnerConfig};
 use lighthouse_core::agent::AgentDefinition;
 use lighthouse_core::{RunId, TenantId};
@@ -109,6 +110,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
     let tenant = TenantId::SINGLE;
     let vault = Vault::new(store.clone(), tenant, &master_key(&config)?);
     let audit = AuditLog::new(store.clone(), tenant);
+    let auth_store = store.clone();
     let delivery = lighthouse_config::DeliveryConfig {
         smtp: config.delivery.smtp.clone(),
         slack_channels: config.delivery.slack_channels.clone(),
@@ -152,11 +154,17 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         &agents,
         pool.clone(),
     )?;
-    let oauth = OAuthFlows::new(config.connectors.clone(), vault, &config.server.public_url);
+    let oauth = OAuthFlows::new(
+        config.connectors.clone(),
+        vault.clone(),
+        &config.server.public_url,
+    );
     let router = lighthouse_api::router(ApiState {
         audit,
         trigger: pool,
         oauth: Arc::new(oauth),
+        auth: Auth::new(auth_store, tenant),
+        vault,
         admin_token: config.server.admin_token.clone(),
     });
     Ok(App { router, scheduler })

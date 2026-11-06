@@ -16,6 +16,7 @@ async-trait.workspace = true
 chrono-tz.workspace = true
 lighthouse-api.workspace = true
 lighthouse-audit.workspace = true
+lighthouse-auth.workspace = true
 lighthouse-config.workspace = true
 lighthouse-core.workspace = true
 lighthouse-mcp.workspace = true

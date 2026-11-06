@@ -12,6 +12,7 @@ publish = false
 [workspace.dependencies]
 lighthouse-api = { path = "crates/api" }
 lighthouse-audit = { path = "crates/audit" }
+lighthouse-auth = { path = "crates/auth" }
 lighthouse-config = { path = "crates/config" }
 lighthouse-core = { path = "crates/core" }
 lighthouse-mcp = { path = "crates/mcp" }
@@ -25,6 +26,7 @@ lighthouse-vault = { path = "crates/vault" }
 
 aes-gcm = "0.11"
 anyhow = "1"
+argon2 = { version = "0.6", features = ["password-hash"] }
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
@@ -35,6 +37,7 @@ croner = "4"
 figment = { version = "0.10", features = ["toml", "env"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "pool", "smtp-transport", "tokio1", "tokio1-rustls", "rustls-native-certs", "aws-lc-rs"] }
 pulldown-cmark = "0.13"
+rand = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 rmcp = { version = "3", features = ["client", "server", "macros", "auth", "transport-child-process", "transport-io", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 rpassword = "7"
@@ -43,6 +46,7 @@ secrecy = { version = "0.10", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde-saphyr = "2"
+sha2 = "0.11"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
 subtle = "2"
 tempfile = "3"

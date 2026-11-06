@@ -1,19 +1,28 @@
 //! HTTP API of the server.
 //!
-//! Everything except `/health`, `/openapi.json` and the OAuth callback needs the
-//! admin token, because runs and reports contain private data.
+//! Only `/health`, `/openapi.json`, the sign-in and the OAuth callback are public.
+//! Everything else needs a device token or the admin token, because runs and
+//! reports contain private data. Setting the password needs the admin token.
+
+mod auth;
+
+pub use auth::{
+    AuthStatus, Caller, CredentialValue, LoginRequest, SetupRequest, TokenIssued, TokenRequest,
+};
 
 use async_trait::async_trait;
 use axum::Json;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{StatusCode, header};
-use axum::middleware::{self, Next};
+use axum::middleware;
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post, put};
 
 pub use axum::Router;
 use lighthouse_audit::{AuditLog, RunDetail, RunRecord, StepRecord};
+use lighthouse_auth::{Auth, Device, DeviceKind};
 use lighthouse_mcp::{McpError, OAuthFlows};
+use lighthouse_vault::Vault;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -51,7 +60,11 @@ pub struct ApiState {
     pub trigger: Arc<dyn RunTrigger>,
     /// OAuth flows.
     pub oauth: Arc<OAuthFlows>,
-    /// Admin token. Without one, admin endpoints stay closed.
+    /// Sign-in and device tokens.
+    pub auth: Auth,
+    /// Encrypted credentials.
+    pub vault: Vault,
+    /// Admin token. Without one, the password can only be set by the CLI.
     pub admin_token: Option<SecretString>,
 }
 
@@ -109,26 +122,23 @@ fn internal(error: impl std::fmt::Display) -> ApiError {
     )
 }
 
-async fn require_admin(State(state): State<ApiState>, request: Request, next: Next) -> Response {
-    let provided = request
+fn bearer_token(request: &Request) -> Option<&str> {
+    request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    let valid = match (&state.admin_token, provided) {
-        (Some(expected), Some(provided)) => bool::from(
+        .and_then(|value| value.strip_prefix("Bearer "))
+}
+
+fn is_admin(state: &ApiState, provided: &str) -> bool {
+    state.admin_token.as_ref().is_some_and(|expected| {
+        bool::from(
             expected
                 .expose_secret()
                 .as_bytes()
                 .ct_eq(provided.as_bytes()),
-        ),
-        _ => false,
-    };
-    if valid {
-        next.run(request).await
-    } else {
-        ApiError(StatusCode::UNAUTHORIZED, "admin token required".to_owned()).into_response()
-    }
+        )
+    })
 }
 
 /// Reports that the server is up.
@@ -146,7 +156,7 @@ async fn health() -> Json<Health> {
     path = "/runs",
     params(("limit" = Option<i64>, Query, description = "Maximum number of runs")),
     responses((status = 200, body = Vec<RunRecord>)),
-    security(("admin_token" = []))
+    security(("bearer" = []))
 )]
 async fn list_runs(
     State(state): State<ApiState>,
@@ -162,7 +172,7 @@ async fn list_runs(
     path = "/runs/{id}",
     params(("id" = Uuid, Path, description = "Run ID")),
     responses((status = 200, body = RunDetail), (status = 404, description = "Unknown run")),
-    security(("admin_token" = []))
+    security(("bearer" = []))
 )]
 async fn get_run(
     State(state): State<ApiState>,
@@ -180,7 +190,7 @@ async fn get_run(
     path = "/agents/{id}/run",
     params(("id" = String, Path, description = "Agent ID")),
     responses((status = 202, body = RunStarted), (status = 404, description = "Unknown agent")),
-    security(("admin_token" = []))
+    security(("bearer" = []))
 )]
 async fn run_agent(
     State(state): State<ApiState>,
@@ -203,7 +213,7 @@ async fn run_agent(
     path = "/connectors/{id}/connect",
     params(("id" = String, Path, description = "Connector name")),
     responses((status = 200, body = ConnectStarted), (status = 400, description = "Cannot start the flow")),
-    security(("admin_token" = []))
+    security(("bearer" = []))
 )]
 async fn connect(
     State(state): State<ApiState>,
@@ -256,10 +266,12 @@ impl utoipa::Modify for SecurityAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
         use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         let components = openapi.components.get_or_insert_with(Default::default);
-        components.add_security_scheme(
-            "admin_token",
-            SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
-        );
+        for name in ["bearer", "admin_token"] {
+            components.add_security_scheme(
+                name,
+                SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
+            );
+        }
     }
 }
 
@@ -267,8 +279,17 @@ impl utoipa::Modify for SecurityAddon {
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Lighthouse API"),
-    paths(health, list_runs, get_run, run_agent, connect),
-    components(schemas(Health, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted)),
+    paths(
+        health, list_runs, get_run, run_agent, connect,
+        auth::status, auth::setup, auth::login, auth::issue_token, auth::logout,
+        auth::devices, auth::revoke_device,
+        auth::list_credentials, auth::put_credential, auth::delete_credential,
+    ),
+    components(schemas(
+        Health, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
+        AuthStatus, SetupRequest, LoginRequest, TokenRequest, TokenIssued, CredentialValue,
+        Device, DeviceKind,
+    )),
     modifiers(&SecurityAddon)
 )]
 pub struct ApiDoc;
@@ -284,16 +305,34 @@ pub async fn serve(listener: tokio::net::TcpListener, router: Router) -> std::io
 
 /// Builds the router.
 pub fn router(state: ApiState) -> Router {
-    let admin = Router::new()
+    let signed_in = Router::new()
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
         .route("/agents/{id}/run", post(run_agent))
         .route("/connectors/{id}/connect", post(connect))
-        .layer(middleware::from_fn_with_state(state.clone(), require_admin));
+        .route("/auth/tokens", post(auth::issue_token))
+        .route("/auth/logout", post(auth::logout))
+        .route("/auth/devices", get(auth::devices))
+        .route("/auth/devices/{id}", delete(auth::revoke_device))
+        .route("/credentials", get(auth::list_credentials))
+        .route(
+            "/credentials/{name}",
+            put(auth::put_credential).delete(auth::delete_credential),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_auth,
+        ));
+    let admin = Router::new().route("/auth/setup", post(auth::setup)).layer(
+        middleware::from_fn_with_state(state.clone(), auth::require_admin),
+    );
     Router::new()
         .route("/health", get(health))
         .route("/openapi.json", get(openapi))
         .route("/oauth/callback", get(oauth_callback))
+        .route("/auth/status", get(auth::status))
+        .route("/auth/login", post(auth::login))
+        .merge(signed_in)
         .merge(admin)
         .with_state(state)
 }
@@ -334,15 +373,17 @@ mod tests {
             TenantId::SINGLE,
             &MasterKey::from_base64(&key).unwrap(),
         );
-        let audit = AuditLog::new(store, TenantId::SINGLE);
+        let audit = AuditLog::new(store.clone(), TenantId::SINGLE);
         let state = ApiState {
             audit: audit.clone(),
             trigger: Arc::new(FakeTrigger(Uuid::nil())),
             oauth: Arc::new(OAuthFlows::new(
                 BTreeMap::new(),
-                vault,
+                vault.clone(),
                 "https://lighthouse.test",
             )),
+            auth: Auth::new(store, TenantId::SINGLE),
+            vault,
             admin_token: token.map(|token| SecretString::from(token.to_owned())),
         };
         (router(state), audit)
@@ -354,13 +395,30 @@ mod tests {
         uri: &str,
         token: Option<&str>,
     ) -> (StatusCode, String) {
+        send(app, method, uri, token, None).await
+    }
+
+    async fn send(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        token: Option<&str>,
+        json: Option<Value>,
+    ) -> (StatusCode, String) {
         let mut request = HttpRequest::builder().method(method).uri(uri);
         if let Some(token) = token {
             request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
         }
+        let body = match json {
+            Some(json) => {
+                request = request.header(header::CONTENT_TYPE, "application/json");
+                Body::from(json.to_string())
+            }
+            None => Body::empty(),
+        };
         let response = app
             .clone()
-            .oneshot(request.body(Body::empty()).unwrap())
+            .oneshot(request.body(body).unwrap())
             .await
             .unwrap();
         let status = response.status();
@@ -383,6 +441,8 @@ mod tests {
             "/runs/{id}",
             "/agents/{id}/run",
             "/connectors/{id}/connect",
+            "/auth/login",
+            "/credentials/{name}",
         ] {
             assert!(spec["paths"].get(path).is_some(), "{path}");
         }
@@ -469,5 +529,137 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert!(!body.contains("<script"), "{body}");
         }
+    }
+
+    const PASSWORD: &str = "a long enough password";
+
+    async fn signed_in(app: &Router) -> String {
+        let (status, _) = send(
+            app,
+            "POST",
+            "/auth/setup",
+            Some(TOKEN),
+            Some(json!({"password": PASSWORD})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, body) = send(
+            app,
+            "POST",
+            "/auth/login",
+            None,
+            Some(json!({"password": PASSWORD, "device_name": "test", "device_kind": "web"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        serde_json::from_str::<TokenIssued>(&body).unwrap().token
+    }
+
+    #[tokio::test]
+    async fn setup_needs_the_admin_token_even_on_a_fresh_instance() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let (_, body) = call(&app, "GET", "/auth/status", None).await;
+        assert!(body.contains("\"setup_required\":true"));
+        let attempt = json!({"password": PASSWORD});
+        let (status, _) = send(&app, "POST", "/auth/setup", None, Some(attempt)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let token = signed_in(&app).await;
+        let attempt = json!({"password": "somebody elses password"});
+        let (status, _) = send(&app, "POST", "/auth/setup", Some(&token), Some(attempt)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (_, body) = call(&app, "GET", "/auth/status", None).await;
+        assert!(body.contains("\"setup_required\":false"));
+    }
+
+    #[tokio::test]
+    async fn device_tokens_open_the_api_until_logout() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let token = signed_in(&app).await;
+        assert_eq!(
+            call(&app, "GET", "/runs", Some(&token)).await.0,
+            StatusCode::OK
+        );
+        let (_, body) = call(&app, "GET", "/auth/devices", Some(&token)).await;
+        assert!(body.contains("\"name\":\"test\""));
+        assert_eq!(
+            call(&app, "POST", "/auth/logout", Some(&token)).await.0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            call(&app, "GET", "/runs", Some(&token)).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrong_password_is_refused_and_later_rate_limited() {
+        let (app, _) = app(Some(TOKEN)).await;
+        signed_in(&app).await;
+        let attempt = json!({"password": "wrong", "device_name": "x", "device_kind": "web"});
+        for expected in [StatusCode::UNAUTHORIZED, StatusCode::TOO_MANY_REQUESTS] {
+            let mut last = StatusCode::OK;
+            for _ in 0..5 {
+                last = send(&app, "POST", "/auth/login", None, Some(attempt.clone()))
+                    .await
+                    .0;
+                if last == expected {
+                    break;
+                }
+            }
+            assert_eq!(last, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn devices_can_be_issued_and_revoked() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let token = signed_in(&app).await;
+        let request = json!({"name": "mac", "kind": "node"});
+        let (status, body) = send(&app, "POST", "/auth/tokens", Some(&token), Some(request)).await;
+        assert_eq!(status, StatusCode::OK);
+        let issued: TokenIssued = serde_json::from_str(&body).unwrap();
+        let uri = format!("/auth/devices/{}", issued.id);
+        assert_eq!(
+            call(&app, "DELETE", &uri, Some(&token)).await.0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            call(&app, "DELETE", &uri, Some(&token)).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call(&app, "GET", "/runs", Some(&issued.token)).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn credentials_are_write_only() {
+        let (app, _) = app(Some(TOKEN)).await;
+        let token = signed_in(&app).await;
+        let uri = "/credentials/mcp:linear";
+        let (status, _) = send(
+            &app,
+            "PUT",
+            uri,
+            Some(&token),
+            Some(json!({"value": "s3cret-value"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, body) = call(&app, "GET", "/credentials", Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("mcp:linear"));
+        assert!(!body.contains("s3cret-value"));
+        let (status, _) = send(&app, "PUT", uri, Some(&token), Some(json!({"value": ""}))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            call(&app, "DELETE", uri, Some(&token)).await.0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            call(&app, "DELETE", uri, Some(&token)).await.0,
+            StatusCode::NOT_FOUND
+        );
     }
 }

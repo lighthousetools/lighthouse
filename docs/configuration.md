@@ -44,5 +44,22 @@ automatically. A pending authorization lives in the server's memory, so finish i
 
 ## API
 
-`GET /openapi.json` describes the API. Everything except `/health`, `/openapi.json` and `/oauth/callback` needs the admin
-token as a bearer token. Without a configured token these endpoints stay closed.
+`GET /openapi.json` describes the API. Everything except `/health`, `/openapi.json`, `/auth/status`, `/auth/login` and
+`/oauth/callback` needs a device token or the admin token as a bearer token.
+
+## Sign-in
+
+Lighthouse has one owner with one password of at least 12 characters. Set it once with the admin token:
+
+```sh
+curl -X POST "$LIGHTHOUSE_URL/auth/setup" \
+  -H "Authorization: Bearer $LIGHTHOUSE_SERVER__ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"password": "..."}'
+```
+
+`POST /auth/login` then issues one token per device. Tokens are stored only as a hash and can be revoked one by one
+through `DELETE /auth/devices/{id}`. Setting a new password signs out every device. After five failed attempts, sign-in
+pauses for a minute.
+
+Credentials can also be managed through `/credentials`. The API accepts values but never returns them.
