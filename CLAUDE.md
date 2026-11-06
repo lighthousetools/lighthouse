@@ -14,3 +14,4 @@ Lighthouse by Lighthouse Tools is a public open-source project.
 - **Names:** no program is called just `lighthouse`. The binaries are `lighthouse-server` and `lht`, the crates are
   `lighthouse-*`.
 - **Docs:** new features, formats and conventions are documented in the same commit.
+- **Integration tests:** they need `DATABASE_URL` pointing to a local Postgres. Each test creates its own database.

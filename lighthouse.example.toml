@@ -12,7 +12,7 @@ url = "postgres://lighthouse:lighthouse@localhost:5432/lighthouse"
 
 [vault]
 # Create the file with `lht keys init`.
-master_key_file = "/var/lib/lighthouse/master.key"
+master_key_file = "/var/lib/lighthouse/data/master.key"
 
 [owner]
 name = "Alex Example"

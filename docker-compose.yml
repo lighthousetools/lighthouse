@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lighthouse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: lighthouse
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lighthouse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  lighthouse:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LIGHTHOUSE_DATABASE__URL: postgres://lighthouse:${POSTGRES_PASSWORD}@postgres:5432/lighthouse
+      LIGHTHOUSE_SERVER__ADMIN_TOKEN: ${LIGHTHOUSE_ADMIN_TOKEN:?set LIGHTHOUSE_ADMIN_TOKEN in .env}
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./lighthouse.toml:/etc/lighthouse/lighthouse.toml:ro
+      - ./agents:/var/lib/lighthouse/agents:ro
+      - ./skills:/var/lib/lighthouse/skills:ro
+      - lighthouse-data:/var/lib/lighthouse/data
+
+volumes:
+  postgres-data:
+  lighthouse-data:
