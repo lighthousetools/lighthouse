@@ -1,0 +1,11 @@
+[package]
+name = "lighthouse-mcp"
+description = "MCP client with OAuth and tool classification."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

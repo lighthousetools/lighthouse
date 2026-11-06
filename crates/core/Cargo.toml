@@ -1,0 +1,15 @@
+[package]
+name = "lighthouse-core"
+description = "Shared types of Lighthouse. Performs no IO."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+uuid.workspace = true

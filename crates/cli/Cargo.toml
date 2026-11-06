@@ -1,0 +1,18 @@
+[package]
+name = "lighthouse-cli"
+description = "Command line for Lighthouse."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "lht"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+
+[lints]
+workspace = true
