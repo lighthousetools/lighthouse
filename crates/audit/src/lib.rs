@@ -1,1 +1,368 @@
 //! Immutable log of runs, tool calls and costs.
+//!
+//! Steps are append-only, enforced by a database trigger. A run row only
+//! changes once, when it finishes.
+
+use chrono::{DateTime, Utc};
+use lighthouse_core::{RunId, TenantId};
+use lighthouse_store::Store;
+use serde::Serialize;
+use sqlx::FromRow;
+use std::str::FromStr;
+use uuid::Uuid;
+
+/// Errors from the audit log.
+#[derive(Debug, thiserror::Error)]
+pub enum AuditError {
+    /// A database operation failed.
+    #[error("audit log error: {0}")]
+    Database(#[from] sqlx::Error),
+}
+
+/// Outcome of a run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    /// Still running.
+    Running,
+    /// Finished and delivered.
+    Succeeded,
+    /// An error stopped the run.
+    Failed,
+    /// The agent was not allowed to start.
+    Rejected,
+    /// A limit stopped the run.
+    LimitExceeded,
+}
+
+impl RunStatus {
+    /// Returns the stored name.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Rejected => "rejected",
+            Self::LimitExceeded => "limit_exceeded",
+        }
+    }
+}
+
+impl FromStr for RunStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, String> {
+        [
+            Self::Running,
+            Self::Succeeded,
+            Self::Failed,
+            Self::Rejected,
+            Self::LimitExceeded,
+        ]
+        .into_iter()
+        .find(|status| status.as_str() == value)
+        .ok_or_else(|| format!("unknown run status `{value}`"))
+    }
+}
+
+/// One step to record.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NewStep {
+    /// `model`, `tool`, `skill` or `delivery`.
+    pub kind: String,
+    /// Model, tool, skill or target name.
+    pub name: String,
+    /// `ok`, `error` or `rejected`.
+    pub status: String,
+    /// Extra information. Must not contain secrets.
+    pub detail: Option<String>,
+    /// Input tokens.
+    pub input_tokens: u64,
+    /// Output tokens.
+    pub output_tokens: u64,
+    /// Cost in EUR.
+    pub cost_eur: f64,
+    /// Duration in milliseconds.
+    pub duration_ms: u64,
+}
+
+/// A run as stored.
+#[derive(Clone, Debug, FromRow, Serialize)]
+pub struct RunRecord {
+    /// Run ID.
+    pub id: Uuid,
+    /// Agent ID.
+    pub agent_id: String,
+    /// What started the run.
+    pub trigger: String,
+    /// Status name.
+    pub status: String,
+    /// Why the run did not succeed.
+    pub reason: Option<String>,
+    /// The final report.
+    pub report: Option<String>,
+    /// Total input tokens.
+    pub input_tokens: i64,
+    /// Total output tokens.
+    pub output_tokens: i64,
+    /// Total cost in EUR.
+    pub cost_eur: f64,
+    /// Start time.
+    pub started_at: DateTime<Utc>,
+    /// End time.
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+/// A step as stored.
+#[derive(Clone, Debug, FromRow, Serialize)]
+pub struct StepRecord {
+    /// Position in the run.
+    pub seq: i32,
+    /// Step kind.
+    pub kind: String,
+    /// Step name.
+    pub name: String,
+    /// Status.
+    pub status: String,
+    /// Extra information.
+    pub detail: Option<String>,
+    /// Input tokens.
+    pub input_tokens: i64,
+    /// Output tokens.
+    pub output_tokens: i64,
+    /// Cost in EUR.
+    pub cost_eur: f64,
+    /// Duration in milliseconds.
+    pub duration_ms: i64,
+    /// Time of the record.
+    pub created_at: DateTime<Utc>,
+}
+
+/// A run with its steps.
+#[derive(Clone, Debug, Serialize)]
+pub struct RunDetail {
+    /// The run.
+    pub run: RunRecord,
+    /// Its steps in order.
+    pub steps: Vec<StepRecord>,
+}
+
+/// How a run ended.
+#[derive(Clone, Debug)]
+pub struct RunEnd<'a> {
+    /// Final status.
+    pub status: RunStatus,
+    /// Why it did not succeed.
+    pub reason: Option<&'a str>,
+    /// The report.
+    pub report: Option<&'a str>,
+}
+
+/// Writes and reads the audit log of one tenant.
+#[derive(Clone, Debug)]
+pub struct AuditLog {
+    store: Store,
+    tenant: TenantId,
+}
+
+const RUN_COLUMNS: &str = "id, agent_id, trigger, status, reason, report, input_tokens, output_tokens, \
+                           cost_eur, started_at, finished_at";
+
+impl AuditLog {
+    /// Creates the log.
+    pub fn new(store: Store, tenant: TenantId) -> Self {
+        Self { store, tenant }
+    }
+
+    /// Records the start of a run.
+    pub async fn start_run(
+        &self,
+        id: RunId,
+        agent_id: &str,
+        trigger: &str,
+    ) -> Result<(), AuditError> {
+        sqlx::query("INSERT INTO runs (id, tenant_id, agent_id, trigger, status) VALUES ($1, $2, $3, $4, $5)")
+            .bind(id.as_uuid())
+            .bind(self.tenant.as_uuid())
+            .bind(agent_id)
+            .bind(trigger)
+            .bind(RunStatus::Running.as_str())
+            .execute(self.store.pool())
+            .await?;
+        Ok(())
+    }
+
+    /// Appends a step and adds its tokens and cost to the run.
+    pub async fn record_step(&self, run: RunId, step: &NewStep) -> Result<(), AuditError> {
+        let mut transaction = self.store.pool().begin().await?;
+        sqlx::query(
+            "INSERT INTO run_steps (id, tenant_id, run_id, seq, kind, name, status, detail, input_tokens,
+                                    output_tokens, cost_eur, duration_ms)
+             SELECT $1, $2, $3, COALESCE(MAX(seq), 0) + 1, $4, $5, $6, $7, $8, $9, $10, $11
+             FROM run_steps WHERE run_id = $3",
+        )
+        .bind(Uuid::now_v7())
+        .bind(self.tenant.as_uuid())
+        .bind(run.as_uuid())
+        .bind(&step.kind)
+        .bind(&step.name)
+        .bind(&step.status)
+        .bind(&step.detail)
+        .bind(step.input_tokens as i64)
+        .bind(step.output_tokens as i64)
+        .bind(step.cost_eur)
+        .bind(step.duration_ms as i64)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE runs SET input_tokens = input_tokens + $1, output_tokens = output_tokens + $2,
+                             cost_eur = cost_eur + $3 WHERE id = $4",
+        )
+        .bind(step.input_tokens as i64)
+        .bind(step.output_tokens as i64)
+        .bind(step.cost_eur)
+        .bind(run.as_uuid())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Records the end of a run.
+    pub async fn finish_run(&self, run: RunId, end: RunEnd<'_>) -> Result<(), AuditError> {
+        sqlx::query("UPDATE runs SET status = $1, reason = $2, report = $3, finished_at = now() WHERE id = $4")
+            .bind(end.status.as_str())
+            .bind(end.reason)
+            .bind(end.report)
+            .bind(run.as_uuid())
+            .execute(self.store.pool())
+            .await?;
+        Ok(())
+    }
+
+    /// Lists the latest runs.
+    pub async fn list_runs(&self, limit: i64) -> Result<Vec<RunRecord>, AuditError> {
+        let query = format!(
+            "SELECT {RUN_COLUMNS} FROM runs WHERE tenant_id = $1 ORDER BY started_at DESC LIMIT $2"
+        );
+        Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant.as_uuid())
+            .bind(limit)
+            .fetch_all(self.store.pool())
+            .await?)
+    }
+
+    /// Returns a run with its steps.
+    pub async fn run_detail(&self, id: Uuid) -> Result<Option<RunDetail>, AuditError> {
+        let query = format!("SELECT {RUN_COLUMNS} FROM runs WHERE tenant_id = $1 AND id = $2");
+        let run: Option<RunRecord> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant.as_uuid())
+            .bind(id)
+            .fetch_optional(self.store.pool())
+            .await?;
+        let Some(run) = run else { return Ok(None) };
+        let steps = sqlx::query_as(
+            "SELECT seq, kind, name, status, detail, input_tokens, output_tokens, cost_eur, duration_ms, created_at
+             FROM run_steps WHERE run_id = $1 ORDER BY seq",
+        )
+        .bind(id)
+        .fetch_all(self.store.pool())
+        .await?;
+        Ok(Some(RunDetail { run, steps }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lighthouse_store::testing::fresh_store;
+
+    async fn log() -> (AuditLog, Store) {
+        let store = fresh_store().await;
+        (AuditLog::new(store.clone(), TenantId::SINGLE), store)
+    }
+
+    fn step(kind: &str, tokens: u64, cost: f64) -> NewStep {
+        NewStep {
+            kind: kind.to_owned(),
+            name: "x".to_owned(),
+            status: "ok".to_owned(),
+            input_tokens: tokens,
+            output_tokens: tokens * 2,
+            cost_eur: cost,
+            ..NewStep::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn records_a_run_with_steps_and_totals() {
+        let (log, _) = log().await;
+        let run = RunId::new();
+        log.start_run(run, "morning-brief", "manual").await.unwrap();
+        log.record_step(run, &step("model", 10, 0.5)).await.unwrap();
+        log.record_step(run, &step("tool", 0, 0.0)).await.unwrap();
+        log.record_step(run, &step("model", 5, 0.25)).await.unwrap();
+        let end = RunEnd {
+            status: RunStatus::Succeeded,
+            reason: None,
+            report: Some("Report"),
+        };
+        log.finish_run(run, end).await.unwrap();
+
+        let detail = log.run_detail(run.as_uuid()).await.unwrap().unwrap();
+        assert_eq!(detail.run.status, "succeeded");
+        assert_eq!(detail.run.report.as_deref(), Some("Report"));
+        assert_eq!(detail.run.input_tokens, 15);
+        assert_eq!(detail.run.output_tokens, 30);
+        assert!((detail.run.cost_eur - 0.75).abs() < 1e-9);
+        assert!(detail.run.finished_at.is_some());
+        let order: Vec<_> = detail
+            .steps
+            .iter()
+            .map(|step| (step.seq, step.kind.as_str()))
+            .collect();
+        assert_eq!(order, [(1, "model"), (2, "tool"), (3, "model")]);
+    }
+
+    #[tokio::test]
+    async fn lists_newest_first_and_honors_the_limit() {
+        let (log, _) = log().await;
+        for agent in ["first", "second", "third"] {
+            log.start_run(RunId::new(), agent, "cron").await.unwrap();
+        }
+        let runs = log.list_runs(2).await.unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].agent_id, "third");
+    }
+
+    #[tokio::test]
+    async fn unknown_run_is_none() {
+        let (log, _) = log().await;
+        assert!(log.run_detail(Uuid::nil()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn steps_cannot_be_changed_or_deleted() {
+        let (log, store) = log().await;
+        let run = RunId::new();
+        log.start_run(run, "agent", "manual").await.unwrap();
+        log.record_step(run, &step("tool", 0, 0.0)).await.unwrap();
+        for statement in [
+            "UPDATE run_steps SET status = 'forged'",
+            "DELETE FROM run_steps",
+        ] {
+            let error = sqlx::query(statement)
+                .execute(store.pool())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("append-only"), "{error}");
+        }
+    }
+
+    #[test]
+    fn status_names_round_trip() {
+        assert_eq!("limit_exceeded".parse(), Ok(RunStatus::LimitExceeded));
+        assert!("nope".parse::<RunStatus>().is_err());
+    }
+}
