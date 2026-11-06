@@ -56,6 +56,7 @@ async fn resume(state: &ApiState, run: Uuid) {
 /// Lists proposals, newest first.
 #[utoipa::path(
     get,
+    operation_id = "list_approvals",
     path = "/approvals",
     params(
         ("status" = Option<String>, Query, description = "pending, approved, denied or expired"),
@@ -80,6 +81,7 @@ pub(crate) async fn list(
 /// Decides one proposal. The first decision wins.
 #[utoipa::path(
     post,
+    operation_id = "decide_approval",
     path = "/approvals/{id}/decision",
     params(("id" = Uuid, Path, description = "Approval ID")),
     request_body = Decision,
@@ -112,6 +114,7 @@ pub(crate) async fn decide(
 /// Decides many proposals at once.
 #[utoipa::path(
     post,
+    operation_id = "decide_approvals",
     path = "/approvals/decisions",
     request_body = BatchDecision,
     responses((status = 200, body = BatchResult)),

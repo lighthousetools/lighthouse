@@ -119,6 +119,9 @@ pub struct PathsConfig {
     /// Writable directory for agents created in the apps.
     #[serde(default = "default_created_agents_dir")]
     pub created_agents: PathBuf,
+    /// Directory with the built web app. Without it, the server only offers the API.
+    #[serde(default)]
+    pub web: Option<PathBuf>,
 }
 
 fn default_created_agents_dir() -> PathBuf {
@@ -139,6 +142,7 @@ impl Default for PathsConfig {
             agents: default_agents_dir(),
             skills: default_skills_dir(),
             created_agents: default_created_agents_dir(),
+            web: None,
         }
     }
 }

@@ -120,7 +120,8 @@ pub struct CredentialValue {
 }
 
 /// Reports whether the instance is set up.
-#[utoipa::path(get, path = "/auth/status", responses((status = 200, body = AuthStatus)))]
+#[utoipa::path(get, operation_id = "auth_status",
+    path = "/auth/status", responses((status = 200, body = AuthStatus)))]
 pub(crate) async fn status(State(state): State<ApiState>) -> Result<Json<AuthStatus>, ApiError> {
     let set_up = state.auth.is_set_up().await.map_err(auth_error)?;
     Ok(Json(AuthStatus {

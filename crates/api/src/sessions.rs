@@ -55,6 +55,7 @@ pub struct NodeChange {
 /// Reports the state of a desktop agent.
 #[utoipa::path(
     post,
+    operation_id = "report_node",
     path = "/node/report",
     request_body = NodeReport,
     responses((status = 200, body = NodeState)),
@@ -73,6 +74,7 @@ pub(crate) async fn report(
 /// Forwards a permission request of a session.
 #[utoipa::path(
     post,
+    operation_id = "request_permission",
     path = "/node/permissions",
     request_body = NewPermission,
     responses((status = 201, body = Permission)),
@@ -204,6 +206,7 @@ pub(crate) async fn permissions(
 /// Decides a permission request. The first decision wins.
 #[utoipa::path(
     post,
+    operation_id = "decide_permission",
     path = "/permissions/{id}/decision",
     params(("id" = Uuid, Path, description = "Request ID")),
     request_body = PermissionDecision,

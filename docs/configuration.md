@@ -50,6 +50,9 @@ automatically. A pending authorization lives in the server's memory, so finish i
 
 Other endpoints: `/agents`, `/connectors`, `/skills` and `/costs`.
 
+To serve the web app from the same address, build `lighthousetools/lighthouse-web` and set `paths.web` to its `dist`
+directory.
+
 ## Sign-in
 
 Lighthouse has one owner with one password of at least 12 characters. Set it once with the admin token:

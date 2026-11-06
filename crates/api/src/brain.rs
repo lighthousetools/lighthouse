@@ -76,6 +76,7 @@ pub struct AskAnswer {
 /// Searches the Brain.
 #[utoipa::path(
     get,
+    operation_id = "search_brain",
     path = "/brain/search",
     params(
         ("q" = String, Query, description = "Search terms"),
@@ -100,6 +101,7 @@ pub(crate) async fn search(
 /// Asks a question and answers from the stored entries.
 #[utoipa::path(
     post,
+    operation_id = "ask_brain",
     path = "/brain/ask",
     request_body = AskRequest,
     responses(
@@ -132,6 +134,7 @@ pub(crate) async fn ask(
 /// Lists entries, latest first.
 #[utoipa::path(
     get,
+    operation_id = "list_entries",
     path = "/brain/entries",
     params(
         ("type" = Option<String>, Query, description = "Entry kind"),
@@ -173,6 +176,7 @@ impl From<Entry> for EntryDetail {
 /// Stores an entry. Without sources it counts as entered in the app.
 #[utoipa::path(
     post,
+    operation_id = "create_entry",
     path = "/brain/entries",
     request_body = NewEntry,
     responses(
@@ -195,6 +199,7 @@ pub(crate) async fn create(
 /// Reads an entry.
 #[utoipa::path(
     get,
+    operation_id = "get_entry",
     path = "/brain/entries/{id}",
     params(("id" = Uuid, Path, description = "Entry ID")),
     responses((status = 200, body = EntryDetail), (status = 404, description = "Unknown entry")),
@@ -211,6 +216,7 @@ pub(crate) async fn get(
 /// Changes an entry.
 #[utoipa::path(
     patch,
+    operation_id = "update_entry",
     path = "/brain/entries/{id}",
     params(("id" = Uuid, Path, description = "Entry ID")),
     request_body = EntryPatch,
@@ -229,6 +235,7 @@ pub(crate) async fn update(
 /// Deletes an entry for real, with its original and all index data.
 #[utoipa::path(
     delete,
+    operation_id = "delete_entry",
     path = "/brain/entries/{id}",
     params(("id" = Uuid, Path, description = "Entry ID")),
     responses((status = 204), (status = 404, description = "Unknown entry")),
@@ -248,6 +255,7 @@ pub(crate) async fn delete(
 /// Uploads a file. The body is the file, `Content-Type` its type.
 #[utoipa::path(
     post,
+    operation_id = "upload_file",
     path = "/brain/files",
     params(("name" = String, Query, description = "File name")),
     request_body(content = Vec<u8>, content_type = "application/octet-stream"),
@@ -278,6 +286,7 @@ pub(crate) async fn upload(
 /// Downloads the original of a file.
 #[utoipa::path(
     get,
+    operation_id = "download_file",
     path = "/brain/files/{id}",
     params(("id" = Uuid, Path, description = "Entry ID")),
     responses((status = 200, description = "The file"), (status = 404, description = "No file")),

@@ -350,6 +350,12 @@ pub async fn serve(listener: tokio::net::TcpListener, router: Router) -> std::io
         .await
 }
 
+/// Serves the built web app from a directory for everything the API does not
+/// answer. The app uses hash routes, so unknown paths stay 404.
+pub fn with_web_app(router: Router, directory: &std::path::Path) -> Router {
+    router.fallback_service(tower_http::services::ServeDir::new(directory))
+}
+
 /// Builds the router.
 pub fn router(state: ApiState) -> Router {
     let signed_in = Router::new()
@@ -738,6 +744,40 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         serde_json::from_str::<TokenIssued>(&body).unwrap().token
+    }
+
+    #[tokio::test]
+    async fn the_web_app_is_served_next_to_the_api() {
+        let dir = brain_root();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<title>Lighthouse</title>").unwrap();
+        let (app, _) = app(Some(TOKEN)).await;
+        let app = with_web_app(app, &dir);
+        let (status, body) = call(&app, "GET", "/", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("Lighthouse"));
+        assert_eq!(
+            call(&app, "GET", "/runs", None).await.0,
+            StatusCode::UNAUTHORIZED,
+            "the API stays protected"
+        );
+    }
+
+    #[test]
+    fn every_operation_has_its_own_id() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        let mut ids = Vec::new();
+        for item in spec["paths"].as_object().unwrap().values() {
+            for operation in item.as_object().unwrap().values() {
+                if let Some(id) = operation["operationId"].as_str() {
+                    ids.push(id.to_owned());
+                }
+            }
+        }
+        let total = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), total, "generated clients need unique IDs");
     }
 
     #[tokio::test]

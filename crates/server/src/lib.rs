@@ -587,6 +587,10 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         sessions: Sessions::new(session_store, tenant),
         admin_token: config.server.admin_token.clone(),
     });
+    let router = match &config.paths.web {
+        Some(directory) => lighthouse_api::with_web_app(router, directory),
+        None => router,
+    };
     Ok(App {
         router,
         scheduler,
