@@ -447,7 +447,6 @@ mod tests {
         assert_eq!(status.sessions[0].summary.as_deref(), Some("Done"));
 
         agent.handle(event("SessionEnd")).await;
-        agent.report().await.unwrap();
         assert!(
             agent.status().sessions.is_empty(),
             "sent once, then dropped"
@@ -456,6 +455,7 @@ mod tests {
         let requests = server.received_requests().await.unwrap();
         let body: Value = requests.last().unwrap().body_json().unwrap();
         assert_eq!(body["sessions"][0]["status"], "done");
+        assert_eq!(requests.len(), 3, "every change is reported at once");
     }
 
     #[tokio::test]
