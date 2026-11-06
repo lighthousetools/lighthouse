@@ -276,7 +276,7 @@ impl Config {
         Self::from_figment(
             Figment::new()
                 .merge(Toml::file_exact(path))
-                .merge(Env::prefixed("LIGHTHOUSE_").split("__")),
+                .merge(Env::prefixed("LIGHTHOUSE_").ignore(&["CONFIG"]).split("__")),
         )
     }
 
@@ -339,6 +339,17 @@ mod tests {
             jail.set_env("LIGHTHOUSE_DATABASE__URL", "postgres://override");
             let config = Config::load(Path::new("lighthouse.toml")).unwrap();
             assert_eq!(config.database.url.expose_secret(), "postgres://override");
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)]
+    fn config_path_variable_is_not_a_setting() {
+        Jail::expect_with(|jail| {
+            jail.create_file("lighthouse.toml", EXAMPLE)?;
+            jail.set_env("LIGHTHOUSE_CONFIG", "lighthouse.toml");
+            Config::load(Path::new("lighthouse.toml")).unwrap();
             Ok(())
         });
     }
