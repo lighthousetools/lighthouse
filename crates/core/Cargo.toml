@@ -11,5 +11,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+croner.workspace = true
 serde.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
 uuid.workspace = true

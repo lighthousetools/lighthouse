@@ -1,5 +1,7 @@
 //! Shared types of Lighthouse. Performs no IO.
 
+pub mod agent;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
