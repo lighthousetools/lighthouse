@@ -24,13 +24,13 @@ You need Docker and a public HTTPS URL if you want to use OAuth connectors.
 cp lighthouse.example.toml lighthouse.toml   # adjust owner, models and connectors
 cp .env.example .env                         # set both values
 mkdir -p agents && cp agents/examples/*.md agents/
-docker compose up -d --build
+docker compose build
 
-alias lht='docker compose exec lighthouse lht'
+alias lht='docker compose run --rm lighthouse lht'
 lht keys init                # creates the master key, back it up
-docker compose restart lighthouse
+docker compose up -d
 
-printf '%s\n' "$API_KEY" | docker compose exec -T lighthouse lht keys set anthropic
+lht keys set anthropic       # asks for the key
 lht connect linear           # prints the URL that authorizes the connector
 lht connectors tools linear  # shows the real tool names for your allowlist
 lht agents check
