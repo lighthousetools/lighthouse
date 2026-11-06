@@ -86,6 +86,8 @@ pub struct Runtime {
     pub notifier: Arc<dyn Notifier>,
     /// A short description of the person this instance works for.
     pub owner_context: String,
+    /// Email address behind `deliver: owner`.
+    pub owner_email: String,
     /// Time zone for dates in prompts.
     pub zone: Tz,
 }
@@ -350,12 +352,17 @@ impl Runtime {
     async fn deliver(&self, run: RunId, agent: &AgentDefinition, report: &str) -> Result<(), Stop> {
         let mut failures = Vec::new();
         for target in &agent.deliver {
-            let name = match target {
+            let target = match target {
+                Delivery::Owner => Delivery::Mail(self.owner_email.clone()),
+                other => other.clone(),
+            };
+            let name = match &target {
                 Delivery::Mail(address) => format!("mail:{address}"),
                 Delivery::Slack(alias) => format!("slack:{alias}"),
+                Delivery::Owner => "owner".to_owned(),
             };
             let start = Instant::now();
-            let result = self.notifier.deliver(target, &agent.name, report).await;
+            let result = self.notifier.deliver(&target, &agent.name, report).await;
             let mut record = step("delivery", &name, "ok");
             record.duration_ms = elapsed_ms(start);
             if let Err(error) = result {
@@ -372,27 +379,36 @@ impl Runtime {
         }
     }
 
+    /// Registers a run, so that it is visible before it starts working.
+    pub async fn register(
+        &self,
+        run: RunId,
+        agent: &AgentDefinition,
+        trigger: &str,
+    ) -> Result<(), lighthouse_audit::AuditError> {
+        self.audit.start_run(run, &agent.id, trigger).await
+    }
+
     /// Runs an agent to the end and returns the run ID.
-    ///
-    /// An agent with a tool above `read` does not start. The log shows why.
     pub async fn run(
         &self,
         agent: &AgentDefinition,
         trigger: &str,
     ) -> Result<RunId, lighthouse_audit::AuditError> {
         let run = RunId::new();
-        self.run_with_id(run, agent, trigger).await?;
+        self.register(run, agent, trigger).await?;
+        self.execute(run, agent).await?;
         Ok(run)
     }
 
-    /// Runs an agent under a given run ID.
-    pub async fn run_with_id(
+    /// Executes a registered run.
+    ///
+    /// An agent with a tool above `read` does not start. The log shows why.
+    pub async fn execute(
         &self,
         run: RunId,
         agent: &AgentDefinition,
-        trigger: &str,
     ) -> Result<(), lighthouse_audit::AuditError> {
-        self.audit.start_run(run, &agent.id, trigger).await?;
         let blocked = self.policy.blocked(agent);
         if !blocked.is_empty() {
             for tool in &blocked {

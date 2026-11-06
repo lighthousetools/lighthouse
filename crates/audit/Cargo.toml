@@ -17,6 +17,7 @@ lighthouse-store.workspace = true
 serde.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+utoipa.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

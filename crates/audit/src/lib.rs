@@ -9,6 +9,7 @@ use lighthouse_store::Store;
 use serde::Serialize;
 use sqlx::FromRow;
 use std::str::FromStr;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// Errors from the audit log.
@@ -87,7 +88,7 @@ pub struct NewStep {
 }
 
 /// A run as stored.
-#[derive(Clone, Debug, FromRow, Serialize)]
+#[derive(Clone, Debug, FromRow, Serialize, ToSchema)]
 pub struct RunRecord {
     /// Run ID.
     pub id: Uuid,
@@ -114,7 +115,7 @@ pub struct RunRecord {
 }
 
 /// A step as stored.
-#[derive(Clone, Debug, FromRow, Serialize)]
+#[derive(Clone, Debug, FromRow, Serialize, ToSchema)]
 pub struct StepRecord {
     /// Position in the run.
     pub seq: i32,
@@ -139,7 +140,7 @@ pub struct StepRecord {
 }
 
 /// A run with its steps.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct RunDetail {
     /// The run.
     pub run: RunRecord,

@@ -252,7 +252,7 @@ pub struct DeliveryConfig {
 }
 
 /// SMTP settings.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SmtpConfig {
     /// SMTP host.

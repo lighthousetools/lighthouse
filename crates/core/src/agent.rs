@@ -106,18 +106,23 @@ pub enum Delivery {
     Mail(String),
     /// A Slack alias from the configuration.
     Slack(String),
+    /// The configured owner of this instance.
+    Owner,
 }
 
 impl FromStr for Delivery {
     type Err = AgentError;
 
     fn from_str(value: &str) -> Result<Self, AgentError> {
+        if value == "owner" {
+            return Ok(Self::Owner);
+        }
         match value.split_once(':') {
             Some(("mail", address)) if address.contains('@') => Ok(Self::Mail(address.to_owned())),
             Some(("slack", alias)) if !alias.is_empty() => Ok(Self::Slack(alias.to_owned())),
             _ => Err(field(
                 "deliver",
-                format!("`{value}` is not mail:<address> or slack:<alias>"),
+                format!("`{value}` is not owner, mail:<address> or slack:<alias>"),
             )),
         }
     }
@@ -273,7 +278,7 @@ impl AgentDefinition {
                 .map(|yaml| (yaml, ""))
                 .ok_or(AgentError::MissingFrontmatter)?,
         };
-        let raw: RawAgent = serde_yaml_ng::from_str(frontmatter)
+        let raw: RawAgent = serde_saphyr::from_str(frontmatter)
             .map_err(|error| AgentError::Frontmatter(error.to_string()))?;
         let trigger = match (raw.trigger.cron, raw.trigger.manual) {
             (Some(cron), _) => {
@@ -466,6 +471,11 @@ Write the report.
             let error = with(frontmatter).unwrap_err().to_string();
             assert!(error.contains(expected), "{frontmatter}: {error}");
         }
+    }
+
+    #[test]
+    fn parses_the_owner_target() {
+        assert_eq!("owner".parse(), Ok(Delivery::Owner));
     }
 
     #[test]

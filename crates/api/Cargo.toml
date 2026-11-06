@@ -9,3 +9,26 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+lighthouse-audit.workspace = true
+lighthouse-mcp.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+lighthouse-config.workspace = true
+lighthouse-core.workspace = true
+lighthouse-store = { workspace = true, features = ["testing"] }
+lighthouse-vault.workspace = true
+tower.workspace = true

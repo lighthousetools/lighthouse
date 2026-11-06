@@ -198,6 +198,7 @@ impl Notifier for ChannelNotifier {
         match target {
             Delivery::Mail(address) => self.mail(address, subject, markdown).await,
             Delivery::Slack(alias) => self.slack(alias, subject, markdown).await,
+            Delivery::Owner => Err(NotifyError::NotConfigured("owner".to_owned())),
         }
     }
 }

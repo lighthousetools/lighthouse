@@ -134,6 +134,7 @@ async fn fixture(script: Vec<ChatResponse>, fail_delivery: bool) -> Fixture {
         audit: audit.clone(),
         notifier: notifier.clone(),
         owner_context: "You work for Alex.".to_owned(),
+        owner_email: "alex@example.com".to_owned(),
         zone: chrono_tz::Europe::Berlin,
     };
     Fixture {
@@ -148,7 +149,7 @@ async fn fixture(script: Vec<ChatResponse>, fail_delivery: bool) -> Fixture {
 fn agent(extra: &str) -> AgentDefinition {
     AgentDefinition::parse(&format!(
         "---\nname: Brief\nscope: org\ntrigger:\n  manual: true\ntools:\n  - linear.list_issues\n\
-         skills: [brief]\ndeliver: [\"mail:alex@example.com\"]\n{extra}\n---\nWrite the brief.\n"
+         skills: [brief]\ndeliver: [owner]\n{extra}\n---\nWrite the brief.\n"
     ))
     .unwrap()
 }
