@@ -281,6 +281,22 @@ impl AuditLog {
         .await?)
     }
 
+    /// Fails runs a stopped server left behind. Paused runs keep waiting.
+    ///
+    /// Only call this at start, while nothing can be running.
+    pub async fn fail_interrupted_runs(&self) -> Result<u64, AuditError> {
+        let result = sqlx::query(
+            "UPDATE runs SET status = $1, reason = 'the server stopped during this run', \
+             finished_at = now() WHERE tenant_id = $2 AND status = $3",
+        )
+        .bind(RunStatus::Failed.as_str())
+        .bind(self.tenant.as_uuid())
+        .bind(RunStatus::Running.as_str())
+        .execute(self.store.pool())
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Lists the latest runs of an agent.
     pub async fn list_agent_runs(
         &self,

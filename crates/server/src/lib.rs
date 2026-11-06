@@ -504,6 +504,10 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
     let tenant = TenantId::SINGLE;
     let vault = Vault::new(store.clone(), tenant, &master_key(&config)?);
     let audit = AuditLog::new(store.clone(), tenant);
+    let interrupted = audit.fail_interrupted_runs().await?;
+    if interrupted > 0 {
+        tracing::warn!(interrupted, "marked interrupted runs as failed");
+    }
     let auth_store = store.clone();
     let session_store = store.clone();
     let delivery = lighthouse_config::DeliveryConfig {
@@ -584,6 +588,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         brain: brain.clone(),
         assistant,
         catalog,
+        owner_name: config.owner.name.clone(),
         sessions: Sessions::new(session_store, tenant),
         admin_token: config.server.admin_token.clone(),
     });

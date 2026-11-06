@@ -98,6 +98,8 @@ pub struct ApiState {
     pub catalog: Arc<dyn Catalog>,
     /// Desktop agents and their sessions.
     pub sessions: Sessions,
+    /// Name of the person this instance works for.
+    pub owner_name: String,
     /// Admin token. Without one, the password can only be set by the CLI.
     pub admin_token: Option<SecretString>,
 }
@@ -109,6 +111,13 @@ pub struct Health {
     pub status: &'static str,
     /// Server version.
     pub version: &'static str,
+}
+
+/// The signed-in owner.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct Me {
+    /// Display name.
+    pub name: String,
 }
 
 /// Answer when a run started.
@@ -181,6 +190,19 @@ async fn health() -> Json<Health> {
     Json(Health {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
+    })
+}
+
+/// Returns the signed-in owner.
+#[utoipa::path(
+    get,
+    path = "/me",
+    responses((status = 200, body = Me)),
+    security(("bearer" = []))
+)]
+async fn me(State(state): State<ApiState>) -> Json<Me> {
+    Json(Me {
+        name: state.owner_name.clone(),
     })
 }
 
@@ -314,7 +336,7 @@ impl utoipa::Modify for SecurityAddon {
 #[openapi(
     info(title = "Lighthouse API"),
     paths(
-        health, list_runs, get_run, run_agent, connect,
+        health, me, list_runs, get_run, run_agent, connect,
         auth::status, auth::setup, auth::login, auth::issue_token, auth::logout,
         auth::devices, auth::revoke_device,
         auth::list_credentials, auth::put_credential, auth::delete_credential,
@@ -328,7 +350,7 @@ impl utoipa::Modify for SecurityAddon {
         sessions::update_node, sessions::sessions, sessions::permissions, sessions::decide,
     ),
     components(schemas(
-        Health, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
+        Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
         AuthStatus, SetupRequest, LoginRequest, TokenRequest, TokenIssued, CredentialValue,
         Device, DeviceKind, Approval, Decision, BatchDecision, BatchResult,
         Entry, EntryDetail, EntryPatch, EntrySummary, NewEntry, SearchHit, Source,
@@ -359,6 +381,7 @@ pub fn with_web_app(router: Router, directory: &std::path::Path) -> Router {
 /// Builds the router.
 pub fn router(state: ApiState) -> Router {
     let signed_in = Router::new()
+        .route("/me", get(me))
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
         .route("/agents", get(catalog::agents).post(catalog::save_agent))
@@ -573,6 +596,7 @@ mod tests {
             vault,
             brain: Brain::new(store.clone(), TenantId::SINGLE, brain_root()).unwrap(),
             sessions: Sessions::new(store, TenantId::SINGLE),
+            owner_name: "Alex".to_owned(),
             assistant: Arc::new(FakeAssistant),
             catalog: Arc::new(FakeCatalog),
             admin_token: token.map(|token| SecretString::from(token.to_owned())),
@@ -804,6 +828,8 @@ mod tests {
             call(&app, "GET", "/runs", Some(&token)).await.0,
             StatusCode::OK
         );
+        let (_, body) = call(&app, "GET", "/me", Some(&token)).await;
+        assert!(body.contains("Alex"));
         let (_, body) = call(&app, "GET", "/auth/devices", Some(&token)).await;
         assert!(body.contains("\"name\":\"test\""));
         assert_eq!(

@@ -301,6 +301,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_restart_fails_running_runs_but_keeps_paused_ones() {
+        let (log, paused_run) = paused(&[Uuid::now_v7()]).await;
+        let running = RunId::new();
+        log.start_run(running, "brief", "manual").await.unwrap();
+        assert_eq!(log.fail_interrupted_runs().await.unwrap(), 1);
+        let detail = log.run_detail(running.as_uuid()).await.unwrap().unwrap();
+        assert_eq!(detail.run.status, "failed");
+        assert!(detail.run.finished_at.is_some());
+        let waiting = log.run_detail(paused_run.as_uuid()).await.unwrap().unwrap();
+        assert_eq!(waiting.run.status, "waiting");
+    }
+
+    #[tokio::test]
     async fn overdue_approvals_expire_and_cannot_be_decided() {
         let id = Uuid::now_v7();
         let (log, run) = paused(&[id]).await;
