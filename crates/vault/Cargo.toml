@@ -9,3 +9,16 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+aes-gcm.workspace = true
+base64.workspace = true
+lighthouse-core.workspace = true
+lighthouse-store.workspace = true
+secrecy.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+lighthouse-store = { workspace = true, features = ["testing"] }
+tokio.workspace = true
+tempfile.workspace = true
