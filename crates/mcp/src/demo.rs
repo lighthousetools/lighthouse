@@ -21,7 +21,7 @@ use std::sync::Arc;
 pub struct DemoServer;
 
 /// Tools and what they do.
-pub const TOOLS: [(&str, &str); 26] = [
+pub const TOOLS: [(&str, &str); 29] = [
     ("list_issues", "Lists open issues."),
     ("echo", "Returns its arguments."),
     ("delete_issue", "Deletes an issue."),
@@ -57,6 +57,9 @@ pub const TOOLS: [(&str, &str); 26] = [
     ("create_invoice_draft", "Creates an invoice draft."),
     ("add_next_step", "Adds a next step to a room."),
     ("create_post", "Publishes a post."),
+    ("add_comment", "Comments on an issue."),
+    ("create_pull_request_review", "Reviews a pull request."),
+    ("move_event", "Moves a calendar event."),
 ];
 
 fn tool(name: &'static str, description: &'static str) -> Tool {
@@ -247,7 +250,10 @@ pub fn sample(name: &str, arguments: &Value) -> Option<Value> {
         | "move_deal"
         | "create_invoice_draft"
         | "add_next_step"
-        | "create_post" => json!({"ok": true, "tool": name, "id": format!("{name}-1")}),
+        | "create_post"
+        | "add_comment"
+        | "create_pull_request_review"
+        | "move_event" => json!({"ok": true, "tool": name, "id": format!("{name}-1")}),
         _ => return None,
     })
 }

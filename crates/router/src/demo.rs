@@ -55,19 +55,99 @@ const AUTOMATION: &str = "---\nname: Tell me about failed briefs\ntrigger:\n  ev
 
 const AGENT: &str = "---\nname: Inbox helper\nscope: org\ntrigger:\n  manual: true\ntools:\n  - demo.list_threads\n---\nSummarize the new mail and propose replies.\n";
 
-/// Fictional arguments for a tool call, so a write that waits for approval has
-/// something to review.
+/// Fictional arguments for a tool call, so a proposal has something to
+/// review: the text, who it is for, why, and the item it answers.
 pub fn arguments(tool: &str) -> serde_json::Value {
     let tool = tool.to_lowercase();
-    if tool.ends_with("send_reply") || tool.ends_with("create_draft") {
+    let ends = |name: &str| tool.ends_with(name);
+    if ends("send_reply") {
         return json!({
             "thread_id": "t1",
             "to": "John Roe <john.roe@globex.example>",
             "subject": "Re: Updated offer for Globex?",
             "body": "Hi John,\n\nthe updated offer is attached: 18,000 EUR for the renewal, with the pilot for one team included. I can walk you through it on Thursday.\n\nBest regards,\nAlex",
+            "_reason": "John asked for the updated offer by Friday, and the renewal has been quiet for a month.",
+            "_context": "t1",
+        });
+    }
+    if ends("create_draft") {
+        return json!({
+            "thread_id": "t2",
+            "to": "Acme Accounts <accounts@acme.example>",
+            "subject": "Re: Invoice 2026-114 paid",
+            "body": "Hi,\n\nthank you for the quick payment of invoice 2026-114. The next invoice follows at the end of the month.\n\nBest regards,\nAlex",
+            "_reason": "Acme paid early; a short thank-you keeps the relationship warm.",
+            "_context": "t2",
+        });
+    }
+    if ends("add_comment") {
+        return json!({
+            "issue_id": "i1",
+            "body": "I can reproduce the timeout after 30 minutes idle. The session refresh runs too late; I will move it before the expiry and add a test.",
+            "_reason": "Alex is stuck on DEMO-1, and you know where the refresh happens.",
+            "_context": "i1",
+        });
+    }
+    if ends("create_pull_request_review") {
+        return json!({
+            "owner": "example",
+            "repo": "demo",
+            "pullNumber": 42,
+            "event": "APPROVE",
+            "body": "Looks good. Loading in batches fixes the memory spike; the checks pass. One nit: name the batch size.",
+            "_reason": "Jane Doe asked for your review two days ago, and the checks are green.",
+            "_context": "example/demo/pull/42",
+        });
+    }
+    if ends("move_event") {
+        return json!({
+            "event_id": "e2",
+            "attendee": "John Roe <john.roe@globex.example>",
+            "title": "Move the Globex offer call to Thursday 14:00",
+            "start": "Thursday 14:00",
+            "end": "Thursday 15:00",
+            "_reason": "The call collides with your focus block for the proposal.",
+            "_context": "e2",
+        });
+    }
+    if ends("posts__propose") || ends("posts.propose") {
+        return json!({
+            "title": "Late invoices",
+            "body": "Most invoices are not late because customers are slow.\n\nThey are late because nobody owns the reminder. We gave each invoice an owner and a date, and the delay dropped from 19 to 6 days.\n\nWho owns the reminders in your team?",
+            "channel": "linkedin",
+            "pillar": "finance",
+            "_reason": "Your last post on invoices reached 6,100 people; this is the follow-up readers asked for.",
         });
     }
     json!({})
+}
+
+/// Applies a tone to a draft, the way a model would.
+fn retone(system: &str, text: &str) -> String {
+    let paragraphs: Vec<&str> = text.split("\n\n").collect();
+    if system.contains("shorter") {
+        let point = paragraphs
+            .get(1)
+            .or(paragraphs.first())
+            .copied()
+            .unwrap_or(text);
+        let sentence = point.split_inclusive(". ").next().unwrap_or(point).trim();
+        return match (paragraphs.first(), paragraphs.last()) {
+            (Some(greeting), Some(closing)) if paragraphs.len() > 2 => {
+                format!("{greeting}\n\n{sentence}\n\n{closing}")
+            }
+            _ => sentence.to_owned(),
+        };
+    }
+    if system.contains("warmer") {
+        return text.replacen(",\n\n", ",\n\nit is good to hear from you. ", 1);
+    }
+    if system.contains("formal") {
+        return text
+            .replacen("Hi ", "Dear ", 1)
+            .replace("Best regards", "Kind regards");
+    }
+    text.to_owned()
 }
 
 /// Writes the final answer for a request.
@@ -79,6 +159,9 @@ pub fn answer(request: &ChatRequest) -> String {
     }
     if system.contains("Available skills") && system.contains("Available tools") {
         return AGENT.to_owned();
+    }
+    if system.contains("Rewrite this draft") {
+        return retone(system, untrusted(&user));
     }
     if system.contains("Rewrite this post") {
         let text = untrusted(&user);
@@ -132,7 +215,11 @@ impl Provider for DemoProvider {
             .tools
             .iter()
             .map(|tool| tool.name.as_str())
-            .filter(|name| *name != "load_skill" && !name.contains("propose"))
+            .filter(|name| {
+                *name != "load_skill"
+                    && !name.starts_with("tasks__")
+                    && !name.starts_with("memory__")
+            })
             .collect();
         if !callable.is_empty() && tool_results(request) == 0 {
             let content = callable
@@ -192,6 +279,18 @@ mod tests {
             .map(|(_, name, _)| name.to_owned())
             .collect();
         assert_eq!(calls, ["demo__list_threads"]);
+        let with_post = DemoProvider
+            .complete(
+                "demo",
+                &request("agent", "Prepare.", &["posts__propose", "tasks__propose"]),
+            )
+            .await
+            .unwrap();
+        let calls: Vec<_> = with_post
+            .tool_uses()
+            .map(|(_, name, _)| name.to_owned())
+            .collect();
+        assert_eq!(calls, ["posts__propose"]);
         let mut second = request("agent", "Write the Morning Brief.", &["demo__list_threads"]);
         second.messages.push(Message {
             role: crate::Role::User,
@@ -210,12 +309,60 @@ mod tests {
     }
 
     #[test]
-    fn writes_get_fictional_arguments() {
+    fn writes_get_fictional_arguments_with_a_reason() {
         let reply = arguments("demo__send_reply");
         assert_eq!(reply["subject"], "Re: Updated offer for Globex?");
         assert!(reply["to"].as_str().unwrap().contains("globex.example"));
         assert!(reply["body"].as_str().unwrap().contains("18,000 EUR"));
+        for tool in [
+            "demo__send_reply",
+            "demo__create_draft",
+            "demo__add_comment",
+            "demo__create_pull_request_review",
+            "demo__move_event",
+            "posts__propose",
+        ] {
+            assert!(arguments(tool)["_reason"].is_string(), "{tool}");
+        }
         assert_eq!(arguments("demo__list_threads"), json!({}));
+    }
+
+    #[test]
+    fn rewrites_follow_the_tone() {
+        let draft = "Hi John,\n\nthe offer is attached. I can explain it.\n\nBest regards,\nAlex";
+        let wrap = |text: &str| {
+            format!("<untrusted_content source=\"owner\">\n{text}\n</untrusted_content>")
+        };
+        let shorter = answer(&request(
+            "Rewrite this draft. Make it shorter.",
+            &wrap(draft),
+            &[],
+        ));
+        assert_eq!(
+            shorter,
+            "Hi John,\n\nthe offer is attached.\n\nBest regards,\nAlex"
+        );
+        let warmer = answer(&request(
+            "Rewrite this draft. Make it warmer.",
+            &wrap(draft),
+            &[],
+        ));
+        assert!(warmer.contains("good to hear from you"));
+        let formal = answer(&request(
+            "Rewrite this draft. Make it more formal.",
+            &wrap(draft),
+            &[],
+        ));
+        assert!(formal.starts_with("Dear John") && formal.contains("Kind regards"));
+        assert_eq!(
+            answer(&request(
+                "Rewrite this draft. In German.",
+                &wrap("Hallo"),
+                &[]
+            )),
+            "Hallo"
+        );
+        assert_eq!(retone("shorter", "One. Two."), "One.");
     }
 
     #[test]

@@ -52,7 +52,7 @@ fn the_demo_agents_and_automations_are_valid() {
     let config = Config::load(&demo().join("lighthouse.demo.toml")).unwrap();
     let policy = ToolPolicy::new(&config.connectors);
     let agents = load_agents(&demo().join("agents")).unwrap();
-    assert_eq!(agents.len(), 4);
+    assert_eq!(agents.len(), 5);
     for file in agents {
         let agent = file.agent.unwrap();
         assert!(policy.blocked(&agent).is_empty(), "{}", agent.id);

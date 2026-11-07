@@ -53,7 +53,9 @@ Open http://localhost:8088 and sign in with the password `lighthouse-demo`. The 
 web app to use that one.
 The API answers to the bearer token `demo-admin-token`. Run the agents `morning-brief`, `weekly-report` and `inbox`
 from the web app, or with `curl -X POST -H 'Authorization: Bearer demo-admin-token' localhost:8088/agents/morning-brief/run`;
-the inbox agent stops at an approval before it "sends" a reply. Afterwards `demo/verify.sh` checks that every list has
+the inbox agent stops at an approval before it "sends" a reply. At start, the demo runs the agent `ready` once, so Ready for
+you already holds mail replies with the original quoted, an issue comment, a pull request review, a calendar move and a
+post idea, each with its service, counterpart and reason. Afterwards `demo/verify.sh` checks that every list has
 data.
 
 Remove the demo and all its data with `docker compose -f demo/compose.yml down -v`. Everything in it is made up, and

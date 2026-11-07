@@ -57,6 +57,19 @@ services:
       # The parent of `dist`, so a fresh `pnpm build` that replaces `dist` stays visible.
       - ${LIGHTHOUSE_WEB:-../../lighthouse-web}:/srv/lighthouse-web:ro
 
+  # Runs the "ready" agent once, so Ready for you is full when you sign in.
+  demo-warmup:
+    image: lighthouse:demo
+    depends_on:
+      - demo-server
+    environment:
+      <<: *demo-environment
+      LHT_SERVER: http://demo-server:8080
+    volumes:
+      - ./lighthouse.demo.toml:/etc/lighthouse/lighthouse.toml:ro
+    restart: on-failure:30
+    command: ["lht", "run", "ready"]
+
 volumes:
   demo-postgres:
   demo-data:

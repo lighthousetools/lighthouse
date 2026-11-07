@@ -57,6 +57,7 @@ agent = "assistant"
 [publishing]
 connector = "demo"
 tool = "create_post"
+service = "linkedin"
 input = { text = "{{post.body}}", first_comment = "{{post.first_comment}}" }
 
 [brain]
@@ -65,6 +66,7 @@ path = "/var/lib/lighthouse/data/brain"
 [sources.mail]
 connector = "demo"
 domain = "mail"
+service = "mail"
 account = "alex@example.com"
 [sources.mail.collections.inbox]
 tool = "list_threads"
@@ -91,6 +93,7 @@ input = { thread_id = "{{item.external_id}}", body = "{{input.body}}" }
 [sources.calendar]
 connector = "demo"
 domain = "calendar"
+service = "calendar"
 [sources.calendar.collections.events]
 tool = "list_events"
 kind = "event"
@@ -101,6 +104,10 @@ starts_at = "start"
 ends_at = "end"
 state = "status"
 attendees = "attendees"
+[sources.calendar.actions.move]
+tool = "move_event"
+kind = "event"
+input = { event_id = "{{item.external_id}}", start = "{{input.start}}", end = "{{input.end}}" }
 [sources.calendar.actions.create]
 tool = "create_event"
 input = { title = "{{input.title}}", start = "{{input.start}}", end = "{{input.end}}" }
@@ -108,6 +115,7 @@ input = { title = "{{input.title}}", start = "{{input.start}}", end = "{{input.e
 [sources.issues]
 connector = "demo"
 domain = "issues"
+service = "linear"
 [sources.issues.collections.assigned]
 tool = "list_tickets"
 kind = "issue"
@@ -121,6 +129,11 @@ assignee = "assignee"
 project = "project"
 url = "url"
 occurred_at = "updatedAt"
+
+[sources.issues.actions.comment]
+tool = "add_comment"
+kind = "issue"
+input = { issue_id = "{{item.external_id}}", body = "{{input.body}}" }
 
 [sources.code]
 connector = "demo"
