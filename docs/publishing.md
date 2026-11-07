@@ -67,6 +67,13 @@ row. Columns: `external_id` or `id`, `url` or `link`, `body` or `text`, `publish
 `topic`, `org` and the metric names. Each post needs an `external_id` or a `url`. Importing a known post again updates
 its metrics, so a later export of your analytics refreshes the numbers.
 
+### Reactions from target accounts
+
+Matching who reacted to a post against the contacts of your deals needs the names of the people who reacted. The
+analytics exports of social networks give counts only, and Lighthouse reads no profiles, so there is no such match.
+Imports keep `icp_share` instead: the share of reactions from your ideal customers, if your network's analytics shows
+it.
+
 ### Publishing
 
 Set up the tool of your channel's connector:

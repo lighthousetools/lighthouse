@@ -584,6 +584,20 @@ impl Brain {
         Ok(rows.iter().map(summary).collect())
     }
 
+    /// Lists entries that carry a link, such as `holding:depot:ACME`, latest first.
+    pub async fn linked(&self, link: &str, limit: i64) -> Result<Vec<EntrySummary>, BrainError> {
+        let rows = sqlx::query(
+            "SELECT id, kind, title, status, body, original, updated_at FROM brain_entries \
+             WHERE tenant_id = $1 AND $2 = ANY(links) ORDER BY updated_at DESC LIMIT $3",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(link)
+        .bind(limit)
+        .fetch_all(self.store.pool())
+        .await?;
+        Ok(rows.iter().map(summary).collect())
+    }
+
     async fn vector_ranks(&self, query: &str) -> Vec<Uuid> {
         let Some(embedder) = &self.embedder else {
             return Vec::new();

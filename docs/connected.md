@@ -256,7 +256,14 @@ input = { room_id = "{{item.external_id}}", name = "{{input.title}}", html = "{{
 `GET /connected/items/{id}` of a room returns its steps and milestones as children. Writing actions such as
 `add_step`, `add_milestone` and `attach` wait for your approval, and a room is never published to its customer by
 Lighthouse. A portfolio (`holdings`) can come from a sheet or a market data
-server: `amount` is the value of a holding, and `quote` items hold prices.
+server: `amount` is the value of a holding, and `quote` items hold prices. Map `next_earnings_at` for reminders.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /holdings/{id}/theses`, `POST /holdings/{id}/theses` | Your own theses on a holding: notes in the Brain, linked as `holding:<source>:<id>` |
+| `POST /holdings/reminders` | `{"days_before": 3}` proposes a task before each earnings date in the next 60 days. You accept or reject each |
+
+Lighthouse shows data and your own notes. It gives no advice and never trades.
 
 ### Contract templates
 

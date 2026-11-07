@@ -14,6 +14,7 @@ mod connected;
 mod contracts;
 mod decks;
 mod documents;
+mod holdings;
 mod memory;
 mod organizations;
 mod pipeline;
@@ -44,6 +45,7 @@ pub use connected::{
 };
 pub use contracts::{ComposeRequest, Composed, NewTemplate, fill as fill_template};
 pub use decks::{DeckAttachment, DeckBrief, NewDeck, render_html as render_deck};
+pub use holdings::{NewThesis, ReminderRequest, ReminderResult};
 pub use pipeline::{DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult, median};
 pub use posts::{
     CheckRequest, ImportRequest, ImportResult, Publisher, RewriteRequest, Writer, Written,
@@ -526,6 +528,7 @@ impl utoipa::Modify for SecurityAddon {
         posts::save_branding, posts::rewrite, decks::list, decks::create, decks::export,
         decks::generate, decks::attach, contracts::templates, contracts::create_template,
         contracts::compose, pipeline::suggestion, pipeline::top_tasks, pipeline::export,
+        holdings::theses, holdings::create_thesis, holdings::reminders,
         talk::list, talk::create, talk::get, talk::update, talk::delete, talk::send,
     ),
     components(schemas(
@@ -565,7 +568,8 @@ impl utoipa::Modify for SecurityAddon {
         ImportResult, NewDeck, lighthouse_desk::TalkThread, lighthouse_desk::TalkMessage,
         NewThread, ThreadPatch, ThreadDetail, NewMessage, Exchange, Written, RewriteRequest,
         DeckBrief, DeckAttachment, lighthouse_desk::Variant, NewTemplate, ComposeRequest, Composed,
-        DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult,
+        DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult, NewThesis, ReminderRequest,
+        ReminderResult,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -734,6 +738,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/rooms", get(connected::rooms))
         .route("/holdings", get(connected::holdings))
         .route("/holdings/quotes", get(connected::quotes))
+        .route("/holdings/reminders", post(holdings::reminders))
+        .route(
+            "/holdings/{id}/theses",
+            get(holdings::theses).post(holdings::create_thesis),
+        )
         .route("/numbers", get(connected::numbers))
         .route("/inbox", get(connected::inbox))
         .route("/mail/threads", get(connected::mail))
@@ -1298,6 +1307,15 @@ mod tests {
             "/ready/{kind}/{id}/snooze",
             "/connected/actions/bulk",
             "/calendar/suggestions",
+            "/posts/{id}/rewrite",
+            "/decks/generate",
+            "/decks/{id}/attach",
+            "/contracts/compose",
+            "/deals/{id}/suggestion",
+            "/deals/top-tasks",
+            "/numbers/export",
+            "/holdings/{id}/theses",
+            "/holdings/reminders",
         ] {
             assert!(spec["paths"].get(path).is_some(), "{path}");
         }
