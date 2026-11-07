@@ -35,6 +35,12 @@ pub struct ItemSource {
     /// Address to open it.
     #[serde(default)]
     pub url: Option<String>,
+    /// The connected item it names, filled by the server when it finds one.
+    #[serde(default)]
+    pub item_id: Option<Uuid>,
+    /// A readable name of it, such as the subject, filled by the server.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 /// A number of an item, such as merged pull requests this week.

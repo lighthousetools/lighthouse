@@ -57,7 +57,7 @@ The bundled skills `morning-brief` and `weekly-report` describe the block to the
 | `items[].text` | yes | The statement, one sentence |
 | `items[].title`, `items[].subtitle` | no | A short title for its card, and a line with who and when |
 | `items[].detail` | no | More detail |
-| `items[].source` | no | `service` (required), `reference` and `url` |
+| `items[].source` | no | `service` (required), `reference` and `url`. The server adds `item_id` and a readable `label` when the reference is the ID of a connected item, and its `url` if the source has none |
 | `items[].numbers` | no | `label` and `value` (required), `unit` and `previous` (the period before) |
 | `unavailable` | no | Services that could not be read |
 | `connections` | no | At most 100 stories of how items connect across services: `title` and `text` (required), and the `items` it links as sources |

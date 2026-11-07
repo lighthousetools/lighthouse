@@ -41,12 +41,74 @@ pub(crate) async fn list(
         .documents(query.kind.as_deref(), limit(&query))
         .await
         .map_err(desk_error)?;
-    Ok(Json(documents))
+    Ok(Json(resolve_all(&state, documents).await))
+}
+
+/// Links the sources of a document to connected items: their `item_id`, a
+/// readable `label` and the `url`, where the reference names an item.
+pub(crate) async fn resolve(state: &ApiState, mut document: BriefingDocument) -> BriefingDocument {
+    let content = &mut document.content;
+    let mut sources: Vec<&mut lighthouse_desk::ItemSource> = Vec::new();
+    for connection in &mut content.connections {
+        sources.extend(connection.items.iter_mut());
+    }
+    let mut items: Vec<&mut lighthouse_desk::DocumentItem> = Vec::new();
+    for section in &mut content.sections {
+        items.extend(section.items.iter_mut());
+    }
+    for day in &mut content.week {
+        items.extend(day.items.iter_mut());
+    }
+    for project in &mut content.projects {
+        items.extend(project.done.iter_mut());
+        items.extend(project.open.iter_mut());
+    }
+    sources.extend(items.into_iter().filter_map(|item| item.source.as_mut()));
+    for source in sources {
+        let Some(reference) = source
+            .reference
+            .clone()
+            .filter(|text| !text.trim().is_empty())
+        else {
+            continue;
+        };
+        match state.sync.find_external(&reference, None).await {
+            Ok(Some(item)) => {
+                source.item_id = Some(item.id);
+                source.label = item.title.clone().or(source.label.take());
+                if source.url.is_none() {
+                    source.url = item.url;
+                }
+            }
+            Ok(None) => {}
+            Err(error) => tracing::warn!(%error, "cannot resolve a document source"),
+        }
+    }
+    document
+}
+
+async fn resolve_all(state: &ApiState, documents: Vec<BriefingDocument>) -> Vec<BriefingDocument> {
+    let mut resolved = Vec::with_capacity(documents.len());
+    for document in documents {
+        resolved.push(resolve(state, document).await);
+    }
+    resolved
+}
+
+async fn found(
+    state: &ApiState,
+    document: Option<BriefingDocument>,
+    what: &str,
+) -> Result<Json<BriefingDocument>, ApiError> {
+    match document {
+        Some(document) => Ok(Json(resolve(state, document).await)),
+        None => Err(not_found(what)),
+    }
 }
 
 async fn latest(state: &ApiState, kind: &str) -> Result<Json<BriefingDocument>, ApiError> {
     let document = state.desk.latest_document(kind).await.map_err(desk_error)?;
-    document.map(Json).ok_or_else(|| not_found("document"))
+    found(state, document, "document").await
 }
 
 /// Returns the latest morning brief.
@@ -81,7 +143,7 @@ pub(crate) async fn recaps(
         .documents(Some(WEEKLY_RECAP), limit(&query))
         .await
         .map_err(desk_error)?;
-    Ok(Json(recaps))
+    Ok(Json(resolve_all(&state, recaps).await))
 }
 
 /// Returns the weekly recap of an ISO week, such as `2026-W45`, or `latest`.
@@ -105,7 +167,7 @@ pub(crate) async fn recap(
         .document_for(WEEKLY_RECAP, &week)
         .await
         .map_err(desk_error)?;
-    document.map(Json).ok_or_else(|| not_found("recap"))
+    found(&state, document, "recap").await
 }
 
 /// Returns the document a run wrote.
@@ -122,7 +184,7 @@ pub(crate) async fn of_run(
     Path(id): Path<Uuid>,
 ) -> Result<Json<BriefingDocument>, ApiError> {
     let document = state.desk.run_document(id).await.map_err(desk_error)?;
-    document.map(Json).ok_or_else(|| not_found("document"))
+    found(&state, document, "document").await
 }
 
 #[cfg(test)]
@@ -132,6 +194,45 @@ mod tests {
     use axum::http::StatusCode;
     use lighthouse_core::RunId;
     use lighthouse_desk::extract_document;
+
+    #[tokio::test]
+    async fn sources_are_linked_to_connected_items() {
+        let harness = harness(Some(TOKEN)).await;
+        let thread = lighthouse_sync::MappedItem {
+            external_id: "t1".to_owned(),
+            title: Some("Updated offer?".to_owned()),
+            url: Some("https://mail.example/t1".to_owned()),
+            data: serde_json::json!({}),
+            ..lighthouse_sync::MappedItem::default()
+        };
+        let stored = harness
+            .sync
+            .upsert("mail", "mail", "thread", &[thread], &[])
+            .await
+            .unwrap();
+        let run = RunId::new();
+        harness.audit.start_run(run, "brief", "cron").await.unwrap();
+        let report = "x\n```lighthouse-document\n{\"kind\": \"morning_brief\", \"title\": \"Brief\", \
+            \"sections\": [{\"title\": \"Needs you\", \"items\": [{\"text\": \"Answer\", \
+            \"source\": {\"service\": \"mail\", \"reference\": \"t1\"}}]}], \
+            \"connections\": [{\"title\": \"Link\", \"text\": \"Story\", \"items\": [\
+            {\"service\": \"mail\", \"reference\": \"t1\"}, {\"service\": \"crm\", \"reference\": \"gone\"}]}]}\n```";
+        let content = extract_document(report).1.unwrap().unwrap();
+        harness
+            .desk
+            .save_document(run.as_uuid(), "brief", "2026-11-06", &content)
+            .await
+            .unwrap();
+        let (_, body) = call(&harness.app, "GET", "/briefs/latest", Some(TOKEN)).await;
+        let brief: BriefingDocument = serde_json::from_str(&body).unwrap();
+        let linked = &brief.content.connections[0].items[0];
+        assert_eq!(linked.item_id, Some(stored[0].id));
+        assert_eq!(linked.label.as_deref(), Some("Updated offer?"));
+        assert_eq!(linked.url.as_deref(), Some("https://mail.example/t1"));
+        assert_eq!(brief.content.connections[0].items[1].item_id, None);
+        let section = brief.content.sections[0].items[0].source.as_ref().unwrap();
+        assert_eq!(section.item_id, Some(stored[0].id));
+    }
 
     #[tokio::test]
     async fn briefs_and_recaps_are_found_by_kind_and_week() {
