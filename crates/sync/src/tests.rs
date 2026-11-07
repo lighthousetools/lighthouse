@@ -416,3 +416,65 @@ fn the_example_configuration_has_read_only_sources() {
         }
     }
 }
+
+#[tokio::test]
+async fn organizations_own_sources_and_narrow_lists() {
+    let (syncer, script) = github().await;
+    script.set(
+        "github.search_pull_requests",
+        json!({"items": [pull(1, "alex")]}),
+    );
+    script.set("github.get_pull_request_status", json!({"statuses": []}));
+    script.set("github.get_pull_request_files", json!([]));
+    syncer.sync("github", Utc::now()).await.unwrap();
+    let store = syncer.store();
+    let filter = |org: &str| ItemFilter {
+        org: Some(org.to_owned()),
+        kinds: vec!["pull_request".to_owned()],
+        limit: 10,
+        ..ItemFilter::default()
+    };
+    assert_eq!(store.items(&filter("acme")).await.unwrap().total, 0);
+    let saved = store
+        .save_organization(
+            "acme",
+            OrganizationInput {
+                name: " Acme ".to_owned(),
+                color: Some("#1a2b3c".to_owned()),
+                sources: vec!["github".to_owned(), "github".to_owned()],
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!((saved.name.as_str(), saved.sources.len()), ("Acme", 1));
+    let page = store.items(&filter("acme")).await.unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].org.as_deref(), Some("acme"));
+    assert_eq!(store.items(&filter("other")).await.unwrap().total, 0);
+    for (id, input) in [
+        (
+            "Bad Id",
+            OrganizationInput {
+                name: "x".to_owned(),
+                ..OrganizationInput::default()
+            },
+        ),
+        ("ok", OrganizationInput::default()),
+        (
+            "ok",
+            OrganizationInput {
+                name: "x".to_owned(),
+                color: Some("red".to_owned()),
+                ..OrganizationInput::default()
+            },
+        ),
+    ] {
+        assert!(matches!(
+            store.save_organization(id, input).await,
+            Err(OrganizationError::Invalid(_))
+        ));
+    }
+    assert_eq!(store.organizations().await.unwrap().len(), 1);
+    assert!(store.delete_organization("acme").await.unwrap());
+    assert!(!store.delete_organization("acme").await.unwrap());
+}

@@ -131,6 +131,7 @@ pub trait Connected: Send + Sync {
 pub(crate) struct ListQuery {
     q: Option<String>,
     source: Option<String>,
+    org: Option<String>,
     state: Option<String>,
     limit: Option<i64>,
     offset: Option<i64>,
@@ -149,6 +150,7 @@ impl ListQuery {
             domain: domain.map(str::to_owned).or_else(|| self.domain.clone()),
             kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
             source: self.source.clone(),
+            org: self.org.clone(),
             q: self.q.clone(),
             flags: self
                 .flags
@@ -187,6 +189,7 @@ macro_rules! list_endpoint {
             params(
                 ("q" = Option<String>, Query, description = "Full-text search"),
                 ("source" = Option<String>, Query, description = "Only this source"),
+                ("org" = Option<String>, Query, description = "Only sources of this organization"),
                 ("state" = Option<String>, Query, description = "Only this state"),
                 ("flags" = Option<String>, Query, description = "Comma-separated flags the items must have"),
                 ("open" = Option<bool>, Query, description = "Leave out closed and done items"),
@@ -289,6 +292,7 @@ list_endpoint!(
     params(
         ("q" = Option<String>, Query, description = "Full-text search"),
         ("source" = Option<String>, Query, description = "Only this source"),
+        ("org" = Option<String>, Query, description = "Only sources of this organization"),
         ("limit" = Option<i64>, Query, description = "Page size"),
         ("offset" = Option<i64>, Query, description = "Items to skip")
     ),

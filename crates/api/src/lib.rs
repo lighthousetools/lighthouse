@@ -13,6 +13,7 @@ mod catalog;
 mod connected;
 mod documents;
 mod memory;
+mod organizations;
 mod ready;
 mod rules;
 mod sessions;
@@ -481,6 +482,7 @@ impl utoipa::Modify for SecurityAddon {
         connected::cycles, connected::pulls, connected::search, connected::inbox, connected::item,
         connected::free_busy, connected::sources, connected::refresh_all, connected::refresh,
         connected::act_on_item, connected::act_on_source,
+        organizations::list, organizations::save, organizations::delete,
     ),
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -504,6 +506,7 @@ impl utoipa::Modify for SecurityAddon {
         AutomationRuns, ExternalEvent,
         lighthouse_sync::SyncedItem, lighthouse_sync::ItemPage, lighthouse_sync::SyncStatus,
         SourceInfo, RefreshResult, ActionRequest, ActionResult, ItemDetail, BusyBlock,
+        lighthouse_sync::Organization, lighthouse_sync::OrganizationInput,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -620,6 +623,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/automations/{id}/runs", get(automations::runs))
         .route("/automations/{id}/run", post(automations::run))
         .route("/automations/{id}/webhook", post(automations::webhook))
+        .route("/organizations", get(organizations::list))
+        .route(
+            "/organizations/{id}",
+            put(organizations::save).delete(organizations::delete),
+        )
         .route("/inbox", get(connected::inbox))
         .route("/mail/threads", get(connected::mail))
         .route("/calendar/events", get(connected::events))

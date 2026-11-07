@@ -5,6 +5,25 @@ same MCP connectors agents use, so no service is built in: a **source** in `ligh
 tools to call and how their results map to items. The services stay the truth. The cache makes reading fast, and every
 write goes through your approval.
 
+## Organizations
+
+If you run several companies, an organization groups the sources of each one:
+
+```sh
+curl -X PUT "$LIGHTHOUSE_URL/organizations/acme" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Acme", "color": "#336699", "sources": ["acme-mail", "acme-crm", "acme-bank"]}'
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /organizations` | All organizations |
+| `PUT /organizations/{id}` | Create or replace one, with `name`, `color` (`#rrggbb`) and `sources` |
+| `DELETE /organizations/{id}` | Delete one. Its items stay, without an organization |
+
+Every cached item carries `org`, the organization whose `sources` include its source, and every list takes `org=` to
+show one company only. The apps use this for their company selector. `GET /events` sends `organizations.changed`.
+
 ## Sources
 
 ```toml
@@ -145,7 +164,7 @@ Nothing is sent before you approve it. After an action ran, its source refreshes
 
 ## Reading
 
-All lists take `q` (full-text search), `source`, `state`, `flags` (comma-separated, all must be set), `open`, `from`,
+All lists take `q` (full-text search), `source`, `org`, `state`, `flags` (comma-separated, all must be set), `open`, `from`,
 `to`, `limit` and `offset`, and return `items`, `total` and `next_offset`.
 
 | Endpoint | Returns |

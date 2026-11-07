@@ -12,7 +12,9 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 const COLUMNS: &str = "id, source, domain, kind, external_id, parent_id, title, summary, author, assignee, \
-                       state, url, flags, importance, occurred_at, starts_at, ends_at, data, synced_at";
+                       state, url, flags, importance, occurred_at, starts_at, ends_at, data, synced_at, \
+                       (SELECT o.id FROM organizations o WHERE o.tenant_id = synced_items.tenant_id \
+                        AND synced_items.source = ANY(o.sources) ORDER BY o.id LIMIT 1) AS org";
 
 /// A cached item.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, FromRow, ToSchema)]
@@ -55,6 +57,8 @@ pub struct SyncedItem {
     pub data: Value,
     /// When it was fetched.
     pub synced_at: DateTime<Utc>,
+    /// The organization whose sources include this item's source.
+    pub org: Option<String>,
 }
 
 impl SyncedItem {
@@ -85,6 +89,8 @@ pub struct ItemFilter {
     pub kinds: Vec<String>,
     /// Only this source.
     pub source: Option<String>,
+    /// Only sources of this organization.
+    pub org: Option<String>,
     /// Full-text search.
     pub q: Option<String>,
     /// Items must have all of these flags.
@@ -168,8 +174,12 @@ impl SyncStore {
         Self { store, tenant }
     }
 
-    fn pool(&self) -> &sqlx::PgPool {
+    pub(crate) fn pool(&self) -> &sqlx::PgPool {
         self.store.pool()
+    }
+
+    pub(crate) fn tenant_id(&self) -> Uuid {
+        self.tenant.as_uuid()
     }
 
     /// Stores items of one kind and reports which are new.
@@ -318,7 +328,9 @@ impl SyncStore {
              AND (NOT $9 OR state IS NULL OR lower(state) <> ALL($10)) \
              AND ($11::text IS NULL OR parent_id = $11) \
              AND ($12::timestamptz IS NULL OR coalesce(ends_at, starts_at, occurred_at) >= $12) \
-             AND ($13::timestamptz IS NULL OR coalesce(starts_at, occurred_at) < $13)";
+             AND ($13::timestamptz IS NULL OR coalesce(starts_at, occurred_at) < $13) \
+             AND ($16::text IS NULL OR source IN (SELECT unnest(o.sources) FROM organizations o \
+                  WHERE o.tenant_id = $1 AND o.id = $16))";
         let order = match filter.order {
             Order::Recent => "occurred_at DESC NULLS LAST, synced_at DESC, id",
             Order::Importance => "importance DESC, occurred_at DESC NULLS LAST, id",
@@ -327,7 +339,10 @@ impl SyncStore {
         let select = format!(
             "SELECT {COLUMNS} FROM synced_items WHERE {condition} ORDER BY {order} LIMIT $14 OFFSET $15"
         );
-        let count = format!("SELECT count(*) FROM synced_items WHERE {condition}");
+        let count = format!(
+            "SELECT count(*) FROM synced_items WHERE {condition} \
+             AND $14::bigint IS NOT NULL AND $15::bigint IS NOT NULL"
+        );
         macro_rules! bind_filter {
             ($query:expr) => {
                 $query
@@ -346,12 +361,18 @@ impl SyncStore {
                     .bind(filter.to)
             };
         }
-        let items: Vec<SyncedItem> = bind_filter!(sqlx::query_as(sqlx::AssertSqlSafe(select)))
-            .bind(filter.limit)
-            .bind(filter.offset)
+        macro_rules! bind_page {
+            ($query:expr) => {
+                bind_filter!($query)
+                    .bind(filter.limit)
+                    .bind(filter.offset)
+                    .bind(&filter.org)
+            };
+        }
+        let items: Vec<SyncedItem> = bind_page!(sqlx::query_as(sqlx::AssertSqlSafe(select)))
             .fetch_all(self.pool())
             .await?;
-        let (total,): (i64,) = bind_filter!(sqlx::query_as(sqlx::AssertSqlSafe(count)))
+        let (total,): (i64,) = bind_page!(sqlx::query_as(sqlx::AssertSqlSafe(count)))
             .fetch_one(self.pool())
             .await?;
         let next = filter.offset + items.len() as i64;
