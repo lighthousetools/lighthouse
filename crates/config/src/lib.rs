@@ -191,6 +191,8 @@ pub enum ProviderKind {
     Openai,
     /// A scripted provider for tests and dry runs.
     Mock,
+    /// Plausible answers without a model, for the local demo.
+    Demo,
 }
 
 /// A model provider.

@@ -1,6 +1,7 @@
 //! Model providers, task routing and cost tracking.
 
 pub mod anthropic;
+pub mod demo;
 pub mod media;
 pub mod mock;
 pub mod openai;
@@ -173,6 +174,7 @@ impl Router {
             let base_url = provider.base_url.as_deref();
             let adapter: Arc<dyn Provider> = match (provider.kind, key) {
                 (ProviderKind::Mock, _) => Arc::new(mock::MockProvider::echo()),
+                (ProviderKind::Demo, _) => Arc::new(demo::DemoProvider),
                 (ProviderKind::Anthropic, Some(key)) => {
                     Arc::new(anthropic::Anthropic::new(name, key, base_url))
                 }

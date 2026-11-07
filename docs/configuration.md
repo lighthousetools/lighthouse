@@ -26,6 +26,10 @@ read without it.
 Model names and prices live in the configuration, never in code. A provider lists its models per task, and `routing`
 selects the default provider and fallback of a task. Prices are in EUR per million tokens.
 
+The provider `kind` is `anthropic`, `openai`, `mock` (echoes, for tests) or `demo`. The demo provider needs no key
+and no model: it calls the read tools of an agent once and then writes a plausible answer, such as a brief with a
+structured document, a rewrite or a deck. It exists for the local demo in `demo/` and is useless for real work.
+
 ## Notifications
 
 `[notifications]` decides what is pushed to the owner through the delivery channels: runs that wait for a decision,
