@@ -140,7 +140,11 @@ fn retone(system: &str, text: &str) -> String {
         };
     }
     if system.contains("warmer") {
-        return text.replacen(",\n\n", ",\n\nit is good to hear from you. ", 1);
+        return text.replacen(
+            ",\n\n",
+            ",\n\nit is good to hear from you, and thank you for your patience.\n\n",
+            1,
+        );
     }
     if system.contains("formal") {
         return text
