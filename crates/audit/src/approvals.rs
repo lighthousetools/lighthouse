@@ -34,7 +34,8 @@ pub struct Approval {
     pub reason: Option<String>,
     /// Tools the run had used before the proposal.
     pub consulted: Vec<String>,
-    /// `pending`, `approved`, `denied` or `expired`.
+    /// `pending`, `approved`, `denied`, `expired`, or `superseded` by a newer
+    /// proposal for the same target.
     pub status: String,
     /// When it was proposed.
     pub created_at: DateTime<Utc>,
@@ -92,10 +93,26 @@ impl AuditLog {
         .await?;
         let expires = Utc::now() + Duration::hours(EXPIRY_HOURS);
         for proposal in proposals {
+            let target = lighthouse_core::proposal::target(&proposal.input);
+            if let Some(target) = &target {
+                // A newer proposal for the same target replaces the open one; its
+                // run continues as if it had been denied.
+                sqlx::query(
+                    "UPDATE approvals SET status = 'superseded', decided_at = now() \
+                     WHERE tenant_id = $1 AND status = 'pending' AND tool = $2 AND target = $3 \
+                     AND run_id <> $4",
+                )
+                .bind(self.tenant.as_uuid())
+                .bind(&proposal.tool)
+                .bind(target)
+                .bind(run.as_uuid())
+                .execute(&mut *transaction)
+                .await?;
+            }
             sqlx::query(
                 "INSERT INTO approvals (id, tenant_id, run_id, agent_id, tool, input, \
-                 quotes_external, status, expires_at, reason, consulted) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10)",
+                 quotes_external, status, expires_at, reason, consulted, target) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11)",
             )
             .bind(proposal.id)
             .bind(self.tenant.as_uuid())
@@ -107,6 +124,7 @@ impl AuditLog {
             .bind(expires)
             .bind(&proposal.reason)
             .bind(&proposal.consulted)
+            .bind(&target)
             .execute(&mut *transaction)
             .await?;
         }
@@ -330,6 +348,49 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(approval.input, edited);
+    }
+
+    #[tokio::test]
+    async fn a_newer_proposal_for_the_same_target_supersedes_the_open_one() {
+        let first = Uuid::now_v7();
+        let (log, old_run) = paused(&[first]).await;
+        let run = RunId::new();
+        log.start_run(run, "mailer", "manual").await.unwrap();
+        let proposal = |id: Uuid, to: &str| NewApproval {
+            id,
+            tool: "mail.send".to_owned(),
+            input: json!({"to": to, "body": "newer"}),
+            quotes_external: false,
+            reason: None,
+            consulted: Vec::new(),
+        };
+        let (second, other) = (Uuid::now_v7(), Uuid::now_v7());
+        log.pause_run(
+            run,
+            "mailer",
+            &json!({}),
+            &[proposal(second, "a"), proposal(other, "b")],
+        )
+        .await
+        .unwrap();
+        let open: Vec<Uuid> = log
+            .list_approvals(Some("pending"), 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|approval| approval.id)
+            .collect();
+        assert_eq!(open.len(), 2);
+        assert!(open.contains(&second) && open.contains(&other) && !open.contains(&first));
+        let old = log.run_approvals(old_run.as_uuid()).await.unwrap();
+        assert_eq!(old[0].status, "superseded");
+        assert!(old[0].decided_at.is_some());
+        assert!(
+            log.resumable_runs()
+                .await
+                .unwrap()
+                .contains(&old_run.as_uuid())
+        );
     }
 
     #[tokio::test]

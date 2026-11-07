@@ -54,7 +54,12 @@ never hide that it acts. The run appears in the log as `rejected`, with the reas
 
 Proposals appear under `GET /approvals` and in the apps. You can approve, deny or edit the arguments. If you approve, the
 tool runs with the final arguments. If you deny, the model is told that the action did not happen and continues. Open
-proposals count as denied after 72 hours. `quotes_external` marks proposals from runs that had read external content, so
+proposals count as denied after 72 hours.
+
+Proposals do not pile up. A new proposal of the same tool for the same target, its `_context` or an argument such as
+`thread_id`, `issue_id`, `pullNumber`, `event_id`, `id` or `to`, supersedes an open one from another run: the older
+approval becomes `superseded`, and its run continues as if it had been denied. A proposed task with the same source or
+title as an open proposal refreshes that one, and so does a post idea with the same title or text. `quotes_external` marks proposals from runs that had read external content, so
 check those with extra care.
 
 ### Reasons and context

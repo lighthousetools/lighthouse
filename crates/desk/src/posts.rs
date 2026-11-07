@@ -389,6 +389,24 @@ impl Desk {
         if post.body.trim().is_empty() {
             return Err(invalid("`body` must not be empty"));
         }
+        // An idea with the same title, or the same text, that the owner has not
+        // taken up yet gets the newer text instead of a second idea.
+        let query = format!(
+            "UPDATE posts SET body = $3, reason = COALESCE($4, reason), updated_at = now() \
+             WHERE id = (SELECT id FROM posts WHERE tenant_id = $1 AND origin = 'agent' AND status = 'idea' \
+             AND (lower(title) = lower($2) OR body = $3) ORDER BY created_at DESC LIMIT 1) \
+             RETURNING {COLUMNS}"
+        );
+        let existing: Option<Post> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant())
+            .bind(&post.title)
+            .bind(check_body(&post.body)?)
+            .bind(&post.reason)
+            .fetch_optional(self.pool())
+            .await?;
+        if let Some(existing) = existing {
+            return Ok(existing);
+        }
         let query = format!(
             "INSERT INTO posts (id, tenant_id, org, channel, kind, pillar, topic, title, body, status, origin, \
              reason) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'idea', 'agent', $10) RETURNING {COLUMNS}"
@@ -976,9 +994,28 @@ mod tests {
         );
         assert_eq!(idea.scheduled_at, None);
         assert_eq!(desk.proposed_posts().await.unwrap().len(), 1);
+        let again = desk
+            .propose_post(NewPost {
+                body: "A thought".to_owned(),
+                reason: Some("Still relevant".to_owned()),
+                ..NewPost::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(again.id, idea.id, "an equal open idea is refreshed");
+        assert_eq!(again.reason.as_deref(), Some("Still relevant"));
+        let titled = |body: &str| NewPost {
+            body: body.to_owned(),
+            title: Some("Late invoices".to_owned()),
+            ..NewPost::default()
+        };
+        let first = desk.propose_post(titled("One")).await.unwrap();
+        let second = desk.propose_post(titled("Two")).await.unwrap();
+        assert_eq!((second.id, second.body.as_str()), (first.id, "Two"));
+        assert_eq!(desk.proposed_posts().await.unwrap().len(), 2);
         let taken: PostPatch = serde_json::from_value(json!({"status": "draft"})).unwrap();
         desk.update_post(idea.id, taken).await.unwrap();
-        assert!(desk.proposed_posts().await.unwrap().is_empty());
+        assert_eq!(desk.proposed_posts().await.unwrap().len(), 1);
     }
 
     #[tokio::test]

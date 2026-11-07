@@ -58,6 +58,35 @@ fn text(input: &Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Arguments that name what a call acts on, in order of preference.
+const TARGET_KEYS: [&str; 12] = [
+    "thread_id",
+    "threadId",
+    "issue_id",
+    "issueId",
+    "issue_number",
+    "pullNumber",
+    "pull_number",
+    "event_id",
+    "eventId",
+    "post_id",
+    "id",
+    "to",
+];
+
+/// What a call acts on, such as a mail thread or an issue: its `_context`, else
+/// the first argument that names a target. Two open proposals of the same tool
+/// for the same target are equivalent.
+pub fn target(input: &Value) -> Option<String> {
+    context(input).or_else(|| {
+        TARGET_KEYS.iter().find_map(|key| match &input[*key] {
+            Value::String(text) if !text.trim().is_empty() => Some(text.trim().to_owned()),
+            Value::Number(number) => Some(number.to_string()),
+            _ => None,
+        })
+    })
+}
+
 /// The arguments without the extras, as the tool gets them.
 pub fn strip(mut input: Value) -> Value {
     if let Some(object) = input.as_object_mut() {
@@ -79,6 +108,17 @@ mod tests {
         assert_eq!(strip(input), json!({"body": "Hi"}));
         assert_eq!(reason(&json!({"_reason": ""})), None);
         assert_eq!(strip(json!("text")), json!("text"));
+    }
+
+    #[test]
+    fn targets_come_from_the_context_or_a_named_argument() {
+        assert_eq!(
+            target(&json!({"_context": "t1", "thread_id": "t2"})).as_deref(),
+            Some("t1")
+        );
+        assert_eq!(target(&json!({"thread_id": " t2 "})).as_deref(), Some("t2"));
+        assert_eq!(target(&json!({"pullNumber": 42})).as_deref(), Some("42"));
+        assert_eq!(target(&json!({"body": "Hi", "id": ""})), None);
     }
 
     #[test]

@@ -280,6 +280,30 @@ impl Desk {
             None => (TaskStatus::Open, Origin::Owner),
         };
         let source = task.source.as_ref();
+        if proposer.is_some() {
+            // A proposal equal to one still open, by its source or its title,
+            // refreshes that one instead of adding a second.
+            let query = format!(
+                "UPDATE tasks SET notes = COALESCE($3, notes), due_on = COALESCE($4, due_on), \
+                 priority = GREATEST(priority, $5), updated_at = now() \
+                 WHERE id = (SELECT id FROM tasks WHERE tenant_id = $1 AND status = 'proposed' \
+                 AND ((source_kind = $6 AND source_ref = $7) OR lower(title) = lower($2)) \
+                 ORDER BY created_at DESC LIMIT 1) RETURNING {COLUMNS}"
+            );
+            let existing: Option<TaskRow> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+                .bind(self.tenant())
+                .bind(&title)
+                .bind(&notes)
+                .bind(task.due_on)
+                .bind(priority)
+                .bind(source.map(|link| link.kind.clone()))
+                .bind(source.map(|link| link.reference.clone()))
+                .fetch_optional(self.pool())
+                .await?;
+            if let Some(row) = existing {
+                return Ok(row.into());
+            }
+        }
         let query = format!(
             "INSERT INTO tasks (id, tenant_id, title, notes, due_on, priority, status, position, \
              source_kind, source_ref, source_label, source_url, origin, agent_id, run_id) \
@@ -686,6 +710,47 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_equal_open_proposal_is_refreshed_instead_of_repeated() {
+        let desk = desk().await;
+        let today = day("2026-01-01");
+        let proposer = || Some(Proposer::agent("inbox", Uuid::now_v7()));
+        let mut from_mail = new("Answer John", None);
+        from_mail.source = Some(SourceLink {
+            kind: "mail".to_owned(),
+            reference: "t1".to_owned(),
+            label: None,
+            url: None,
+        });
+        let first = desk
+            .create_task(from_mail.clone(), proposer())
+            .await
+            .unwrap();
+        from_mail.title = "Reply to John".to_owned();
+        from_mail.notes = Some("He asked twice".to_owned());
+        let second = desk.create_task(from_mail, proposer()).await.unwrap();
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.notes.as_deref(), Some("He asked twice"));
+        let titled = desk
+            .create_task(new("answer john", None), proposer())
+            .await
+            .unwrap();
+        assert_eq!(titled.id, first.id, "same title, any case");
+        desk.create_task(new("Something else", None), proposer())
+            .await
+            .unwrap();
+        desk.create_task(new("Answer John", None), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            desk.tasks(TaskView::Proposed, today, 10)
+                .await
+                .unwrap()
+                .len(),
+            2
         );
     }
 
