@@ -66,13 +66,18 @@ See [configuration](docs/configuration.md), [agent files](docs/agents.md) and [a
 You need stable Rust and a local Postgres for the integration tests.
 
 ```sh
-docker run -d -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:17
+# --rm also removes the volume, with every test database, when the container stops
+docker run -d --rm --name lighthouse-test-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 pgvector/pgvector:pg17
 export DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres
 
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
+docker stop lighthouse-test-pg
 ```
+
+Each test creates its own database and drops it when it ends. Databases that a crashed run left behind are dropped
+by the next run after two hours.
 
 ## License
 

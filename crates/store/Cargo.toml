@@ -14,10 +14,11 @@ workspace = true
 lighthouse-core.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, optional = true }
 uuid.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
 
 [features]
-testing = []
+testing = ["dep:tokio"]

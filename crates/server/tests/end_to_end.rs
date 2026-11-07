@@ -355,8 +355,9 @@ async fn get(base: &str, path: &str) -> Value {
         .unwrap()
 }
 
+/// Waits up to 30 seconds, since runs are slow under coverage.
 async fn wait_for(base: &str, path: &str, check: impl Fn(&Value) -> bool) -> Value {
-    for _ in 0..200 {
+    for _ in 0..600 {
         let value = get(base, path).await;
         if check(&value) {
             return value;
