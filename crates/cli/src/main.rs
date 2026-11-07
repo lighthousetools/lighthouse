@@ -77,6 +77,8 @@ enum Command {
 enum DemoCommand {
     /// Adds fictional demo data to the database, once.
     Seed,
+    /// Runs the demo agent `ready` on the running server, unless Ready has proposals already.
+    Warm,
 }
 
 #[derive(Subcommand)]
@@ -441,6 +443,16 @@ async fn main() -> anyhow::Result<()> {
             connector_tools(&config, &connector).await
         }
         Command::Sources(SourcesCommand::Check) => check_sources(&config),
+        Command::Demo(DemoCommand::Warm) => {
+            let feed = get(&config, cli.server.clone(), "/ready").await?;
+            if demo::needs_warmup(&feed) {
+                let body = post(&config, cli.server, "/agents/ready/run").await?;
+                println!("started run {}", body["id"].as_str().unwrap_or("?"));
+            } else {
+                println!("Ready has proposals already.");
+            }
+            Ok(())
+        }
         Command::Demo(DemoCommand::Seed) => {
             let store = store(&config).await?;
             match demo::seed(&store, &config.brain.path).await? {

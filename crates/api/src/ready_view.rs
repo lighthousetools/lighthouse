@@ -340,6 +340,7 @@ impl<'a> Reviewer<'a> {
             .as_ref()
             .and_then(|item| item.author.clone())
             .or(named)
+            .or_else(|| item.as_ref().and_then(|item| item.assignee.clone()))
             .and_then(|text| person(&text))
             .map(|(name, address)| Counterpart {
                 org: org.clone().or_else(|| address.as_deref().and_then(org_of)),

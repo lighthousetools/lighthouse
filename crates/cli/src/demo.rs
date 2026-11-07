@@ -46,6 +46,12 @@ fn entry(kind: &str, title: &str, body: &str, links: Vec<String>) -> NewEntry {
     }
 }
 
+/// Whether the demo agent `ready` should run: only while the feed of
+/// `GET /ready` holds no proposals, so restarts add no duplicates.
+pub fn needs_warmup(feed: &serde_json::Value) -> bool {
+    feed["counts"]["approval"].as_u64().unwrap_or(0) == 0
+}
+
 /// Adds the demo data, unless it is there already.
 pub async fn seed(store: &Store, brain_dir: &Path) -> anyhow::Result<Seeded> {
     let tenant = TenantId::SINGLE;
@@ -323,6 +329,13 @@ mod tests {
     use super::*;
     use lighthouse_desk::{AlertView, TaskView};
     use lighthouse_store::testing::fresh_store;
+
+    #[test]
+    fn the_warmup_runs_only_on_an_empty_feed() {
+        assert!(needs_warmup(&json!({"counts": {"approval": 0}})));
+        assert!(needs_warmup(&json!({})));
+        assert!(!needs_warmup(&json!({"counts": {"approval": 3}})));
+    }
 
     #[tokio::test]
     async fn the_demo_is_seeded_once() {

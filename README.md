@@ -50,10 +50,10 @@ docker compose -f demo/compose.yml up --build
 
 Open http://localhost:8088 and sign in with the password `lighthouse-demo`. The web app is served from
 `dist` of `../lighthouse-web` if you built it next to this repository; set `LIGHTHOUSE_WEB` to another checkout of the
-web app to use that one.
+web app to use that one, and `LIGHTHOUSE_DEMO_PORT` to serve on another port than 8088.
 The API answers to the bearer token `demo-admin-token`. Run the agents `morning-brief`, `weekly-report` and `inbox`
 from the web app, or with `curl -X POST -H 'Authorization: Bearer demo-admin-token' localhost:8088/agents/morning-brief/run`;
-the inbox agent stops at an approval before it "sends" a reply. At start, the demo runs the agent `ready` once, so Ready for
+the inbox agent stops at an approval before it "sends" a reply. While Ready for you is empty, the demo runs the agent `ready` at start (`lht demo warm`), so Ready for
 you already holds mail replies with the original quoted, an issue comment, a pull request review, a calendar move and a
 post idea, each with its service, counterpart and reason. Afterwards `demo/verify.sh` checks that every list has
 data.

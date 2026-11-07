@@ -50,14 +50,14 @@ services:
         condition: service_completed_successfully
     environment: *demo-environment
     ports:
-      - "127.0.0.1:8088:8080"
+      - "127.0.0.1:${LIGHTHOUSE_DEMO_PORT:-8088}:8080"
     volumes:
       - ./lighthouse.demo.toml:/etc/lighthouse/lighthouse.toml:ro
       - demo-data:/var/lib/lighthouse/data
       # The parent of `dist`, so a fresh `pnpm build` that replaces `dist` stays visible.
       - ${LIGHTHOUSE_WEB:-../../lighthouse-web}:/srv/lighthouse-web:ro
 
-  # Runs the "ready" agent once, so Ready for you is full when you sign in.
+  # Runs the "ready" agent while Ready for you is empty, so it is full when you sign in.
   demo-warmup:
     image: lighthouse:demo
     depends_on:
@@ -68,7 +68,7 @@ services:
     volumes:
       - ./lighthouse.demo.toml:/etc/lighthouse/lighthouse.toml:ro
     restart: on-failure:30
-    command: ["lht", "run", "ready"]
+    command: ["lht", "demo", "warm"]
 
 volumes:
   demo-postgres:
