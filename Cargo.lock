@@ -2007,10 +2007,14 @@ name = "lighthouse-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "lighthouse-audit",
+ "lighthouse-auth",
+ "lighthouse-brain",
  "lighthouse-config",
  "lighthouse-core",
+ "lighthouse-desk",
  "lighthouse-mcp",
  "lighthouse-runtime",
  "lighthouse-store",
@@ -2020,6 +2024,7 @@ dependencies = [
  "rpassword",
  "secrecy",
  "serde_json",
+ "tempfile",
  "tokio",
  "uuid",
 ]
@@ -2071,6 +2076,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "chrono",
  "lighthouse-config",
  "lighthouse-core",
  "lighthouse-router",

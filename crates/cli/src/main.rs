@@ -1,5 +1,7 @@
 //! Command line for Lighthouse.
 
+mod demo;
+
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use lighthouse_audit::{AuditLog, RunDetail};
@@ -60,12 +62,21 @@ enum Command {
     /// Checks and refreshes connected sources.
     #[command(subcommand)]
     Sources(SourcesCommand),
+    /// Prepares the local demo.
+    #[command(subcommand)]
+    Demo(DemoCommand),
     /// Shows the unified inbox of the running server.
     Inbox {
         /// Maximum number of items.
         #[arg(long, default_value_t = 20)]
         limit: i64,
     },
+}
+
+#[derive(Subcommand)]
+enum DemoCommand {
+    /// Adds fictional demo data to the database, once.
+    Seed,
 }
 
 #[derive(Subcommand)]
@@ -430,6 +441,17 @@ async fn main() -> anyhow::Result<()> {
             connector_tools(&config, &connector).await
         }
         Command::Sources(SourcesCommand::Check) => check_sources(&config),
+        Command::Demo(DemoCommand::Seed) => {
+            let store = store(&config).await?;
+            match demo::seed(&store, &config.brain.path).await? {
+                demo::Seeded::Added => println!(
+                    "Demo data added. Sign in with the password `{}`.",
+                    demo::DEMO_PASSWORD
+                ),
+                demo::Seeded::AlreadyThere => println!("Demo data is there already."),
+            }
+            Ok(())
+        }
         Command::Sources(SourcesCommand::Refresh { name }) => {
             let path = match &name {
                 Some(name) => format!("/connected/sources/{name}/refresh"),
