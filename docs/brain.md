@@ -33,8 +33,8 @@ updated: 2026-11-04T16:12:00Z
 Decided in the weekly meeting. Mandatory from January 1.
 ```
 
-`type` is `decision`, `customer`, `project`, `person`, `meeting`, `note`, `file` or `deck`, see
-[publishing.md](publishing.md#decks) for decks. `status` is `active`, `superseded` or
+`type` is `decision`, `customer`, `project`, `person`, `meeting`, `note`, `file`, `deck` or `template`, see
+[publishing.md](publishing.md#decks) for decks and [connected.md](connected.md#contract-templates) for templates. `status` is `active`, `superseded` or
 `archived`, and only active entries appear in search. An entry without a source is not stored.
 
 ## Search

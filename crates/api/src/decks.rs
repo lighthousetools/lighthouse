@@ -366,8 +366,14 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         let generated: Value = serde_json::from_str(&body).unwrap();
-        let export = format!("/decks/{}/export?format=md", generated["id"].as_str().unwrap());
-        assert_eq!(call(app, "GET", &export, Some(TOKEN)).await.1, "rewritten: Three slides");
+        let export = format!(
+            "/decks/{}/export?format=md",
+            generated["id"].as_str().unwrap()
+        );
+        assert_eq!(
+            call(app, "GET", &export, Some(TOKEN)).await.1,
+            "rewritten: Three slides"
+        );
         assert_eq!(
             send(
                 app,

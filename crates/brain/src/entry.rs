@@ -7,8 +7,8 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// Kinds of entries.
-pub const KINDS: [&str; 8] = [
-    "decision", "customer", "project", "person", "meeting", "note", "file", "deck",
+pub const KINDS: [&str; 9] = [
+    "decision", "customer", "project", "person", "meeting", "note", "file", "deck", "template",
 ];
 
 /// Where an entry comes from. Every entry needs at least one source.

@@ -11,6 +11,7 @@ mod automations;
 mod brain;
 mod catalog;
 mod connected;
+mod contracts;
 mod decks;
 mod documents;
 mod memory;
@@ -40,6 +41,7 @@ pub use connected::{
     ActionError, ActionRequest, ActionResult, BusyBlock, Connected, ItemDetail, RefreshResult,
     SourceInfo,
 };
+pub use contracts::{ComposeRequest, Composed, NewTemplate, fill as fill_template};
 pub use decks::{DeckAttachment, DeckBrief, NewDeck, render_html as render_deck};
 pub use posts::{
     CheckRequest, ImportRequest, ImportResult, Publisher, RewriteRequest, Writer, Written,
@@ -520,7 +522,8 @@ impl utoipa::Modify for SecurityAddon {
         posts::publish, posts::import, posts::calendar, posts::slots, posts::set_slots,
         posts::pillars, posts::save_pillar, posts::delete_pillar, posts::branding,
         posts::save_branding, posts::rewrite, decks::list, decks::create, decks::export,
-        decks::generate, decks::attach,
+        decks::generate, decks::attach, contracts::templates, contracts::create_template,
+        contracts::compose,
         talk::list, talk::create, talk::get, talk::update, talk::delete, talk::send,
     ),
     components(schemas(
@@ -559,7 +562,7 @@ impl utoipa::Modify for SecurityAddon {
         lighthouse_desk::ImportedPost, lighthouse_desk::BrandProfile, CheckRequest, ImportRequest,
         ImportResult, NewDeck, lighthouse_desk::TalkThread, lighthouse_desk::TalkMessage,
         NewThread, ThreadPatch, ThreadDetail, NewMessage, Exchange, Written, RewriteRequest,
-        DeckBrief, DeckAttachment, lighthouse_desk::Variant,
+        DeckBrief, DeckAttachment, lighthouse_desk::Variant, NewTemplate, ComposeRequest, Composed,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -709,6 +712,11 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/talk/threads/{id}/messages", post(talk::send))
         .route("/decks", get(decks::list).post(decks::create))
+        .route(
+            "/contracts/templates",
+            get(contracts::templates).post(contracts::create_template),
+        )
+        .route("/contracts/compose", post(contracts::compose))
         .route("/decks/generate", post(decks::generate))
         .route("/decks/{id}/export", get(decks::export))
         .route("/decks/{id}/attach", post(decks::attach))
@@ -1064,7 +1072,7 @@ mod tests {
             _item: Option<&lighthouse_sync::SyncedItem>,
             input: Value,
         ) -> Result<ActionResult, ActionError> {
-            if action == "nope" {
+            if action == "nope" || source == "nope" {
                 return Err(ActionError::Rejected(format!("{source} has no {action}")));
             }
             let proposed = action != "draft";

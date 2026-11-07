@@ -19,7 +19,10 @@ pub const DOMAINS: [(&str, &[&str]); 10] = [
     ("bank", &["account", "transaction"]),
     ("invoices", &["invoice"]),
     ("documents", &["contract", "document"]),
-    ("rooms", &["room", "document", "activity"]),
+    (
+        "rooms",
+        &["room", "document", "activity", "step", "milestone"],
+    ),
     ("holdings", &["holding", "quote"]),
 ];
 

@@ -46,7 +46,7 @@ A source belongs to one **domain**, and each domain knows a few item kinds:
 | `bank` | `account`, `transaction` |
 | `invoices` | `invoice` |
 | `documents` | `contract`, `document` |
-| `rooms` | `room`, `document`, `activity` |
+| `rooms` | `room`, `document`, `activity`, `step`, `milestone` |
 | `holdings` | `holding`, `quote` |
 
 `holdings` sources only show data: they cannot have actions, so Lighthouse never trades and gives no advice.
@@ -226,8 +226,46 @@ input = { customer = "{{input.customer}}", items = "{{input.items}}" }
 ```
 
 Contracts (`documents`) map `state`, `assignee` as the signer and `expires_at`. Deal rooms (`rooms`) map rooms, with
-their documents and activity as child collections. A portfolio (`holdings`) can come from a sheet or a market data
+their documents, activity, next steps (`step`, with `due_at` and `state`) and milestones (`milestone`, with `starts_at`)
+as child collections:
+
+```toml
+[sources.rooms.collections.steps]
+tool = "list_next_steps"
+parent = "room"
+input = { room_id = "{{parent.external_id}}" }
+kind = "step"
+[sources.rooms.collections.steps.fields]
+external_id = "id"
+title = "title"
+state = "status"
+due_at = "due_date"
+assignee = "owner"
+
+[sources.rooms.actions.add_step]
+tool = "add_next_step"
+kind = "room"
+input = { room_id = "{{item.external_id}}", title = "{{input.title}}", due_date = "{{input.due}}" }
+
+[sources.rooms.actions.attach]
+tool = "upload_document"
+kind = "room"
+input = { room_id = "{{item.external_id}}", name = "{{input.title}}", html = "{{input.html}}" }
+```
+
+`GET /connected/items/{id}` of a room returns its steps and milestones as children. Writing actions such as
+`add_step`, `add_milestone` and `attach` wait for your approval, and a room is never published to its customer by
+Lighthouse. A portfolio (`holdings`) can come from a sheet or a market data
 server: `amount` is the value of a holding, and `quote` items hold prices.
+
+### Contract templates
+
+Templates are Brain entries of the type `template`: Markdown with `{{field}}` placeholders.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /contracts/templates`, `POST /contracts/templates` | List and create templates. Change them with `PATCH /brain/entries/{id}` |
+| `POST /contracts/compose` | `{"template_id", "values", "title", "source"}` fills the placeholders. Missing values stay as `[TODO: field]` and are listed in `missing`. With a `source`, its `draft` action receives `title` and `body` |
 
 Payments, signatures and sending are always `write` tools, so they always wait for your approval. Lighthouse never pays,
 signs or sends by itself, and holdings have no actions at all.
