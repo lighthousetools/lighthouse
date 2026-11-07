@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// The device behind the current request. Absent for the admin token.
+/// The device behind the current request and whether it is a desktop agent.
+/// The device is absent for the admin token.
 #[derive(Clone, Copy, Debug)]
-pub struct Caller(pub Option<Uuid>);
+pub struct Caller(pub Option<Uuid>, pub bool);
 
 /// Lets a request through with a device token or the admin token.
 pub(crate) async fn require_auth(
@@ -26,12 +27,14 @@ pub(crate) async fn require_auth(
         return unauthorized();
     };
     if is_admin(&state, &provided) {
-        request.extensions_mut().insert(Caller(None));
+        request.extensions_mut().insert(Caller(None, false));
         return next.run(request).await;
     }
-    match state.auth.verify(&provided).await {
-        Ok(Some(device)) => {
-            request.extensions_mut().insert(Caller(Some(device)));
+    match state.auth.verify_device(&provided).await {
+        Ok(Some((device, kind))) => {
+            request
+                .extensions_mut()
+                .insert(Caller(Some(device), kind == "node"));
             next.run(request).await
         }
         Ok(None) => unauthorized(),

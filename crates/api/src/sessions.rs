@@ -22,10 +22,10 @@ const MAX_WAIT_SECONDS: u64 = 60;
 const POLL: Duration = Duration::from_millis(500);
 
 fn node_of(caller: Caller) -> Result<Uuid, ApiError> {
-    caller.0.ok_or_else(|| {
+    caller.0.filter(|_| caller.1).ok_or_else(|| {
         ApiError(
             StatusCode::FORBIDDEN,
-            "this endpoint needs a device token".to_owned(),
+            "this endpoint needs the token of a desktop agent".to_owned(),
         )
     })
 }
@@ -471,6 +471,36 @@ mod tests {
              "detail": {"diff": "-a\n+b"}},
             {"session_id": "s1", "kind": "tool", "tool": "Bash", "summary": "cargo test"}
         ]});
+        for path in ["/node/events", "/node/report"] {
+            let (status, _) = send(
+                app,
+                "POST",
+                path,
+                Some(&owner),
+                Some(json!({"events": [], "name": "x", "sessions": []})),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::FORBIDDEN,
+                "{path} refuses a token that is not a node's"
+            );
+            let (status, _) = send(
+                app,
+                "POST",
+                path,
+                Some(TOKEN),
+                Some(json!({"events": [], "name": "x", "sessions": []})),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::FORBIDDEN,
+                "{path} refuses the admin token"
+            );
+        }
+        let (status, _) = call(app, "GET", "/node/sessions/s1/messages", Some(&owner)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _) = send(app, "POST", "/node/events", Some(&node.token), Some(events)).await;
         assert_eq!(status, StatusCode::ACCEPTED);
 

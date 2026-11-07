@@ -245,11 +245,16 @@ impl Auth {
 
     /// Returns the device behind a token, if it is valid.
     pub async fn verify(&self, token: &str) -> Result<Option<Uuid>, AuthError> {
+        Ok(self.verify_device(token).await?.map(|(id, _)| id))
+    }
+
+    /// Returns the device behind a token and its kind name, if it is valid.
+    pub async fn verify_device(&self, token: &str) -> Result<Option<(Uuid, String)>, AuthError> {
         if !token.starts_with(TOKEN_PREFIX) {
             return Ok(None);
         }
         let row = sqlx::query(
-            "SELECT id FROM device_tokens \
+            "SELECT id, kind FROM device_tokens \
              WHERE token_hash = $1 AND tenant_id = $2 AND revoked_at IS NULL",
         )
         .bind(hash_token(token))
@@ -258,6 +263,7 @@ impl Auth {
         .await?;
         let Some(row) = row else { return Ok(None) };
         let id: Uuid = row.get(0);
+        let kind: String = row.get(1);
         sqlx::query(
             "UPDATE device_tokens SET last_used_at = now() WHERE id = $1 \
              AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')",
@@ -265,7 +271,7 @@ impl Auth {
         .bind(id)
         .execute(self.store.pool())
         .await?;
-        Ok(Some(id))
+        Ok(Some((id, kind)))
     }
 
     /// Lists devices that are signed in.

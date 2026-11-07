@@ -8,7 +8,8 @@ address, and it talks to your server over an outbound connection.
 
 ## Setup
 
-Create a token with the kind `node` in the apps, or with `POST /auth/tokens`. Then:
+Create a token with the kind `node` in the apps, or with `POST /auth/tokens`. Endpoints under `/node/` accept only such
+tokens and answer `403` to every other token. Then:
 
 ```sh
 export LIGHTHOUSE_NODE_TOKEN=lht_...
