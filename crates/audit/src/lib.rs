@@ -323,6 +323,35 @@ impl AuditLog {
         .await?)
     }
 
+    /// Counts runs, failed runs and their cost per day, oldest first, with a
+    /// row for every day. `agent` narrows to one agent, `reason` to failures
+    /// whose reason contains the text.
+    pub async fn daily_runs(
+        &self,
+        agent: Option<&str>,
+        reason: Option<&str>,
+        days: i32,
+    ) -> Result<Vec<(String, i64, i64, f64)>, AuditError> {
+        Ok(sqlx::query_as(
+            "SELECT to_char(day, 'YYYY-MM-DD'), count(r.id), \
+             count(r.id) FILTER (WHERE r.status IN ('failed', 'limit_exceeded', 'rejected')), \
+             coalesce(sum(r.cost_eur), 0)::float8 \
+             FROM generate_series(date_trunc('day', now()) - make_interval(days => $4 - 1), \
+                                  date_trunc('day', now()), interval '1 day') AS day \
+             LEFT JOIN runs r ON r.tenant_id = $1 AND r.started_at >= day \
+                  AND r.started_at < day + interval '1 day' \
+                  AND ($2::text IS NULL OR r.agent_id = $2) \
+                  AND ($3::text IS NULL OR r.reason LIKE '%' || $3 || '%') \
+             GROUP BY day ORDER BY day",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(agent)
+        .bind(reason)
+        .bind(days)
+        .fetch_all(self.store.pool())
+        .await?)
+    }
+
     /// Returns a value that changes whenever anything the apps show changes.
     pub async fn revision(&self) -> Result<String, AuditError> {
         let (revision,): (String,) = sqlx::query_as(
@@ -527,6 +556,34 @@ mod tests {
         assert_eq!(calls[0].agent_id, "inbox");
         let later = chrono::Utc::now() + chrono::Duration::hours(1);
         assert!(log.tool_calls(&tools, later, 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn daily_runs_have_a_row_for_every_day() {
+        let (log, _) = log().await;
+        for (agent, status) in [
+            ("brief", RunStatus::Succeeded),
+            ("brief", RunStatus::Failed),
+            ("other", RunStatus::Failed),
+        ] {
+            let run = RunId::new();
+            log.start_run(run, agent, "cron").await.unwrap();
+            log.record_step(run, &step("model", 1, 0.5)).await.unwrap();
+            let end = RunEnd {
+                status,
+                reason: Some("connector `linear` failed"),
+                report: None,
+            };
+            log.finish_run(run, end).await.unwrap();
+        }
+        let days = log.daily_runs(Some("brief"), None, 7).await.unwrap();
+        assert_eq!(days.len(), 7);
+        let today = days.last().unwrap();
+        assert_eq!((today.1, today.2), (2, 1));
+        assert!((today.3 - 1.0).abs() < 1e-9);
+        let connector = log.daily_runs(None, Some("linear"), 3).await.unwrap();
+        assert_eq!(connector.last().unwrap().1, 3);
+        assert_eq!(days[0].1, 0);
     }
 
     #[tokio::test]

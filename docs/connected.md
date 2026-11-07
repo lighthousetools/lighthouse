@@ -340,7 +340,7 @@ important mail 70, mentions 60, unread mail 40, everything else 10, plus 10 for 
 
 The server refreshes each source when its interval has passed, checking every minute. The first refresh reaches back 30
 days, later ones start ten minutes before the last success. Errors of single collections are recorded, and the other
-collections still refresh.
+collections still refresh. Every attempt is kept in a history, which charts of alerts use.
 
 The first refresh of a source sends no events. After that, a refresh reports changes:
 

@@ -494,7 +494,7 @@ impl utoipa::Modify for SecurityAddon {
         tasks::reopen, tasks::accept, tasks::reorder, tasks::delegate,
         rules::list, rules::create, rules::get, rules::update, rules::delete,
         memory::list, memory::create, memory::get, memory::update, memory::confirm, memory::delete,
-        alerts::list, alerts::counts, alerts::get, alerts::acknowledge, alerts::resolve,
+        alerts::list, alerts::counts, alerts::get, alerts::acknowledge, alerts::resolve, alerts::series,
         ready::feed, ready::dismiss_draft, ready::snooze, ready::unsnooze,
         documents::list, documents::latest_brief, documents::recaps, documents::recap,
         documents::of_run,
@@ -531,7 +531,8 @@ impl utoipa::Modify for SecurityAddon {
         lighthouse_sessions::SessionUsage,
         Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Delegation, Origin, SourceLink,
         Rule, NewRule, RulePatch, Fact, FactSource, NewFact, FactPatch,
-        Alert, AlertCounts, AlertView, lighthouse_desk::Severity,
+        Alert, AlertCounts, AlertView, lighthouse_desk::Severity, alerts::AlertSeries,
+        alerts::SeriesPoint,
         ReadyFeed, ReadyItem, Snooze, lighthouse_audit::ToolCall,
         lighthouse_desk::BriefingDocument, lighthouse_desk::BriefingContent,
         lighthouse_desk::DocumentSection, lighthouse_desk::DocumentItem,
@@ -756,6 +757,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/alerts", get(alerts::list))
         .route("/alerts/counts", get(alerts::counts))
         .route("/alerts/{id}", get(alerts::get))
+        .route("/alerts/{id}/series", get(alerts::series))
         .route("/alerts/{id}/acknowledge", post(alerts::acknowledge))
         .route("/alerts/{id}/resolve", post(alerts::resolve))
         .route("/credentials", get(auth::list_credentials))
@@ -1239,6 +1241,14 @@ mod tests {
             "/posts/calendar",
             "/decks/{id}/export",
             "/branding",
+            "/talk/threads/{id}/messages",
+            "/node/otel/v1/metrics",
+            "/alerts/{id}/series",
+            "/automations/dry-run",
+            "/tasks/{id}/delegate",
+            "/ready/{kind}/{id}/snooze",
+            "/connected/actions/bulk",
+            "/calendar/suggestions",
         ] {
             assert!(spec["paths"].get(path).is_some(), "{path}");
         }

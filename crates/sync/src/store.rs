@@ -560,7 +560,40 @@ impl SyncStore {
         .bind(items)
         .execute(self.pool())
         .await?;
+        sqlx::query(
+            "INSERT INTO sync_history (id, tenant_id, source, ok, items, error) VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(self.tenant.as_uuid())
+        .bind(source)
+        .bind(error.is_none())
+        .bind(items)
+        .bind(error)
+        .execute(self.pool())
+        .await?;
         Ok(())
+    }
+
+    /// Counts refresh attempts and failures of a source per day, oldest first,
+    /// with a row for every day.
+    pub async fn daily_syncs(
+        &self,
+        source: &str,
+        days: i32,
+    ) -> Result<Vec<(String, i64, i64)>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT to_char(day, 'YYYY-MM-DD'), count(h.id), count(h.id) FILTER (WHERE NOT h.ok) \
+             FROM generate_series(date_trunc('day', now()) - make_interval(days => $3 - 1), \
+                                  date_trunc('day', now()), interval '1 day') AS day \
+             LEFT JOIN sync_history h ON h.tenant_id = $1 AND h.source = $2 \
+                  AND h.at >= day AND h.at < day + interval '1 day' \
+             GROUP BY day ORDER BY day",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(source)
+        .bind(days)
+        .fetch_all(self.pool())
+        .await
     }
 
     /// Returns the freshness of every source that was ever refreshed.

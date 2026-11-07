@@ -149,6 +149,7 @@ and the severity can only go up. After it is resolved, the next occurrence opens
 | `GET /alerts/{id}` | One alert |
 | `POST /alerts/{id}/acknowledge` | Mark an open alert as seen. It stays until it is resolved |
 | `POST /alerts/{id}/resolve` | Resolve it by hand |
+| `GET /alerts/{id}/series?days=14` | A daily series for a chart, in UTC days: runs, failures and cost of the agent for `run` and `cost_limit` alerts, failed runs naming the connector for `connector` alerts, and refreshes of the source for `check_failed` alerts. `metric` is `runs`, `syncs` or `none` |
 
 ## Pushes
 
