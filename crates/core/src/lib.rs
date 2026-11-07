@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod automation;
+pub mod proposal;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 const COLUMNS: &str = "id, org, channel, kind, pillar, topic, title, body, status, scheduled_at, published_at, \
                        url, external_id, images, metrics, origin, publish_run, created_at, updated_at, \
-                       variants, first_comment";
+                       variants, first_comment, reason";
 const MAX_BODY: usize = 10_000;
 /// Analytics fields an import or the owner may set.
 pub const METRICS: [&str; 7] = [
@@ -75,6 +75,8 @@ pub struct Post {
     pub variants: Value,
     /// The comment to post first, for example with the link.
     pub first_comment: Option<String>,
+    /// Why an agent proposed it.
+    pub reason: Option<String>,
 }
 
 /// An alternative text of a post.
@@ -136,6 +138,9 @@ pub struct NewPost {
     /// The comment to post first.
     #[serde(default)]
     pub first_comment: Option<String>,
+    /// Why an agent proposes it.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// Changes to a post. Missing fields stay, `null` clears.
@@ -385,8 +390,8 @@ impl Desk {
             return Err(invalid("`body` must not be empty"));
         }
         let query = format!(
-            "INSERT INTO posts (id, tenant_id, org, channel, kind, pillar, topic, title, body, status, origin) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'idea', 'agent') RETURNING {COLUMNS}"
+            "INSERT INTO posts (id, tenant_id, org, channel, kind, pillar, topic, title, body, status, origin, \
+             reason) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'idea', 'agent', $10) RETURNING {COLUMNS}"
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(Uuid::now_v7())
@@ -398,6 +403,7 @@ impl Desk {
             .bind(&post.topic)
             .bind(&post.title)
             .bind(check_body(&post.body)?)
+            .bind(&post.reason)
             .fetch_one(self.pool())
             .await?)
     }

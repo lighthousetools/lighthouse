@@ -57,6 +57,20 @@ tool runs with the final arguments. If you deny, the model is told that the acti
 proposals count as denied after 72 hours. `quotes_external` marks proposals from runs that had read external content, so
 check those with extra care.
 
+### Reasons and context
+
+Every `draft` and `write` tool, and the built-in proposal tools, accept two extra arguments that the model sees in the
+tool's schema:
+
+| Argument | Meaning |
+|---|---|
+| `_reason` | One sentence for the owner: why this is worth approving, such as "John asked for the offer by Friday" |
+| `_context` | The item the call answers: the ID of a connected item, or its external ID such as a mail thread ID |
+
+Lighthouse keeps both for the review in `GET /ready` and removes them before an external tool sees the arguments. The
+reason of a proposed task becomes its notes when it has none, and that of a proposed post is stored with the post. When
+a call has no `_reason`, the review falls back to what the model said before it made the call.
+
 Use `lht connectors tools <connector>` to see the real tool names of a server.
 
 ### Built-in tools

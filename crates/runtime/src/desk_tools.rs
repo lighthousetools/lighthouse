@@ -51,7 +51,8 @@ fn spec(tool: &str) -> Option<ToolSpec> {
                 "body": {"type": "string"},
                 "title": {"type": "string"},
                 "pillar": {"type": "string"},
-                "topic": {"type": "string"}
+                "topic": {"type": "string"},
+                "channel": {"type": "string", "description": "Network, such as linkedin"}
             }, "required": ["body"]}),
         ),
         _ => return None,
@@ -96,7 +97,8 @@ impl DeskHost {
                     .transpose()?;
                 let task = NewTask {
                     title: text(input, "title").unwrap_or_default(),
-                    notes: text(input, "notes"),
+                    notes: text(input, "notes")
+                        .or_else(|| lighthouse_core::proposal::reason(input)),
                     due_on,
                     priority: input["priority"]
                         .as_i64()
@@ -116,7 +118,8 @@ impl DeskHost {
                     text: text(input, "text").unwrap_or_default(),
                     category: text(input, "category"),
                     confidence: input["confidence"].as_f64().unwrap_or(DEFAULT_CONFIDENCE),
-                    evidence: text(input, "evidence"),
+                    evidence: text(input, "evidence")
+                        .or_else(|| lighthouse_core::proposal::reason(input)),
                 };
                 let fact = self
                     .desk
@@ -131,6 +134,8 @@ impl DeskHost {
                     title: text(input, "title"),
                     pillar: text(input, "pillar"),
                     topic: text(input, "topic"),
+                    channel: text(input, "channel"),
+                    reason: lighthouse_core::proposal::reason(input),
                     ..lighthouse_desk::NewPost::default()
                 };
                 let post = self
@@ -260,7 +265,7 @@ mod tests {
         let post = host
             .call_tool(
                 PROPOSE_POST,
-                json!({"body": "An idea", "pillar": "finance"}),
+                json!({"body": "An idea", "pillar": "finance", "_reason": "It did well last week"}),
             )
             .await
             .unwrap();
@@ -271,9 +276,11 @@ mod tests {
                 .unwrap()
                 .is_error
         );
-        assert_eq!(desk.proposed_posts().await.unwrap().len(), 1);
+        let posts = desk.proposed_posts().await.unwrap();
+        assert_eq!(posts[0].reason.as_deref(), Some("It did well last week"));
 
         let task = json!({"title": "Reply to the request", "due_on": "2026-05-04", "priority": 2,
+                          "_reason": "Anna waits for an answer",
                           "source": {"kind": "mail", "reference": "m-1"}});
         let output = host.call_tool(PROPOSE_TASK, task).await.unwrap();
         assert!(!output.is_error, "{}", output.text);
@@ -286,6 +293,7 @@ mod tests {
         let tasks = desk.tasks(TaskView::Proposed, today, 10).await.unwrap();
         assert_eq!(tasks[0].agent_id.as_deref(), Some("inbox"));
         assert_eq!(tasks[0].run_id, Some(run.as_uuid()));
+        assert_eq!(tasks[0].notes.as_deref(), Some("Anna waits for an answer"));
         let facts = desk.facts(&FactFilter::default()).await.unwrap();
         assert_eq!(facts[0].status, "proposed");
         assert!(desk.known_facts().await.unwrap().is_empty());

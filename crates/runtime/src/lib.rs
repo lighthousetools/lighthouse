@@ -19,8 +19,8 @@ use chrono::Utc;
 use chrono_tz::Tz;
 use lighthouse_audit::{Approval, AuditLog, NewApproval, NewStep, RunEnd, RunStatus};
 use lighthouse_config::Config;
-use lighthouse_core::RunId;
 use lighthouse_core::agent::{AgentDefinition, Delivery, ToolLevel, qualified_name, wire_name};
+use lighthouse_core::{RunId, proposal};
 use lighthouse_desk::Desk;
 use lighthouse_mcp::{ToolHost, ToolHostFactory, ToolPolicy};
 use lighthouse_notify::Notifier;
@@ -38,6 +38,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 
+/// Built-in tools that store proposals on the desk.
+const DESK_TOOLS: [&str; 3] = ["tasks.", "memory.", "posts."];
 const TASK: &str = "text";
 const LOAD_SKILL: &str = "load_skill";
 const ASK_AGENT: &str = "brain-ask";
@@ -336,9 +338,16 @@ impl Runtime {
     fn model_tools(&self, agent: &AgentDefinition, specs: Vec<ToolSpec>) -> Vec<ToolSpec> {
         let mut tools: Vec<ToolSpec> = specs
             .into_iter()
-            .map(|spec| ToolSpec {
-                name: wire_name(&spec.name),
-                ..spec
+            .map(|spec| {
+                let mut input_schema = spec.input_schema;
+                if self.policy.level(&spec.name) != ToolLevel::Read {
+                    proposal::extend_schema(&mut input_schema);
+                }
+                ToolSpec {
+                    name: wire_name(&spec.name),
+                    input_schema,
+                    ..spec
+                }
             })
             .collect();
         if !agent.skills.is_empty() {
@@ -406,12 +415,14 @@ impl Runtime {
             let mut proposed = step("tool", &qualified, "proposed");
             proposed.detail = Some(input.to_string());
             self.record(run, proposed).await?;
+            let reason = proposal::reason(&input)
+                .or_else(|| Some(state.reason.clone()).filter(|text| !text.is_empty()));
             return Ok(CallOutcome::Proposed(NewApproval {
                 id: Uuid::now_v7(),
                 tool: qualified,
                 input,
                 quotes_external: state.saw_external,
-                reason: Some(state.reason.clone()).filter(|text| !text.is_empty()),
+                reason,
                 consulted: state.consulted.clone(),
             }));
         }
@@ -431,7 +442,16 @@ impl Runtime {
         input: Value,
     ) -> Result<(String, bool), Stop> {
         let start = Instant::now();
-        let result = host.call_tool(qualified, input.clone()).await;
+        // Desk proposals keep the reason for the owner; external tools never see it.
+        let arguments = if DESK_TOOLS
+            .iter()
+            .any(|prefix| qualified.starts_with(prefix))
+        {
+            input.clone()
+        } else {
+            proposal::strip(input.clone())
+        };
+        let result = host.call_tool(qualified, arguments).await;
         let mut record = step("tool", qualified, "ok");
         record.duration_ms = elapsed_ms(start);
         record.detail = Some(input.to_string());

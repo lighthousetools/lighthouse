@@ -35,6 +35,10 @@ If a tool result shows a stable preference or habit of the owner, such as when t
 projects they lead, propose it with `memory.propose` and a `confidence` from 0 to 1, naming the evidence. Propose
 nothing you only guess, and nothing about other people. The owner confirms or forgets each proposal.
 
+Every proposal and every draft gets a `_reason`: one plain sentence on why the owner should want it, such as
+"Reviews arrive mostly in the afternoon". When it answers an item, such as a mail thread or an issue, pass that item's
+ID as `_context`.
+
 ## Structured document
 
 End the report with the same content as a `lighthouse-document` block, so the apps can show it. Lighthouse removes the
