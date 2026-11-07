@@ -14,7 +14,8 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 const COLUMNS: &str = "id, kind, key, severity, title, detail, source_kind, source_ref, source_label, \
-                       source_url, status, count, first_seen_at, last_seen_at, acknowledged_at, resolved_at";
+                       source_url, status, count, first_seen_at, last_seen_at, acknowledged_at, resolved_at, \
+                       value, unit";
 
 fn rank(column: &str) -> String {
     format!("CASE {column} WHEN 'critical' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END")
@@ -85,6 +86,32 @@ pub struct Alert {
     pub acknowledged_at: Option<DateTime<Utc>>,
     /// When it was resolved.
     pub resolved_at: Option<DateTime<Utc>>,
+    /// The current value of the metric behind it, such as failed runs or a cost.
+    pub value: Option<f64>,
+    /// The unit of `value`, such as `failures`, `EUR` or `ms`.
+    pub unit: Option<String>,
+    /// What happened, oldest first: `raised`, `seen`, `escalated`, `acknowledged`, `resolved`.
+    pub events: Vec<AlertEvent>,
+}
+
+/// One step in the timeline of an alert.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, FromRow)]
+pub struct AlertEvent {
+    /// What happened.
+    pub kind: String,
+    /// The error text or note of that moment.
+    pub text: Option<String>,
+    /// The value of the metric then.
+    pub value: Option<f64>,
+    /// When.
+    pub at: DateTime<Utc>,
+}
+
+#[derive(FromRow)]
+struct EventRow {
+    alert_id: Uuid,
+    #[sqlx(flatten)]
+    event: AlertEvent,
 }
 
 #[derive(FromRow)]
@@ -105,6 +132,8 @@ struct AlertRow {
     last_seen_at: DateTime<Utc>,
     acknowledged_at: Option<DateTime<Utc>>,
     resolved_at: Option<DateTime<Utc>>,
+    value: Option<f64>,
+    unit: Option<String>,
 }
 
 impl From<AlertRow> for Alert {
@@ -128,9 +157,15 @@ impl From<AlertRow> for Alert {
             last_seen_at: row.last_seen_at,
             acknowledged_at: row.acknowledged_at,
             resolved_at: row.resolved_at,
+            value: row.value,
+            unit: row.unit,
+            events: Vec::new(),
         }
     }
 }
+
+/// The unit of alerts that count failures: each repeat adds one to the value.
+pub const FAILURES: &str = "failures";
 
 /// A problem to report.
 #[derive(Clone, Debug)]
@@ -147,6 +182,10 @@ pub struct NewAlert {
     pub detail: Option<String>,
     /// What broke.
     pub source: Option<SourceLink>,
+    /// The current value of the metric behind it.
+    pub value: Option<f64>,
+    /// The unit of `value`.
+    pub unit: Option<String>,
 }
 
 /// Result of raising an alert.
@@ -197,10 +236,13 @@ impl Desk {
         let previous = self.unresolved_alert(&alert.key).await?;
         let query = format!(
             "INSERT INTO alerts (id, tenant_id, kind, key, severity, title, detail, source_kind, \
-             source_ref, source_label, source_url, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open') \
+             source_ref, source_label, source_url, status, value, unit) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open', $12, $13) \
              ON CONFLICT (tenant_id, key) WHERE status <> 'resolved' DO UPDATE SET \
              count = alerts.count + 1, last_seen_at = now(), title = EXCLUDED.title, \
+             value = CASE WHEN EXCLUDED.unit = '{FAILURES}' THEN COALESCE(alerts.value, 0) + 1 \
+                     ELSE COALESCE(EXCLUDED.value, alerts.value) END, \
+             unit = COALESCE(EXCLUDED.unit, alerts.unit), \
              detail = EXCLUDED.detail, source_kind = EXCLUDED.source_kind, \
              source_ref = EXCLUDED.source_ref, source_label = EXCLUDED.source_label, \
              source_url = EXCLUDED.source_url, \
@@ -220,12 +262,23 @@ impl Desk {
             .bind(source.map(|link| link.reference.clone()))
             .bind(source.and_then(|link| link.label.clone()))
             .bind(source.and_then(|link| link.url.clone()))
+            .bind(alert.value)
+            .bind(&alert.unit)
             .fetch_one(self.pool())
             .await?;
-        let alert = Alert::from(row);
+        let mut raised = Alert::from(row);
         let escalated = previous
             .as_ref()
-            .is_some_and(|before| alert.severity > before.severity);
+            .is_some_and(|before| raised.severity > before.severity);
+        let kind = match (&previous, escalated) {
+            (None, _) => "raised",
+            (Some(_), true) => "escalated",
+            (Some(_), false) => "seen",
+        };
+        self.alert_event(raised.id, kind, alert.detail.as_deref(), alert.value)
+            .await?;
+        raised.events = self.events_of(raised.id).await?;
+        let alert = raised;
         Ok(Raised {
             is_new: previous.is_none(),
             escalated,
@@ -264,7 +317,69 @@ impl Desk {
             .bind(limit)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows.into_iter().map(Into::into).collect())
+        self.with_events(rows.into_iter().map(Into::into).collect())
+            .await
+    }
+
+    async fn alert_event(
+        &self,
+        alert: Uuid,
+        kind: &str,
+        text: Option<&str>,
+        value: Option<f64>,
+    ) -> Result<(), DeskError> {
+        sqlx::query(
+            "INSERT INTO alert_events (id, tenant_id, alert_id, kind, text, value) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(self.tenant())
+        .bind(alert)
+        .bind(kind)
+        .bind(text)
+        .bind(value)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    async fn events_of(&self, alert: Uuid) -> Result<Vec<AlertEvent>, DeskError> {
+        Ok(sqlx::query_as(
+            "SELECT kind, text, value, at FROM alert_events WHERE tenant_id = $1 AND alert_id = $2 \
+             ORDER BY at, id",
+        )
+        .bind(self.tenant())
+        .bind(alert)
+        .fetch_all(self.pool())
+        .await?)
+    }
+
+    async fn with_events(&self, mut alerts: Vec<Alert>) -> Result<Vec<Alert>, DeskError> {
+        let ids: Vec<Uuid> = alerts.iter().map(|alert| alert.id).collect();
+        let rows: Vec<EventRow> = sqlx::query_as(
+            "SELECT alert_id, kind, text, value, at FROM alert_events \
+             WHERE tenant_id = $1 AND alert_id = ANY($2) ORDER BY at, id",
+        )
+        .bind(self.tenant())
+        .bind(&ids)
+        .fetch_all(self.pool())
+        .await?;
+        for row in rows {
+            if let Some(alert) = alerts.iter_mut().find(|alert| alert.id == row.alert_id) {
+                alert.events.push(row.event);
+            }
+        }
+        Ok(alerts)
+    }
+
+    async fn changed(&self, row: Option<AlertRow>, kind: &str) -> Result<Option<Alert>, DeskError> {
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut alert = Alert::from(row);
+        self.alert_event(alert.id, kind, None, None).await?;
+        alert.events = self.events_of(alert.id).await?;
+        Ok(Some(alert))
     }
 
     /// Returns an alert.
@@ -275,7 +390,14 @@ impl Desk {
             .bind(id)
             .fetch_optional(self.pool())
             .await?;
-        Ok(row.map(Into::into))
+        match row {
+            Some(row) => {
+                let mut alert = Alert::from(row);
+                alert.events = self.events_of(alert.id).await?;
+                Ok(Some(alert))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Counts unresolved alerts per severity.
@@ -309,7 +431,7 @@ impl Desk {
             .bind(id)
             .fetch_optional(self.pool())
             .await?;
-        Ok(row.map(Into::into))
+        self.changed(row, "acknowledged").await
     }
 
     /// Resolves an alert. A later repeat opens a new one.
@@ -323,7 +445,7 @@ impl Desk {
             .bind(id)
             .fetch_optional(self.pool())
             .await?;
-        Ok(row.map(Into::into))
+        self.changed(row, "resolved").await
     }
 
     /// Resolves the unresolved alert of a problem, once it works again.
@@ -338,7 +460,11 @@ impl Desk {
             .bind(key)
             .fetch_all(self.pool())
             .await?;
-        Ok(rows.into_iter().map(Into::into).collect())
+        let mut resolved = Vec::new();
+        for row in rows {
+            resolved.extend(self.changed(Some(row), "resolved").await?);
+        }
+        Ok(resolved)
     }
 }
 
@@ -350,6 +476,8 @@ mod tests {
 
     fn problem(key: &str, severity: Severity) -> NewAlert {
         NewAlert {
+            value: None,
+            unit: None,
             kind: "connector".to_owned(),
             key: key.to_owned(),
             severity,
@@ -357,6 +485,53 @@ mod tests {
             detail: Some("timeout".to_owned()),
             source: None,
         }
+    }
+
+    #[tokio::test]
+    async fn alerts_keep_their_value_and_a_timeline() {
+        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let failing = || NewAlert {
+            value: Some(1.0),
+            unit: Some(FAILURES.to_owned()),
+            ..problem("run:brief", Severity::Warning)
+        };
+        desk.raise_alert(failing()).await.unwrap();
+        let raised = desk.raise_alert(failing()).await.unwrap().alert;
+        assert_eq!(
+            (raised.value, raised.unit.as_deref()),
+            (Some(2.0), Some(FAILURES))
+        );
+        let cost = NewAlert {
+            value: Some(4.2),
+            unit: Some("EUR".to_owned()),
+            ..problem("cost:brief", Severity::Warning)
+        };
+        let costly = desk.raise_alert(cost.clone()).await.unwrap().alert;
+        let again = desk
+            .raise_alert(NewAlert {
+                value: Some(5.0),
+                severity: Severity::Critical,
+                ..cost
+            })
+            .await
+            .unwrap()
+            .alert;
+        assert_eq!(again.value, Some(5.0));
+        desk.acknowledge_alert(costly.id).await.unwrap();
+        let resolved = desk.resolve_alert(costly.id).await.unwrap().unwrap();
+        let kinds: Vec<&str> = resolved
+            .events
+            .iter()
+            .map(|event| event.kind.as_str())
+            .collect();
+        assert_eq!(kinds, ["raised", "escalated", "acknowledged", "resolved"]);
+        assert_eq!(resolved.events[1].value, Some(5.0));
+        let listed = desk.alerts(AlertView::All, 10).await.unwrap();
+        assert!(listed.iter().all(|alert| !alert.events.is_empty()));
+        let by_key = desk.resolve_alert_key("run:brief").await.unwrap();
+        assert_eq!(by_key[0].events.last().unwrap().kind, "resolved");
+        let fetched = desk.alert(by_key[0].id).await.unwrap().unwrap();
+        assert_eq!(fetched.events.len(), 3);
     }
 
     #[tokio::test]

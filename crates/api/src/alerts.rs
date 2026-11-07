@@ -243,6 +243,8 @@ mod tests {
         let alert = harness
             .desk
             .raise_alert(NewAlert {
+                value: None,
+                unit: None,
                 kind: "connector".to_owned(),
                 key: "connector:linear".to_owned(),
                 severity: Severity::Critical,
@@ -296,6 +298,8 @@ mod tests {
             let other = harness
                 .desk
                 .raise_alert(NewAlert {
+                    value: None,
+                    unit: None,
                     kind: "x".to_owned(),
                     key: key.to_owned(),
                     severity: Severity::Warning,

@@ -195,6 +195,8 @@ pub async fn seed(store: &Store, brain_dir: &Path) -> anyhow::Result<Seeded> {
         ),
     ] {
         desk.raise_alert(NewAlert {
+            value: None,
+            unit: None,
             kind: kind.to_owned(),
             key: key.to_owned(),
             severity,

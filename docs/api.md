@@ -165,6 +165,11 @@ or `critical`) and the times it was first and last seen.
 | `check_failed` | `check:<source>:<check>` | `warning` | A check of one of your pull requests starts failing | It passes again |
 | `node_offline` | `node:<id>` | `warning` | A desktop agent that is not paused sends no report for 15 minutes | It reports again |
 
+`value` and `unit` hold the current value of the metric behind an alert: failures in a row (`failures`, counting up with
+each repeat) for connectors and failed runs, the cost in `EUR` for cost limits, and `minutes` offline for desktop
+agents. `events` is the cause timeline, oldest first: `raised`, `seen` for a repeat, `escalated`, `acknowledged` and
+`resolved`, each with the error `text` and `value` of that moment and its time `at`.
+
 While an alert of a key is unresolved, a repeat counts up `count` and moves `last_seen_at` instead of adding an alert,
 and the severity can only go up. After it is resolved, the next occurrence opens a new alert.
 

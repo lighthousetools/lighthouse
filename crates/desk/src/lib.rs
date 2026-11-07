@@ -16,7 +16,7 @@ pub mod rules;
 pub mod talk;
 pub mod tasks;
 
-pub use alerts::{Alert, AlertCounts, AlertView, NewAlert, Raised, Severity};
+pub use alerts::{Alert, AlertCounts, AlertEvent, AlertView, FAILURES, NewAlert, Raised, Severity};
 pub use branding::BrandProfile;
 pub use documents::{
     BriefingContent, BriefingDocument, DocumentItem, DocumentSection, ItemNumber, ItemSource,

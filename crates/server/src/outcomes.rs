@@ -67,11 +67,21 @@ fn quoted(text: &str, after: &str) -> Option<String> {
     Some(name.to_owned())
 }
 
+/// The unit of alerts that count failures; repeats add up.
+const FAILURES: &str = lighthouse_desk::FAILURES;
+
 /// Turns a run that did not succeed into an alert.
 pub fn classify(record: &RunRecord) -> Option<NewAlert> {
     let reason = record.reason.clone().unwrap_or_default();
     let agent = &record.agent_id;
+    let (value, unit) = if record.status == "limit_exceeded" && reason.starts_with("cost limit") {
+        (Some(record.cost_eur), "EUR")
+    } else {
+        (Some(1.0), FAILURES)
+    };
     let alert = |kind: &str, key: String, severity, title: String| NewAlert {
+        value,
+        unit: Some(unit.to_owned()),
         kind: kind.to_owned(),
         key,
         severity,
@@ -327,7 +337,10 @@ impl Outcomes {
                 self.resolve_alerts(&key).await?;
                 continue;
             }
+            let offline = (Utc::now() - node.last_seen_at).num_minutes();
             self.raise_alert(NewAlert {
+                value: Some(offline as f64),
+                unit: Some("minutes".to_owned()),
                 kind: "node_offline".to_owned(),
                 key,
                 severity: Severity::Warning,

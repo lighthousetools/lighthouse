@@ -58,6 +58,8 @@ impl ConnectedService {
                 let pull_request = check.pull_request.clone().unwrap_or_default();
                 self.outcomes
                     .raise_alert(NewAlert {
+                        value: None,
+                        unit: None,
                         kind: "check_failed".to_owned(),
                         key: check.key.clone(),
                         severity: Severity::Warning,
