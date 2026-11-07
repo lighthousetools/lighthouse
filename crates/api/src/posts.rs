@@ -408,6 +408,42 @@ pub(crate) async fn calendar(
     Ok(Json(calendar))
 }
 
+/// Lists the days without posts, such as holidays.
+#[utoipa::path(
+    get,
+    operation_id = "list_blocked_days",
+    path = "/posts/blocked-days",
+    responses((status = 200, body = Vec<lighthouse_desk::BlockedDay>)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn blocked_days(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<lighthouse_desk::BlockedDay>>, ApiError> {
+    Ok(Json(state.desk.blocked_days().await.map_err(desk_error)?))
+}
+
+/// Replaces the days without posts. The calendar marks their slots as blocked.
+#[utoipa::path(
+    put,
+    operation_id = "set_blocked_days",
+    path = "/posts/blocked-days",
+    request_body = Vec<lighthouse_desk::BlockedDay>,
+    responses((status = 200, body = Vec<lighthouse_desk::BlockedDay>), (status = 400, description = "Too many days")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn set_blocked_days(
+    State(state): State<ApiState>,
+    Json(days): Json<Vec<lighthouse_desk::BlockedDay>>,
+) -> Result<Json<Vec<lighthouse_desk::BlockedDay>>, ApiError> {
+    let days = state
+        .desk
+        .set_blocked_days(days)
+        .await
+        .map_err(desk_error)?;
+    changed(&state, None);
+    Ok(Json(days))
+}
+
 /// Returns the weekly slots of the posting plan.
 #[utoipa::path(
     get,
@@ -594,6 +630,31 @@ mod tests {
         .await;
         let calendar: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(calendar[0]["posts"][0], id.as_str(), "{body}");
+        assert!(calendar[0]["blocked"].is_null());
+        let holiday = json!([{"date": "2030-01-07", "reason": "Holiday"}]);
+        let (status, _) = send(
+            app,
+            "PUT",
+            "/posts/blocked-days",
+            Some(TOKEN),
+            Some(holiday),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            call(app, "GET", "/posts/blocked-days", Some(TOKEN))
+                .await
+                .1
+                .contains("Holiday")
+        );
+        let (_, body) = call(
+            app,
+            "GET",
+            "/posts/calendar?from=2030-01-07&days=7",
+            Some(TOKEN),
+        )
+        .await;
+        assert!(body.contains("\"blocked\":\"Holiday\""), "{body}");
         assert!(
             call(app, "GET", "/posts/slots", Some(TOKEN))
                 .await

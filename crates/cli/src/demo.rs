@@ -246,6 +246,11 @@ pub async fn seed(store: &Store, brain_dir: &Path) -> anyhow::Result<Seeded> {
         })
         .collect();
     desk.set_post_slots(&slots).await?;
+    desk.set_blocked_days(vec![lighthouse_desk::BlockedDay {
+        date: today + Duration::days(12),
+        reason: Some("Holiday".to_owned()),
+    }])
+    .await?;
     let body = "Most invoices are late for one boring reason.\n\nNobody owns the reminder. We gave every invoice an owner and a date, and the average delay went from 19 to 6 days.\n\nWhat is the boring fix in your team?\n\n#invoicing #smallteams";
     desk.create_post(NewPost {
         body: body.to_owned(),

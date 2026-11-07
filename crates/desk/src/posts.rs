@@ -15,7 +15,13 @@ use uuid::Uuid;
 
 const COLUMNS: &str = "id, org, channel, kind, pillar, topic, title, body, status, scheduled_at, published_at, \
                        url, external_id, images, metrics, origin, publish_run, created_at, updated_at, \
-                       variants, first_comment, reason";
+                       variants, first_comment, reason, \
+                       (CASE WHEN status = 'published' AND metrics->>'impressions' ~ '^[0-9]+(\\.[0-9]+)?$' \
+                        THEN (metrics->>'impressions')::float8 / NULLIF((SELECT percentile_cont(0.5) \
+                        WITHIN GROUP (ORDER BY (p.metrics->>'impressions')::float8) FROM posts p \
+                        WHERE p.tenant_id = posts.tenant_id AND p.channel = posts.channel \
+                        AND p.status = 'published' AND p.metrics->>'impressions' ~ '^[0-9]+(\\.[0-9]+)?$'), 0) \
+                        END) AS x_factor";
 const MAX_BODY: usize = 10_000;
 /// Analytics fields an import or the owner may set.
 pub const METRICS: [&str; 7] = [
@@ -77,6 +83,9 @@ pub struct Post {
     pub first_comment: Option<String>,
     /// Why an agent proposed it.
     pub reason: Option<String>,
+    /// For a published post with `impressions`: how it did against the median
+    /// of published posts on the same channel, such as `2.0` for twice as many.
+    pub x_factor: Option<f64>,
 }
 
 /// An alternative text of a post.
@@ -304,7 +313,24 @@ pub struct CalendarSlot {
     pub slot: PostSlot,
     /// Posts scheduled within an hour of it.
     pub posts: Vec<Uuid>,
+    /// Why nothing should go out that day, if the owner blocked it.
+    pub blocked: Option<String>,
 }
+
+/// A day without posts, such as a holiday.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct BlockedDay {
+    /// The day.
+    pub date: NaiveDate,
+    /// Why, such as "Holiday".
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// The key of the blocked days setting.
+const BLOCKED_DAYS: &str = "post_blocked_days";
+/// Blocked days kept at most.
+const MAX_BLOCKED_DAYS: usize = 366;
 
 fn check_status(status: &str) -> Result<(), DeskError> {
     if ["idea", "draft"].contains(&status) {
@@ -697,7 +723,27 @@ impl Desk {
         self.post_slots().await
     }
 
-    /// Lays the weekly slots over a range of days, with the posts planned for each.
+    /// The days without posts, in order.
+    pub async fn blocked_days(&self) -> Result<Vec<BlockedDay>, DeskError> {
+        Ok(self.setting(BLOCKED_DAYS).await?.unwrap_or_default())
+    }
+
+    /// Replaces the days without posts.
+    pub async fn set_blocked_days(
+        &self,
+        mut days: Vec<BlockedDay>,
+    ) -> Result<Vec<BlockedDay>, DeskError> {
+        if days.len() > MAX_BLOCKED_DAYS {
+            return Err(invalid(format!("at most {MAX_BLOCKED_DAYS} blocked days")));
+        }
+        days.sort_by_key(|day| day.date);
+        days.dedup_by_key(|day| day.date);
+        self.set_setting(BLOCKED_DAYS, &days).await?;
+        Ok(days)
+    }
+
+    /// Lays the weekly slots over a range of days, with the posts planned for
+    /// each, and marks the slots of blocked days.
     pub async fn post_calendar<Z: TimeZone>(
         &self,
         zone: &Z,
@@ -705,6 +751,7 @@ impl Desk {
         days: i64,
     ) -> Result<Vec<CalendarSlot>, DeskError> {
         let slots = self.post_slots().await?;
+        let blocked = self.blocked_days().await?;
         let start = zone
             .from_local_datetime(&from.and_hms_opt(0, 0, 0).unwrap_or_default())
             .earliest()
@@ -745,6 +792,15 @@ impl Desk {
                     at,
                     slot: slot.clone(),
                     posts,
+                    blocked: blocked
+                        .iter()
+                        .find(|blocked| blocked.date == day)
+                        .map(|blocked| {
+                            blocked
+                                .reason
+                                .clone()
+                                .unwrap_or_else(|| "Blocked".to_owned())
+                        }),
                 });
             }
         }
@@ -1016,6 +1072,76 @@ mod tests {
         let taken: PostPatch = serde_json::from_value(json!({"status": "draft"})).unwrap();
         desk.update_post(idea.id, taken).await.unwrap();
         assert_eq!(desk.proposed_posts().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn published_posts_get_an_x_factor_and_blocked_days_mark_the_calendar() {
+        let desk = desk().await;
+        let posts: Vec<ImportedPost> = [("a", 100), ("b", 200), ("c", 400)]
+            .into_iter()
+            .map(|(id, impressions)| ImportedPost {
+                external_id: Some(id.to_owned()),
+                body: format!("Post {id}"),
+                published_at: Some(Utc::now()),
+                metrics: [("impressions".to_owned(), json!(impressions))]
+                    .into_iter()
+                    .collect(),
+                ..ImportedPost::default()
+            })
+            .collect();
+        desk.import_posts(&posts).await.unwrap();
+        let mut factors: Vec<f64> = desk
+            .posts(&PostFilter::default())
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|post| post.x_factor)
+            .collect();
+        factors.sort_by(f64::total_cmp);
+        assert_eq!(factors, [0.5, 1.0, 2.0], "against the median of 200");
+        let draft = desk
+            .create_post(NewPost {
+                body: "Not out yet".to_owned(),
+                ..NewPost::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(draft.x_factor, None);
+
+        let monday = NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        desk.set_post_slots(&[PostSlot {
+            id: Uuid::now_v7(),
+            weekday: 1,
+            time: "09:00".to_owned(),
+            pillar: None,
+            org: None,
+        }])
+        .await
+        .unwrap();
+        let days = desk
+            .set_blocked_days(vec![
+                BlockedDay {
+                    date: monday,
+                    reason: Some("Holiday".to_owned()),
+                },
+                BlockedDay {
+                    date: monday,
+                    reason: None,
+                },
+            ])
+            .await
+            .unwrap();
+        assert_eq!(days.len(), 1);
+        let calendar = desk.post_calendar(&Utc, monday, 8).await.unwrap();
+        assert_eq!(calendar[0].blocked.as_deref(), Some("Holiday"));
+        assert_eq!(calendar[1].blocked, None);
+        let many = (0..400)
+            .map(|offset| BlockedDay {
+                date: monday + Duration::days(offset),
+                reason: None,
+            })
+            .collect();
+        assert!(desk.set_blocked_days(many).await.is_err());
     }
 
     #[tokio::test]

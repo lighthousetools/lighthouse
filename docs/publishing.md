@@ -33,6 +33,9 @@ proposal with `text` and `run_id`; nothing changes unless you send `save_as`, wh
 
 A published post keeps its text, time and status. Its `metrics` can still be filled in: `impressions`, `reactions`,
 `comments`, `shares`, `clicks`, `followers` and `icp_share`, the share of reactions from your ideal customers.
+`x_factor` compares a published post's `impressions` with the median of your published posts on the same `channel`:
+`2.0` means twice the usual reach. Posts without impressions have none. An import sets the `channel` per post when it
+has one, else `linkedin`.
 
 ### Checks
 
@@ -57,7 +60,8 @@ A post with errors cannot be published.
 | Endpoint | Purpose |
 |---|---|
 | `GET /posts/slots`, `PUT /posts/slots` | Weekly slots: `weekday` (1 for Monday to 7), `time` as `HH:MM` in `server.timezone`, optional `pillar` and `org` |
-| `GET /posts/calendar?from=YYYY-MM-DD&days=28` | The slots laid over the days, each with the posts scheduled within an hour of it |
+| `GET /posts/calendar?from=YYYY-MM-DD&days=28` | The slots laid over the days, each with the posts scheduled within an hour of it, and `blocked` with the reason on a blocked day |
+| `GET /posts/blocked-days`, `PUT /posts/blocked-days` | Days without posts, such as holidays, as `[{"date": "YYYY-MM-DD", "reason": "Holiday"}]`; `PUT` replaces them |
 | `GET /posts/pillars`, `PUT`, `DELETE /posts/pillars/{id}` | Pillars with `name`, `description`, `color` and `topics` |
 
 ### Archive and analytics

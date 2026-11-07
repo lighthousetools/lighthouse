@@ -529,7 +529,7 @@ impl utoipa::Modify for SecurityAddon {
         connected::save_split, connected::delete_split, connected::split_items, connected::bulk,
         connected::suggestions, connected::focus,
         posts::list, posts::create, posts::get, posts::update, posts::delete, posts::check,
-        posts::publish, posts::import, posts::calendar, posts::slots, posts::set_slots,
+        posts::publish, posts::import, posts::blocked_days, posts::set_blocked_days, posts::calendar, posts::slots, posts::set_slots,
         posts::pillars, posts::save_pillar, posts::delete_pillar, posts::branding,
         posts::save_branding, posts::rewrite, decks::list, decks::create, decks::export,
         decks::generate, decks::attach, contracts::templates, contracts::create_template,
@@ -571,7 +571,7 @@ impl utoipa::Modify for SecurityAddon {
         connected::BulkOutcome, connected::FocusBlock,
         lighthouse_desk::Post, lighthouse_desk::NewPost, lighthouse_desk::PostPatch,
         lighthouse_desk::PostCheck, lighthouse_desk::CheckIssue, lighthouse_desk::PostSlot,
-        lighthouse_desk::CalendarSlot, lighthouse_desk::Pillar, lighthouse_desk::PillarInput,
+        lighthouse_desk::CalendarSlot, lighthouse_desk::BlockedDay, lighthouse_desk::Pillar, lighthouse_desk::PillarInput,
         lighthouse_desk::ImportedPost, lighthouse_desk::BrandProfile, CheckRequest, ImportRequest,
         ImportResult, NewDeck, lighthouse_desk::TalkThread, lighthouse_desk::TalkMessage,
         NewThread, ThreadPatch, ThreadDetail, NewMessage, Exchange, Written, RewriteRequest,
@@ -712,6 +712,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/posts", get(posts::list).post(posts::create))
         .route("/posts/check", post(posts::check))
         .route("/posts/import", post(posts::import))
+        .route(
+            "/posts/blocked-days",
+            get(posts::blocked_days).put(posts::set_blocked_days),
+        )
         .route("/posts/calendar", get(posts::calendar))
         .route("/posts/slots", get(posts::slots).put(posts::set_slots))
         .route("/posts/pillars", get(posts::pillars))
