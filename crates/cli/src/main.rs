@@ -77,7 +77,8 @@ enum Command {
 enum DemoCommand {
     /// Adds fictional demo data to the database, once.
     Seed,
-    /// Runs the demo agent `ready` on the running server, unless Ready has proposals already.
+    /// Runs the demo agents whose results are missing: `ready` while Ready has no
+    /// proposals, and the Morning Brief and weekly report while there is no brief or recap.
     Warm,
 }
 
@@ -445,11 +446,23 @@ async fn main() -> anyhow::Result<()> {
         Command::Sources(SourcesCommand::Check) => check_sources(&config),
         Command::Demo(DemoCommand::Warm) => {
             let feed = get(&config, cli.server.clone(), "/ready").await?;
-            if demo::needs_warmup(&feed) {
-                let body = post(&config, cli.server, "/agents/ready/run").await?;
-                println!("started run {}", body["id"].as_str().unwrap_or("?"));
-            } else {
-                println!("Ready has proposals already.");
+            let brief = get(&config, cli.server.clone(), "/briefs/latest")
+                .await
+                .is_ok();
+            let recaps = get(&config, cli.server.clone(), "/recaps")
+                .await
+                .unwrap_or_default();
+            let agents = demo::warmup_agents(&feed, brief, &recaps);
+            if agents.is_empty() {
+                println!("The demo is warm already.");
+            }
+            for agent in agents {
+                let body =
+                    post(&config, cli.server.clone(), &format!("/agents/{agent}/run")).await?;
+                println!(
+                    "started {agent}: run {}",
+                    body["id"].as_str().unwrap_or("?")
+                );
             }
             Ok(())
         }

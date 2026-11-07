@@ -46,10 +46,25 @@ fn entry(kind: &str, title: &str, body: &str, links: Vec<String>) -> NewEntry {
     }
 }
 
-/// Whether the demo agent `ready` should run: only while the feed of
-/// `GET /ready` holds no proposals, so restarts add no duplicates.
-pub fn needs_warmup(feed: &serde_json::Value) -> bool {
-    feed["counts"]["approval"].as_u64().unwrap_or(0) == 0
+/// The demo agents to run so the demo looks full: `ready` while the feed of
+/// `GET /ready` holds no proposals, `morning-brief` while there is no brief and
+/// `weekly-report` while `GET /recaps` is empty. Restarts add no duplicates.
+pub fn warmup_agents(
+    feed: &serde_json::Value,
+    has_brief: bool,
+    recaps: &serde_json::Value,
+) -> Vec<&'static str> {
+    let mut agents = Vec::new();
+    if feed["counts"]["approval"].as_u64().unwrap_or(0) == 0 {
+        agents.push("ready");
+    }
+    if !has_brief {
+        agents.push("morning-brief");
+    }
+    if recaps.as_array().is_none_or(Vec::is_empty) {
+        agents.push("weekly-report");
+    }
+    agents
 }
 
 /// Adds the demo data, unless it is there already.
@@ -331,10 +346,18 @@ mod tests {
     use lighthouse_store::testing::fresh_store;
 
     #[test]
-    fn the_warmup_runs_only_on_an_empty_feed() {
-        assert!(needs_warmup(&json!({"counts": {"approval": 0}})));
-        assert!(needs_warmup(&json!({})));
-        assert!(!needs_warmup(&json!({"counts": {"approval": 3}})));
+    fn the_warmup_runs_only_what_is_missing() {
+        let empty = json!({"counts": {"approval": 0}});
+        assert_eq!(
+            warmup_agents(&empty, false, &json!([])),
+            ["ready", "morning-brief", "weekly-report"]
+        );
+        assert_eq!(
+            warmup_agents(&json!({}), true, &json!(null)),
+            ["ready", "weekly-report"]
+        );
+        let full = json!({"counts": {"approval": 3}});
+        assert!(warmup_agents(&full, true, &json!([{"kind": "weekly_recap"}])).is_empty());
     }
 
     #[tokio::test]
