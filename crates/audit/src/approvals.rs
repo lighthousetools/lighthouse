@@ -6,6 +6,7 @@ use lighthouse_core::RunId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::FromRow;
+use std::collections::HashMap;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -178,6 +179,7 @@ impl AuditLog {
     ) -> Result<Option<Approval>, AuditError> {
         let query = format!(
             "UPDATE approvals SET status = $1, decided_at = now(), \
+             edited = edited OR ($2::jsonb IS NOT NULL AND $2::jsonb <> input), \
              input = COALESCE($2, input) \
              WHERE id = $3 AND tenant_id = $4 AND status = 'pending' AND expires_at > now() \
              RETURNING {COLUMNS}"
@@ -199,7 +201,7 @@ impl AuditLog {
         input: &Value,
     ) -> Result<Option<Approval>, AuditError> {
         let query = format!(
-            "UPDATE approvals SET input = $1 \
+            "UPDATE approvals SET input = $1, edited = true \
              WHERE id = $2 AND tenant_id = $3 AND status = 'pending' AND expires_at > now() \
              RETURNING {COLUMNS}"
         );
@@ -209,6 +211,19 @@ impl AuditLog {
             .bind(self.tenant.as_uuid())
             .fetch_optional(self.store.pool())
             .await?)
+    }
+
+    /// Counts per agent the proposals the owner corrected: denied, or changed
+    /// before approving.
+    pub async fn corrections(&self) -> Result<HashMap<String, i64>, AuditError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT agent_id, count(*) FROM approvals WHERE tenant_id = $1 \
+             AND (status = 'denied' OR edited) GROUP BY agent_id",
+        )
+        .bind(self.tenant.as_uuid())
+        .fetch_all(self.store.pool())
+        .await?;
+        Ok(rows.into_iter().collect())
     }
 
     /// Marks overdue approvals as expired and returns the affected runs.
@@ -390,6 +405,24 @@ mod tests {
                 .await
                 .unwrap()
                 .contains(&old_run.as_uuid())
+        );
+    }
+
+    #[tokio::test]
+    async fn denials_and_edits_count_as_corrections() {
+        let (first, second, third) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let (log, _) = paused(&[first, second, third]).await;
+        log.decide_approval(first, false, None).await.unwrap();
+        log.edit_approval(second, &json!({"to": "b"}))
+            .await
+            .unwrap();
+        log.decide_approval(third, true, Some(&json!({"to": "a"})))
+            .await
+            .unwrap();
+        assert_eq!(
+            log.corrections().await.unwrap()["mailer"],
+            2,
+            "an unchanged edit is no correction"
         );
     }
 

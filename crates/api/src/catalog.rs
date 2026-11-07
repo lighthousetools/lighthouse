@@ -45,6 +45,43 @@ pub struct AgentInfo {
     pub editable: bool,
     /// The agent file.
     pub source: String,
+    /// The model its runs use, from the routing of the `text` task. Display only.
+    pub model: Option<ModelRoute>,
+    /// How far it acts on its own: `observe` (reads only), `prepare` (also saves
+    /// drafts) or `propose` (also proposes actions that wait for approval).
+    pub autonomy: String,
+    /// The cost limit of one run, in EUR.
+    pub max_cost_eur: f64,
+    /// Proposals of it the owner denied or changed before approving.
+    #[serde(default)]
+    pub corrections: i64,
+}
+
+/// Which provider and model serve a task, from the configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ModelRoute {
+    /// The task, such as `text`.
+    pub task: String,
+    /// The provider.
+    pub provider: String,
+    /// Its model for the task, if it names one.
+    pub model: Option<String>,
+    /// The fallback provider, if any.
+    pub fallback: Option<String>,
+    /// The fallback's model for the task.
+    pub fallback_model: Option<String>,
+}
+
+/// The autonomy of an agent with these tools.
+pub fn autonomy(tools: &[AgentTool]) -> &'static str {
+    let has = |level: &str| tools.iter().any(|tool| tool.level == level);
+    if has("write") {
+        "propose"
+    } else if has("draft") {
+        "prepare"
+    } else {
+        "observe"
+    }
 }
 
 /// A connector.
@@ -99,6 +136,10 @@ pub trait Catalog: Send + Sync {
     async fn connectors(&self) -> Result<Vec<ConnectorInfo>, String>;
     /// Lists the skills.
     fn skills(&self) -> Vec<SkillInfo>;
+    /// The model routes of all tasks, from the configuration.
+    fn models(&self) -> Vec<ModelRoute> {
+        Vec::new()
+    }
 }
 
 /// A description of a new agent.
@@ -140,7 +181,30 @@ fn unknown_agent() -> ApiError {
     security(("bearer" = []))
 )]
 pub(crate) async fn agents(State(state): State<ApiState>) -> Json<Vec<AgentInfo>> {
-    Json(state.catalog.agents())
+    let corrections = corrections(&state).await;
+    Json(
+        state
+            .catalog
+            .agents()
+            .into_iter()
+            .map(|agent| with_corrections(agent, &corrections))
+            .collect(),
+    )
+}
+
+async fn corrections(state: &ApiState) -> std::collections::HashMap<String, i64> {
+    state.audit.corrections().await.unwrap_or_else(|error| {
+        tracing::warn!(%error, "cannot count the corrections of agents");
+        std::collections::HashMap::new()
+    })
+}
+
+fn with_corrections(
+    mut agent: AgentInfo,
+    counts: &std::collections::HashMap<String, i64>,
+) -> AgentInfo {
+    agent.corrections = counts.get(&agent.id).copied().unwrap_or_default();
+    agent
 }
 
 /// Reads an agent.
@@ -155,7 +219,8 @@ pub(crate) async fn agent(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<AgentInfo>, ApiError> {
-    state.catalog.agent(&id).map(Json).ok_or_else(unknown_agent)
+    let agent = state.catalog.agent(&id).ok_or_else(unknown_agent)?;
+    Ok(Json(with_corrections(agent, &corrections(&state).await)))
 }
 
 /// Lists the latest runs of an agent.
@@ -296,4 +361,65 @@ pub(crate) async fn costs(
 ) -> Result<Json<Vec<DailyCost>>, ApiError> {
     let days = query.days.unwrap_or(DEFAULT_COST_DAYS).clamp(1, 366);
     Ok(Json(state.audit.daily_costs(days).await.map_err(internal)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::{TOKEN, call, harness};
+    use lighthouse_audit::NewApproval;
+    use lighthouse_core::RunId;
+    use serde_json::{Value, json};
+    use uuid::Uuid;
+
+    fn tool(level: &str) -> AgentTool {
+        AgentTool {
+            name: format!("demo.{level}"),
+            level: level.to_owned(),
+        }
+    }
+
+    #[test]
+    fn autonomy_follows_the_strongest_tool() {
+        assert_eq!(autonomy(&[]), "observe");
+        assert_eq!(autonomy(&[tool("read"), tool("draft")]), "prepare");
+        assert_eq!(autonomy(&[tool("read"), tool("write")]), "propose");
+    }
+
+    #[tokio::test]
+    async fn agents_show_how_often_the_owner_corrected_them() {
+        let harness = harness(Some(TOKEN)).await;
+        let run = RunId::new();
+        harness
+            .audit
+            .start_run(run, "brief", "manual")
+            .await
+            .unwrap();
+        let id = Uuid::now_v7();
+        let proposal = NewApproval {
+            id,
+            tool: "mail.send".to_owned(),
+            input: json!({"to": "a"}),
+            quotes_external: false,
+            reason: None,
+            consulted: Vec::new(),
+        };
+        harness
+            .audit
+            .pause_run(run, "brief", &json!({}), &[proposal])
+            .await
+            .unwrap();
+        harness
+            .audit
+            .decide_approval(id, false, None)
+            .await
+            .unwrap();
+        let (_, body) = call(&harness.app, "GET", "/agents", Some(TOKEN)).await;
+        let agents: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(agents[0]["corrections"], 1, "{body}");
+        assert_eq!(agents[0]["autonomy"], "observe");
+        let (_, body) = call(&harness.app, "GET", "/agents/brief", Some(TOKEN)).await;
+        let agent: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(agent["corrections"], 1);
+    }
 }

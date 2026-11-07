@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use lighthouse_api::{
     AgentChangeError, AgentInfo, AgentTool, ApiState, AskAnswer, Assistant, Catalog, ConnectorInfo,
-    RunTrigger, SkillInfo, TriggerError,
+    ModelRoute, RunTrigger, SkillInfo, TriggerError,
 };
 use lighthouse_audit::{AuditError, AuditLog, RunEnd, RunStatus};
 use lighthouse_auth::Auth;
@@ -276,6 +276,25 @@ struct ServerCatalog {
     zone: Tz,
 }
 
+/// The provider and model of a task, from `[routing]` and `[providers]`.
+fn model_route(config: &Config, task: &str) -> Option<ModelRoute> {
+    let route = config.routing.get(task)?;
+    let model = |provider: &str| {
+        config
+            .providers
+            .get(provider)
+            .and_then(|provider| provider.tasks.get(task))
+            .map(|model| model.model.clone())
+    };
+    Some(ModelRoute {
+        task: task.to_owned(),
+        model: model(&route.provider),
+        provider: route.provider.clone(),
+        fallback_model: route.fallback.as_deref().and_then(model),
+        fallback: route.fallback.clone(),
+    })
+}
+
 fn level_name(level: ToolLevel) -> &'static str {
     match level {
         ToolLevel::Read => "read",
@@ -304,6 +323,14 @@ impl ServerCatalog {
 
     fn info(&self, known: &LoadedAgent) -> AgentInfo {
         let agent = &known.agent;
+        let tools: Vec<AgentTool> = agent
+            .tools
+            .iter()
+            .map(|grant| AgentTool {
+                name: grant.name.clone(),
+                level: level_name(grant.level).to_owned(),
+            })
+            .collect();
         let schedule = match &agent.trigger {
             Trigger::Cron(expression) => Some(expression.clone()),
             Trigger::Manual => None,
@@ -313,14 +340,11 @@ impl ServerCatalog {
             name: agent.name.clone(),
             next_run: schedule.as_deref().and_then(|cron| self.next_run(cron)),
             schedule,
-            tools: agent
-                .tools
-                .iter()
-                .map(|grant| AgentTool {
-                    name: grant.name.clone(),
-                    level: level_name(grant.level).to_owned(),
-                })
-                .collect(),
+            autonomy: lighthouse_api::autonomy(&tools).to_owned(),
+            tools,
+            model: model_route(&self.config, "text"),
+            max_cost_eur: agent.limits.max_cost_eur,
+            corrections: 0,
             skills: agent.skills.clone(),
             deliver: agent.deliver.iter().map(delivery_name).collect(),
             blocked: self
@@ -442,6 +466,14 @@ impl Catalog for ServerCatalog {
                 }
             })
             .collect())
+    }
+
+    fn models(&self) -> Vec<ModelRoute> {
+        self.config
+            .routing
+            .keys()
+            .filter_map(|task| model_route(&self.config, task))
+            .collect()
     }
 
     fn skills(&self) -> Vec<SkillInfo> {
@@ -703,6 +735,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         notifier,
         pushes: Pushes::from_config(&config.notifications)?,
         agents: agents.clone(),
+        zone,
     }));
     let automation_files = Arc::new(AutomationRegistry::load(
         config.paths.automations.clone(),
@@ -821,4 +854,26 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         scheduler,
         pool,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_routes_come_from_routing_and_providers() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../demo/lighthouse.demo.toml");
+        let mut config = Config::load(&path).unwrap();
+        let route = model_route(&config, "text").unwrap();
+        assert_eq!(
+            (route.provider.as_str(), route.model.as_deref()),
+            ("demo", Some("demo"))
+        );
+        assert_eq!((route.fallback, route.fallback_model), (None, None));
+        config.routing.get_mut("text").unwrap().fallback = Some("demo".to_owned());
+        let route = model_route(&config, "text").unwrap();
+        assert_eq!(route.fallback_model.as_deref(), Some("demo"));
+        assert!(model_route(&config, "vision").is_none());
+    }
 }

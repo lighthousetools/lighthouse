@@ -23,6 +23,7 @@ mod ready;
 mod ready_view;
 mod rules;
 mod sessions;
+mod settings;
 mod talk;
 mod tasks;
 
@@ -38,7 +39,7 @@ pub use automations::{
 pub use brain::{AskAnswer, AskRequest, EntryDetail, ResolvedEntry};
 pub use catalog::{
     AgentChangeError, AgentDraftRequest, AgentInfo, AgentSource, AgentTool, Catalog, ConnectorInfo,
-    SkillInfo,
+    ModelRoute, SkillInfo, autonomy,
 };
 pub use connected::{
     ActionError, ActionRequest, ActionResult, ActionTool, BusyBlock, CollectionTool, Connected,
@@ -56,6 +57,7 @@ pub use ready_view::{Basis, Counterpart, Preview, PreviewField, Quote, Review};
 pub use sessions::{
     NewSessionMessage, NodeChange, PermissionDecision, SessionDetail, SessionEvents,
 };
+pub use settings::{BUDGET, Budget, BudgetView, RunLimit, month_start};
 pub use talk::{Exchange, NewMessage, NewThread, ThreadDetail, ThreadPatch};
 pub use tasks::{Delegation, TaskOrder, TaskOrderResult};
 
@@ -509,7 +511,8 @@ impl utoipa::Modify for SecurityAddon {
         memory::list, memory::create, memory::get, memory::update, memory::confirm, memory::delete,
         alerts::list, alerts::counts, alerts::get, alerts::acknowledge, alerts::resolve, alerts::series,
         ready::feed, ready::dismiss_draft, ready::snooze, ready::unsnooze, ready::rewrite,
-        ready::edit_text, ready::run_basis,
+        ready::edit_text, ready::run_basis, settings::get_budget, settings::set_budget,
+        settings::models,
         documents::list, documents::latest_brief, documents::recaps, documents::recap,
         documents::of_run,
         automations::list, automations::get, automations::save, automations::switch,
@@ -551,7 +554,8 @@ impl utoipa::Modify for SecurityAddon {
         Alert, AlertCounts, AlertView, lighthouse_desk::Severity, alerts::AlertSeries,
         alerts::SeriesPoint,
         ReadyFeed, ReadyItem, Snooze, ToneRequest, Rewritten, TextEdit, Review, Counterpart,
-        Preview, PreviewField, Quote, crate::ready_view::Basis, lighthouse_audit::ToolCall,
+        Preview, PreviewField, Quote, crate::ready_view::Basis, settings::Budget,
+        settings::BudgetView, settings::RunLimit, ModelRoute, lighthouse_audit::ToolCall,
         lighthouse_desk::BriefingDocument, lighthouse_desk::BriefingContent,
         lighthouse_desk::DocumentSection, lighthouse_desk::DocumentItem,
         lighthouse_desk::ItemSource, lighthouse_desk::ItemNumber,
@@ -602,6 +606,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
         .route("/runs/{id}/basis", get(ready::run_basis))
+        .route(
+            "/settings/budget",
+            get(settings::get_budget).put(settings::set_budget),
+        )
+        .route("/settings/models", get(settings::models))
         .route("/agents", get(catalog::agents).post(catalog::save_agent))
         .route("/agents/draft", post(catalog::draft_agent))
         .route(
@@ -880,6 +889,10 @@ mod tests {
             blocked: Vec::new(),
             editable: true,
             source: "file".to_owned(),
+            model: None,
+            autonomy: "observe".to_owned(),
+            max_cost_eur: 0.5,
+            corrections: 0,
         }
     }
 

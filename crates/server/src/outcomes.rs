@@ -141,6 +141,7 @@ pub struct Outcomes {
     notifier: Arc<dyn Notifier>,
     pushes: Pushes,
     agents: Arc<AgentRegistry>,
+    zone: chrono_tz::Tz,
 }
 
 impl std::fmt::Debug for Outcomes {
@@ -167,6 +168,8 @@ pub struct OutcomeParts {
     pub pushes: Pushes,
     /// Agents, for names and connectors.
     pub agents: Arc<AgentRegistry>,
+    /// The owner's time zone, for the months of the budget.
+    pub zone: chrono_tz::Tz,
 }
 
 impl Outcomes {
@@ -180,7 +183,47 @@ impl Outcomes {
             notifier: parts.notifier,
             pushes: parts.pushes,
             agents: parts.agents,
+            zone: parts.zone,
         }
+    }
+
+    /// Warns when this month's model costs reach the share of the budget the
+    /// owner set, and again critically when the budget is used up.
+    pub async fn check_budget(&self) -> anyhow::Result<()> {
+        let budget: lighthouse_api::Budget = self
+            .desk
+            .setting(lighthouse_api::BUDGET)
+            .await?
+            .unwrap_or_default();
+        let Some(limit) = budget.monthly_eur.filter(|limit| *limit > 0.0) else {
+            return Ok(());
+        };
+        let start = lighthouse_api::month_start(self.zone, Utc::now());
+        let spent = self.audit.cost_since(start).await?;
+        let used = spent / limit * 100.0;
+        let key = format!("budget:{}", start.format("%Y-%m"));
+        if used < f64::from(budget.alert_at_percent) {
+            return Ok(());
+        }
+        let severity = if used >= 100.0 {
+            Severity::Critical
+        } else {
+            Severity::Warning
+        };
+        self.raise_alert(NewAlert {
+            value: Some(spent),
+            unit: Some("EUR".to_owned()),
+            kind: "budget".to_owned(),
+            key,
+            severity,
+            title: format!("{used:.0}% of this month's budget of {limit:.2} EUR is used"),
+            detail: Some(format!(
+                "Spent {spent:.2} EUR since {}",
+                start.format("%Y-%m-%d")
+            )),
+            source: None,
+        })
+        .await
     }
 
     fn agent_name(&self, id: &str) -> String {
@@ -324,6 +367,7 @@ impl Outcomes {
         } else if let Some(alert) = classify(&record) {
             self.raise_alert(alert).await?;
         }
+        self.check_budget().await?;
         Ok(Some(record))
     }
 
@@ -425,6 +469,7 @@ mod tests {
             notifier: pushed.clone(),
             pushes: Pushes::from_config(&config).unwrap(),
             agents,
+            zone: chrono_tz::UTC,
         });
         Fixture {
             outcomes,
@@ -568,6 +613,58 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn the_budget_warns_at_its_share_and_again_when_used_up() {
+        let fixture = fixture(NotificationsConfig::default()).await;
+        fixture.outcomes.check_budget().await.unwrap();
+        let budget = lighthouse_api::Budget {
+            monthly_eur: Some(1.0),
+            alert_at_percent: 50,
+        };
+        fixture
+            .desk
+            .set_setting(lighthouse_api::BUDGET, &budget)
+            .await
+            .unwrap();
+        let run = lighthouse_core::RunId::new();
+        fixture
+            .audit
+            .start_run(run, "brief", "manual")
+            .await
+            .unwrap();
+        let spend = |cost: f64| lighthouse_audit::NewStep {
+            kind: "model".to_owned(),
+            name: "text".to_owned(),
+            status: "ok".to_owned(),
+            cost_eur: cost,
+            ..lighthouse_audit::NewStep::default()
+        };
+        fixture.audit.record_step(run, &spend(0.3)).await.unwrap();
+        fixture.outcomes.check_budget().await.unwrap();
+        assert!(
+            fixture
+                .desk
+                .alerts(AlertView::Active, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        fixture.audit.record_step(run, &spend(0.3)).await.unwrap();
+        fixture.outcomes.check_budget().await.unwrap();
+        let alerts = fixture.desk.alerts(AlertView::Active, 10).await.unwrap();
+        assert_eq!(
+            (alerts[0].kind.as_str(), alerts[0].severity),
+            ("budget", Severity::Warning)
+        );
+        assert_eq!(alerts[0].unit.as_deref(), Some("EUR"));
+        fixture.audit.record_step(run, &spend(0.5)).await.unwrap();
+        fixture.outcomes.check_budget().await.unwrap();
+        let alerts = fixture.desk.alerts(AlertView::Active, 10).await.unwrap();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, Severity::Critical);
+        assert!((alerts[0].value.unwrap() - 1.1).abs() < 1e-9);
     }
 
     #[tokio::test]

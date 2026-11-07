@@ -165,6 +165,7 @@ or `critical`) and the times it was first and last seen.
 | `cost_limit` | `cost:<agent>` | `warning` | A run stops at its cost limit | The next run of that agent succeeds |
 | `check_failed` | `check:<source>:<check>` | `warning` | A check of one of your pull requests starts failing | It passes again |
 | `node_offline` | `node:<id>` | `warning` | A desktop agent that is not paused sends no report for 15 minutes | It reports again |
+| `budget` | `budget:<YYYY-MM>` | `warning`, `critical` at 100% | This month's model costs reach the share of the budget set in [settings](#settings) | A new month starts with a new key |
 
 `value` and `unit` hold the current value of the metric behind an alert: failures in a row (`failures`, counting up with
 each repeat) for connectors and failed runs, the cost in `EUR` for cost limits, and `minutes` offline for desktop
@@ -182,6 +183,31 @@ and the severity can only go up. After it is resolved, the next occurrence opens
 | `POST /alerts/{id}/acknowledge` | Mark an open alert as seen. It stays until it is resolved |
 | `POST /alerts/{id}/resolve` | Resolve it by hand |
 | `GET /alerts/{id}/series?days=14` | A daily series for a chart, in days of `server.timezone`: runs, failures and cost of the agent for `run` and `cost_limit` alerts, failed runs naming the connector for `connector` alerts, and refreshes of the source for `check_failed` alerts. `metric` is `runs`, `syncs` or `none` |
+
+## Agents
+
+`GET /agents` and `GET /agents/{id}` describe each agent with its tools, skills and schedule, and also:
+
+| Field | Meaning |
+|---|---|
+| `model` | `task`, `provider`, `model`, `fallback` and `fallback_model` of the `text` task, from `[routing]` and `[providers]`. Display only |
+| `autonomy` | `observe` (reads only), `prepare` (also saves drafts) or `propose` (also proposes actions, which always wait for your approval) |
+| `max_cost_eur` | The cost limit of one run, from the agent file |
+| `corrections` | Its proposals you denied or changed before approving |
+
+## Settings
+
+Lighthouse is a personal assistant with one owner, so there are no members, roles or invitations to manage.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /settings/budget` | `monthly_eur`, `alert_at_percent` (default 80), `spent_this_month_eur` since the start of the month in your time zone, `remaining_eur`, and `run_limits` with each agent's `max_cost_eur` |
+| `PUT /settings/budget` | Sets `{"monthly_eur", "alert_at_percent"}`. `monthly_eur: null` removes the budget |
+| `GET /settings/models` | Which `provider` and `model` serve each task, with the fallback. Read-only: routing lives in the configuration |
+
+The budget never stops runs; the cost limit per run does that. After each run, a `budget` alert (key
+`budget:<YYYY-MM>`, `value` in `EUR`) warns once this month's model costs reach `alert_at_percent` of the budget, and
+turns `critical` when the budget is used up.
 
 ## Pushes
 

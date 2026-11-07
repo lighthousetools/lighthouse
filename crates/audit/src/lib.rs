@@ -302,6 +302,19 @@ impl AuditLog {
         .await?)
     }
 
+    /// The cost of all model calls since a time, in EUR.
+    pub async fn cost_since(&self, since: DateTime<Utc>) -> Result<f64, AuditError> {
+        let row: (Option<f64>,) = sqlx::query_as(
+            "SELECT SUM(cost_eur) FROM run_steps WHERE tenant_id = $1 AND kind = 'model' \
+             AND created_at >= $2",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(since)
+        .fetch_one(self.store.pool())
+        .await?;
+        Ok(row.0.unwrap_or_default())
+    }
+
     /// Lists successful calls of the given tools since a time, newest first.
     pub async fn tool_calls(
         &self,

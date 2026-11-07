@@ -13,6 +13,7 @@ pub mod post_check;
 pub mod posts;
 pub mod ready;
 pub mod rules;
+mod settings;
 pub mod talk;
 pub mod tasks;
 
