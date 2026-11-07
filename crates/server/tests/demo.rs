@@ -24,10 +24,28 @@ fn the_demo_configuration_loads_and_its_sources_only_read() {
         for (collection, settings) in &resolved.collections {
             let tool = resolved.tool(&settings.tool);
             assert_eq!(policy.level(&tool), ToolLevel::Read, "{name}.{collection}");
-            assert!(
-                lighthouse_mcp::demo::sample(&settings.tool, &serde_json::json!({})).is_some(),
-                "the demo server has {tool}"
-            );
+            let input = settings
+                .input
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let sample = lighthouse_mcp::demo::sample(&settings.tool, &input);
+            assert!(sample.is_some(), "the demo server has {tool}");
+            let sample = sample.unwrap();
+            let items = if settings.items.is_empty() {
+                &sample
+            } else {
+                &sample[settings.items.as_str()]
+            };
+            let owner = lighthouse_sync::Owner {
+                accounts: Vec::new(),
+            };
+            for item in items.as_array().into_iter().flatten() {
+                let mapped = lighthouse_sync::map_item(settings, item, &owner, chrono::Utc::now());
+                let mapped = mapped.unwrap_or_else(|| panic!("{name}.{collection} maps its items"));
+                if ["thread", "event", "deal"].contains(&settings.kind.as_str()) {
+                    assert!(mapped.url.is_some(), "{name}.{collection} items have a url");
+                }
+            }
         }
     }
     let compose = std::fs::read_to_string(demo().join("compose.yml")).unwrap();

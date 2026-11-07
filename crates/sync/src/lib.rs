@@ -17,7 +17,7 @@ pub mod store;
 pub use engine::{
     CheckChange, PreparedAction, SyncError, SyncEvent, SyncReport, Syncer, prune_empty,
 };
-pub use mapping::{MappedItem, MappingError, Owner};
+pub use mapping::{MappedItem, MappingError, Owner, map_item};
 pub use numbers::{
     CurrencyForecast, CurrencyNumbers, ForecastMonth, Numbers, PeriodAmount, StageTotal,
     roll_forward,

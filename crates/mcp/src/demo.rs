@@ -110,20 +110,20 @@ pub fn sample(name: &str, arguments: &Value) -> Option<Value> {
         ]),
         "echo" => arguments.clone(),
         "list_threads" => json!({"threads": [
-            {"id": "t1", "subject": "Updated offer for Globex?", "from": "John Roe <john.roe@globex.example>",
+            {"id": "t1", "url": "https://mail.example/threads/t1", "subject": "Updated offer for Globex?", "from": "John Roe <john.roe@globex.example>",
              "snippet": "Could you send us the updated offer by Friday?", "labels": ["INBOX", "IMPORTANT", "UNREAD"],
              "date": ago(1)},
-            {"id": "t2", "subject": "Invoice 2026-114 paid", "from": "Acme Accounts <accounts@acme.example>",
+            {"id": "t2", "url": "https://mail.example/threads/t2", "subject": "Invoice 2026-114 paid", "from": "Acme Accounts <accounts@acme.example>",
              "snippet": "We paid invoice 2026-114 today.", "labels": ["INBOX"], "date": ago(2)},
-            {"id": "t3", "subject": "Weekly newsletter", "from": "News <news@example.com>",
+            {"id": "t3", "url": "https://mail.example/threads/t3", "subject": "Weekly newsletter", "from": "News <news@example.com>",
              "snippet": "Ten things to read this week.", "labels": ["INBOX", "UNREAD"], "date": ago(3)},
         ]}),
         "list_events" => json!([
-            {"id": "e1", "summary": "Weekly planning with Jane Doe", "start": ahead(10), "end": ahead(11),
+            {"id": "e1", "url": "https://calendar.example/events/e1", "summary": "Weekly planning with Jane Doe", "start": ahead(10), "end": ahead(11),
              "attendees": ["jane.doe@acme.example"], "status": "confirmed"},
-            {"id": "e2", "summary": "Globex offer call", "start": ahead(24 + 14), "end": ahead(24 + 15),
+            {"id": "e2", "url": "https://calendar.example/events/e2", "summary": "Globex offer call", "start": ahead(24 + 14), "end": ahead(24 + 15),
              "attendees": ["john.roe@globex.example"], "status": "confirmed"},
-            {"id": "e3", "summary": "Focus: write the proposal", "start": ahead(48 + 9), "end": ahead(48 + 11),
+            {"id": "e3", "url": "https://calendar.example/events/e3", "summary": "Focus: write the proposal", "start": ahead(48 + 9), "end": ahead(48 + 11),
              "status": "confirmed"},
         ]),
         "list_tickets" => json!([
@@ -162,20 +162,20 @@ pub fn sample(name: &str, arguments: &Value) -> Option<Value> {
         "list_deals" => {
             if acme {
                 json!([
-                    {"id": "d1", "title": "Acme rollout", "stage": "proposal", "value": "24000", "currency": "EUR",
+                    {"id": "d1", "url": "https://crm.example/deals/d1", "title": "Acme rollout", "stage": "proposal", "value": "24000", "currency": "EUR",
                      "probability": "60", "owner": "Alex", "last_activity": ago(3), "updated": ago(3),
                  "next_step": "Send the updated offer", "contact": "Jane Doe", "close": ahead(24 * 20)},
-                    {"id": "d2", "title": "Acme support plan", "stage": "won", "value": "12000", "currency": "EUR",
+                    {"id": "d2", "url": "https://crm.example/deals/d2", "title": "Acme support plan", "stage": "won", "value": "12000", "currency": "EUR",
                      "owner": "Alex", "last_activity": ago(40), "updated": ago(40)},
-                    {"id": "d3", "title": "Acme training", "stage": "won", "value": "8000", "currency": "EUR",
+                    {"id": "d3", "url": "https://crm.example/deals/d3", "title": "Acme training", "stage": "won", "value": "8000", "currency": "EUR",
                      "owner": "Alex", "last_activity": ago(90), "updated": ago(90)},
                 ])
             } else {
                 json!([
-                    {"id": "d4", "title": "Globex renewal", "stage": "negotiation", "value": "18000", "currency": "EUR",
+                    {"id": "d4", "url": "https://crm.example/deals/d4", "title": "Globex renewal", "stage": "negotiation", "value": "18000", "currency": "EUR",
                      "probability": "40", "owner": "Alex", "last_activity": ago(35), "updated": ago(35),
                  "next_step": "Call John about the renewal terms", "contact": "John Roe", "close": ahead(24 * 40)},
-                    {"id": "d5", "title": "Globex pilot", "stage": "qualified", "value": "6000", "currency": "EUR",
+                    {"id": "d5", "url": "https://crm.example/deals/d5", "title": "Globex pilot", "stage": "qualified", "value": "6000", "currency": "EUR",
                      "probability": "20", "owner": "Alex", "last_activity": ago(5), "updated": ago(5),
                  "next_step": "Agree on the pilot team", "contact": "John Roe"},
                 ])
