@@ -522,7 +522,7 @@ impl utoipa::Modify for SecurityAddon {
         organizations::list, organizations::save, organizations::delete,
         connected::deals, connected::accounts, connected::transactions, connected::invoices,
         connected::contracts, connected::rooms, connected::holdings, connected::quotes,
-        connected::numbers, connected::snooze, connected::unsnooze, connected::splits,
+        connected::numbers, connected::forecast, connected::snooze, connected::unsnooze, connected::splits,
         connected::save_split, connected::delete_split, connected::split_items, connected::bulk,
         connected::suggestions, connected::focus,
         posts::list, posts::create, posts::get, posts::update, posts::delete, posts::check,
@@ -561,7 +561,7 @@ impl utoipa::Modify for SecurityAddon {
         lighthouse_sync::SyncedItem, lighthouse_sync::ItemPage, lighthouse_sync::SyncStatus,
         SourceInfo, ActionTool, CollectionTool, RefreshResult, ActionRequest, ActionResult, ItemDetail, BusyBlock,
         lighthouse_sync::Organization, lighthouse_sync::OrganizationInput,
-        lighthouse_sync::Numbers, lighthouse_sync::CurrencyNumbers, lighthouse_sync::StageTotal,
+        lighthouse_sync::Numbers, lighthouse_sync::CurrencyForecast, lighthouse_sync::ForecastMonth, lighthouse_sync::CurrencyNumbers, lighthouse_sync::StageTotal,
         lighthouse_sync::PeriodAmount, lighthouse_sync::Split, lighthouse_sync::SplitInput,
         lighthouse_sync::SplitFilter, connected::ItemSnooze, connected::BulkAction,
         connected::BulkOutcome, connected::FocusBlock,
@@ -738,6 +738,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/numbers/export", get(pipeline::export))
         .route("/bank/accounts", get(connected::accounts))
         .route("/bank/transactions", get(connected::transactions))
+        .route("/bank/forecast", get(connected::forecast))
         .route("/invoices", get(connected::invoices))
         .route("/contracts", get(connected::contracts))
         .route("/rooms", get(connected::rooms))

@@ -305,6 +305,49 @@ pub fn importance(
     base + if recent { 10 } else { 0 }
 }
 
+/// Simple rules for the category of a bank transaction without a mapped one,
+/// from words in its label, then from its sign.
+const CATEGORY_RULES: [(&str, &[&str]); 8] = [
+    ("payroll", &["salar", "payroll", "wage", "gehalt", "lohn"]),
+    ("rent", &["rent", "miete", "lease"]),
+    ("taxes", &["tax", "steuer", "vat", "finanzamt"]),
+    (
+        "software",
+        &[
+            "software",
+            "subscription",
+            "saas",
+            "licen",
+            "cloud",
+            "hosting",
+        ],
+    ),
+    (
+        "travel",
+        &["travel", "hotel", "flight", "train", "taxi", "reise"],
+    ),
+    ("insurance", &["insurance", "versicherung"]),
+    ("fees", &["fee", "gebühr", "charge", "interest"]),
+    (
+        "revenue",
+        &["customer", "invoice", "payment from", "rechnung", "kunde"],
+    ),
+];
+
+/// The category of a transaction by the rules, or `income` and `expense` by its sign.
+pub fn category_of(label: &str, amount: Option<f64>) -> Option<&'static str> {
+    let label = label.to_lowercase();
+    CATEGORY_RULES
+        .iter()
+        .find(|(_, words)| words.iter().any(|word| label.contains(word)))
+        .map(|(category, _)| *category)
+        .or(match amount {
+            Some(amount) if amount > 0.0 => Some("income"),
+            Some(amount) if amount < 0.0 => Some("expense"),
+            _ => None,
+        })
+}
+
 /// Maps one item of a collection. Returns `None` without an external ID.
 pub fn map_item(
     collection: &CollectionConfig,
@@ -316,6 +359,13 @@ pub fn map_item(
     for (target, map) in &collection.fields {
         if let Some(value) = field_value(item, map) {
             data.insert(target.clone(), value);
+        }
+    }
+    if collection.kind == "transaction" && !data.contains_key("category") {
+        let label = data.get("title").and_then(text_of).unwrap_or_default();
+        let amount = data.get("amount").and_then(parse_amount);
+        if let Some(category) = category_of(&label, amount) {
+            data.insert("category".to_owned(), Value::String(category.to_owned()));
         }
     }
     let text = |name: &str| data.get(name).and_then(text_of);
@@ -491,6 +541,51 @@ pub fn uses(value: &Value, placeholder: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transactions_get_a_category_by_simple_rules() {
+        assert_eq!(
+            category_of("Salaries and rent", Some(-10.0)),
+            Some("payroll")
+        );
+        assert_eq!(category_of("Office RENT March", None), Some("rent"));
+        assert_eq!(
+            category_of("Customer payment", Some(9000.0)),
+            Some("revenue")
+        );
+        assert_eq!(category_of("Something", Some(5.0)), Some("income"));
+        assert_eq!(category_of("Something", Some(-5.0)), Some("expense"));
+        assert_eq!(category_of("Something", None), None);
+        let transactions = collection(
+            "transaction",
+            &[
+                ("external_id", path("id")),
+                ("title", path("label")),
+                ("amount", path("amount")),
+                ("category", path("category")),
+            ],
+        );
+        let owner = Owner {
+            accounts: Vec::new(),
+        };
+        let now = Utc::now();
+        let ruled = map_item(
+            &transactions,
+            &json!({"id": "1", "label": "Rent", "amount": -900}),
+            &owner,
+            now,
+        )
+        .unwrap();
+        assert_eq!(ruled.data["category"], "rent");
+        let mapped = map_item(
+            &transactions,
+            &json!({"id": "2", "label": "Rent", "category": "office"}),
+            &owner,
+            now,
+        )
+        .unwrap();
+        assert_eq!(mapped.data["category"], "office");
+    }
+
     use super::*;
     use serde_json::json;
     use std::collections::BTreeMap;

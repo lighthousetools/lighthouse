@@ -163,7 +163,8 @@ pub fn sample(name: &str, arguments: &Value) -> Option<Value> {
             if acme {
                 json!([
                     {"id": "d1", "title": "Acme rollout", "stage": "proposal", "value": "24000", "currency": "EUR",
-                     "probability": "60", "owner": "Alex", "last_activity": ago(3), "updated": ago(3)},
+                     "probability": "60", "owner": "Alex", "last_activity": ago(3), "updated": ago(3),
+                 "next_step": "Send the updated offer", "contact": "Jane Doe", "close": ahead(24 * 20)},
                     {"id": "d2", "title": "Acme support plan", "stage": "won", "value": "12000", "currency": "EUR",
                      "owner": "Alex", "last_activity": ago(40), "updated": ago(40)},
                     {"id": "d3", "title": "Acme training", "stage": "won", "value": "8000", "currency": "EUR",
@@ -172,9 +173,11 @@ pub fn sample(name: &str, arguments: &Value) -> Option<Value> {
             } else {
                 json!([
                     {"id": "d4", "title": "Globex renewal", "stage": "negotiation", "value": "18000", "currency": "EUR",
-                     "probability": "40", "owner": "Alex", "last_activity": ago(35), "updated": ago(35)},
+                     "probability": "40", "owner": "Alex", "last_activity": ago(35), "updated": ago(35),
+                 "next_step": "Call John about the renewal terms", "contact": "John Roe", "close": ahead(24 * 40)},
                     {"id": "d5", "title": "Globex pilot", "stage": "qualified", "value": "6000", "currency": "EUR",
-                     "probability": "20", "owner": "Alex", "last_activity": ago(5), "updated": ago(5)},
+                     "probability": "20", "owner": "Alex", "last_activity": ago(5), "updated": ago(5),
+                 "next_step": "Agree on the pilot team", "contact": "John Roe"},
                 ])
             }
         }
@@ -203,9 +206,11 @@ pub fn sample(name: &str, arguments: &Value) -> Option<Value> {
             if acme {
                 json!([
                     {"id": "inv1", "number": "2026-114", "customer": "Acme Ltd", "status": "paid", "total": "9600",
-                     "currency": "EUR", "issue_date": ago(20), "due_date": ago(6), "type": "issued"},
+                     "currency": "EUR", "issue_date": ago(20), "due_date": ago(6), "type": "issued",
+                 "format": "ZUGFeRD"},
                     {"id": "inv2", "number": "2026-121", "customer": "Acme Ltd", "status": "sent", "total": "4800",
-                     "currency": "EUR", "issue_date": ago(40), "due_date": ago(10), "type": "issued"},
+                     "currency": "EUR", "issue_date": ago(40), "due_date": ago(10), "type": "issued",
+                 "blocked_by": "Waiting for the purchase order number", "format": "XRechnung"},
                     {"id": "inv3", "number": "B-77", "customer": "Office rent", "status": "open", "total": "2100",
                      "currency": "EUR", "issue_date": ago(5), "due_date": ahead(240), "type": "received"},
                 ])

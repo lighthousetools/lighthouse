@@ -102,6 +102,16 @@ These fields have a meaning. Every other field lands in the item's `data`, where
 | `last_activity_at` | Last activity of a deal, for the `cold` flag |
 | `direction` | Of an invoice. Text containing `receiv`, `incoming`, `payable`, `bill` or `purchase` marks a received invoice |
 
+The apps also read these fields from `data` when you map them:
+
+| Field | Of | Meaning |
+|---|---|---|
+| `next_step`, `contact` | Deal | The agreed next step, and the person on the customer's side |
+| `probability` | Deal | Chance to win in percent, for the weighted pipeline and the forecast |
+| `blocked_by` | Invoice | What holds it up, such as "Waiting for the purchase order number" |
+| `einvoice_format` | Invoice | The e-invoice format, such as `XRechnung`, `ZUGFeRD` or `Peppol BIS` |
+| `category` | Transaction | Such as `payroll` or `software`. Without a mapping, simple rules derive it from words in the label (`payroll`, `rent`, `taxes`, `software`, `travel`, `insurance`, `fees`, `revenue`), else `income` or `expense` by the sign |
+
 Placeholders in `input`: `{{since}}` (RFC 3339) and `{{since_date}}` (`YYYY-MM-DD`) mark the start of an incremental
 refresh, `{{now}}` the current time, and `{{account}}` the owner's account. A string that is only one placeholder keeps
 the type of its value, and arguments that end up empty are left out.
@@ -316,6 +326,12 @@ signs or sends by itself, and holdings have no actions at all.
 `revenue_total` and `revenue_previous_total` compare the months asked for with as many months before them, and
 `revenue_change_percent` gives the change. `GET /numbers/export?org=&months=` returns the same numbers as CSV with the
 columns `currency`, `metric`, `period` and `value`.
+
+`GET /bank/forecast?months=3&org=` forecasts cash per currency and month, this month first. Each month has the
+`opening` cash, the open issued invoices due then (`invoices_in`; overdue ones count in the first month), the open
+received ones (`payables_out`), the open deals expected to close then times their `probability`
+(`pipeline_weighted`; map a deal's expected close date to `ends_at`, deals without one are spread evenly), the usual
+`burn` of the last 90 days and the `closing` cash. It is a rough estimate and converts no currencies.
 
 `XXX` stands for items without a currency. With `org=`, only the sources of that organization count.
 

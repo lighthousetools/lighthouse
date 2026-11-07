@@ -487,6 +487,39 @@ pub(crate) async fn numbers(
     Ok(Json(numbers))
 }
 
+/// Months of the forecast.
+#[derive(Deserialize)]
+pub(crate) struct ForecastQuery {
+    org: Option<String>,
+    months: Option<i32>,
+}
+
+/// Forecasts cash per month: today's balances, plus open issued invoices by due
+/// date and the weighted pipeline, minus open received invoices and the usual burn.
+#[utoipa::path(
+    get,
+    operation_id = "cash_forecast",
+    path = "/bank/forecast",
+    params(
+        ("org" = Option<String>, Query, description = "Only sources of this organization"),
+        ("months" = Option<i32>, Query, description = "Months ahead, this month first, default 3, at most 24")
+    ),
+    responses((status = 200, body = Vec<lighthouse_sync::CurrencyForecast>)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn forecast(
+    State(state): State<ApiState>,
+    Query(query): Query<ForecastQuery>,
+) -> Result<Json<Vec<lighthouse_sync::CurrencyForecast>>, ApiError> {
+    let months = query.months.unwrap_or(3);
+    let forecast = state
+        .sync
+        .forecast(query.org.as_deref(), months, Utc::now())
+        .await
+        .map_err(internal)?;
+    Ok(Json(forecast))
+}
+
 /// Range of the free/busy query.
 #[derive(Deserialize)]
 pub(crate) struct RangeQuery {
@@ -698,6 +731,48 @@ mod tests {
             data: json!({}),
             ..MappedItem::default()
         }
+    }
+
+    #[tokio::test]
+    async fn the_cash_forecast_rolls_balances_forward() {
+        let harness = harness(Some(TOKEN)).await;
+        let money = |id: &str, amount: f64, due: Option<DateTime<Utc>>| MappedItem {
+            external_id: id.to_owned(),
+            amount: Some(amount),
+            currency: Some("EUR".to_owned()),
+            ends_at: due,
+            data: json!({"probability": "50"}),
+            ..MappedItem::default()
+        };
+        let sync = &harness.sync;
+        sync.upsert("bank", "bank", "account", &[money("a", 1000.0, None)], &[])
+            .await
+            .unwrap();
+        sync.upsert(
+            "books",
+            "invoices",
+            "invoice",
+            &[money("i", 300.0, Some(Utc::now()))],
+            &[],
+        )
+        .await
+        .unwrap();
+        sync.upsert("crm", "deals", "deal", &[money("d", 400.0, None)], &[])
+            .await
+            .unwrap();
+        let (status, body) =
+            call(&harness.app, "GET", "/bank/forecast?months=2", Some(TOKEN)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let forecast: Value = serde_json::from_str(&body).unwrap();
+        let months = &forecast[0]["months"];
+        assert_eq!(months.as_array().unwrap().len(), 2);
+        assert_eq!(months[0]["opening"], 1000.0);
+        assert_eq!(months[0]["invoices_in"], 300.0);
+        assert_eq!(
+            months[0]["pipeline_weighted"], 100.0,
+            "200 weighted, spread over two months"
+        );
+        assert_eq!(months[1]["opening"], months[0]["closing"]);
     }
 
     #[tokio::test]

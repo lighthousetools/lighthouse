@@ -159,6 +159,9 @@ assignee = "owner"
 last_activity_at = "last_activity"
 occurred_at = "updated"
 pipeline = "pipeline"
+next_step = "next_step"
+contact = "contact"
+ends_at = "close"
 [sources.crm-acme.actions.move]
 tool = "move_deal"
 kind = "deal"
@@ -181,6 +184,9 @@ probability = "probability"
 assignee = "owner"
 last_activity_at = "last_activity"
 occurred_at = "updated"
+next_step = "next_step"
+contact = "contact"
+ends_at = "close"
 
 [sources.bank-acme]
 connector = "demo"
@@ -245,6 +251,8 @@ currency = "currency"
 starts_at = "issue_date"
 due_at = "due_date"
 direction = "type"
+blocked_by = "blocked_by"
+einvoice_format = "format"
 [sources.books-acme.actions.draft]
 tool = "create_invoice_draft"
 input = { customer = "{{input.customer}}", total = "{{input.total}}" }
@@ -266,6 +274,8 @@ currency = "currency"
 starts_at = "issue_date"
 due_at = "due_date"
 direction = "type"
+blocked_by = "blocked_by"
+einvoice_format = "format"
 
 [sources.contracts]
 connector = "demo"

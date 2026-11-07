@@ -18,7 +18,10 @@ pub use engine::{
     CheckChange, PreparedAction, SyncError, SyncEvent, SyncReport, Syncer, prune_empty,
 };
 pub use mapping::{MappedItem, MappingError, Owner};
-pub use numbers::{CurrencyNumbers, Numbers, PeriodAmount, StageTotal};
+pub use numbers::{
+    CurrencyForecast, CurrencyNumbers, ForecastMonth, Numbers, PeriodAmount, StageTotal,
+    roll_forward,
+};
 pub use orgs::{Organization, OrganizationError, OrganizationInput};
 pub use sources::{DOMAINS, PRESETS, Source, SourceError, preset, resolve};
 pub use splits::{Split, SplitFilter, SplitInput};
