@@ -4,8 +4,10 @@
 //! only propose tasks and facts. A proposal changes nothing until the owner
 //! accepts it.
 
+pub mod rules;
 pub mod tasks;
 
+pub use rules::{NewRule, Rule, RulePatch};
 pub use tasks::{NewTask, Proposer, Task, TaskPatch, TaskStatus, TaskView};
 
 use lighthouse_core::TenantId;

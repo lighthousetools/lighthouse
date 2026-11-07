@@ -47,6 +47,7 @@ flowchart LR
 ## A run
 
 1. Cron or an API call registers a run in the audit log.
+1. The runtime reads the owner's rules for this agent. If they cannot be read, the run fails rather than run without them.
 2. The runtime checks every tool of the agent. If one is declared below its real level, the run ends as `rejected`.
 3. The runtime connects to the MCP servers and offers the granted tools to the model.
 4. Model and tools take turns until the model answers without a tool call, or until a limit stops the run.
@@ -61,6 +62,8 @@ flowchart LR
   runs after a restart.
 - **Prompt injection:** tool results are wrapped in `<untrusted_content>` tags that their content cannot close, and the
   system prompt tells the model to treat them as data.
+- **Owner rules:** enabled rules of the owner reach the system prompt in an `<owner_rules>` block, apart from tool
+  results. Tool content cannot open or close that tag, so it cannot pose as a rule.
 - **Secrets:** keys live in the vault and reach tools on the server side only. They never enter prompts or the log.
 - **Audit log:** a database trigger rejects changes to recorded steps.
 - **Limits:** every run has limits for steps, cost and time.

@@ -571,6 +571,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         owner_context: owner_context(&config.owner),
         owner_email: config.owner.email.clone(),
         zone,
+        desk: desk.clone(),
     });
     let agents = Arc::new(AgentRegistry::load(
         config.paths.agents.clone(),

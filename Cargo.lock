@@ -2152,6 +2152,7 @@ dependencies = [
  "lighthouse-audit",
  "lighthouse-config",
  "lighthouse-core",
+ "lighthouse-desk",
  "lighthouse-mcp",
  "lighthouse-notify",
  "lighthouse-router",

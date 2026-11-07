@@ -8,6 +8,7 @@ mod approvals;
 mod auth;
 mod brain;
 mod catalog;
+mod rules;
 mod sessions;
 mod tasks;
 
@@ -37,7 +38,8 @@ use lighthouse_audit::{Approval, AuditLog, DailyCost, RunDetail, RunRecord, Step
 use lighthouse_auth::{Auth, Device, DeviceKind};
 use lighthouse_brain::{Brain, Entry, EntryPatch, EntrySummary, NewEntry, SearchHit, Source};
 use lighthouse_desk::{
-    Desk, DeskError, NewTask, Origin, SourceLink, Task, TaskPatch, TaskStatus, TaskView,
+    Desk, DeskError, NewRule, NewTask, Origin, Rule, RulePatch, SourceLink, Task, TaskPatch,
+    TaskStatus, TaskView,
 };
 use lighthouse_mcp::{McpError, OAuthFlows};
 use lighthouse_notify::EventBus;
@@ -438,6 +440,7 @@ impl utoipa::Modify for SecurityAddon {
         sessions::update_node, sessions::sessions, sessions::permissions, sessions::decide,
         tasks::list, tasks::create, tasks::get, tasks::update, tasks::delete, tasks::complete,
         tasks::reopen, tasks::accept, tasks::reorder,
+        rules::list, rules::create, rules::get, rules::update, rules::delete,
     ),
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -449,6 +452,7 @@ impl utoipa::Modify for SecurityAddon {
         Node, NodeChange, NodeReport, NodeState, NewPermission, Permission, PermissionDecision,
         Session, SessionReport,
         Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Origin, SourceLink,
+        Rule, NewRule, RulePatch,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -526,6 +530,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/tasks/{id}/complete", post(tasks::complete))
         .route("/tasks/{id}/reopen", post(tasks::reopen))
         .route("/tasks/{id}/accept", post(tasks::accept))
+        .route("/rules", get(rules::list).post(rules::create))
+        .route(
+            "/rules/{id}",
+            get(rules::get).patch(rules::update).delete(rules::delete),
+        )
         .route("/credentials", get(auth::list_credentials))
         .route(
             "/credentials/{name}",
