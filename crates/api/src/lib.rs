@@ -1066,6 +1066,16 @@ mod tests {
             "/runs/{id}/document",
             "/automations/{id}/webhook",
             "/automations/events",
+            "/inbox",
+            "/mail/threads",
+            "/calendar/freebusy",
+            "/issues",
+            "/pulls",
+            "/connected/items/{id}/actions/{action}",
+            "/connected/sources/{name}/refresh",
+            "/sessions/{node}/{id}",
+            "/sessions/{node}/{id}/messages",
+            "/node/events",
         ] {
             assert!(spec["paths"].get(path).is_some(), "{path}");
         }
