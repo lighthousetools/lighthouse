@@ -139,9 +139,9 @@ pub struct Review {
     pub quote: Option<Quote>,
     /// The arguments, readable.
     pub preview: Option<Preview>,
-    /// What the run read before, readable.
+    /// What the run read before, readable: `tool`, `label`, `service` and `count`.
     #[serde(default)]
-    pub basis: Vec<Basis>,
+    pub consulted: Vec<Basis>,
 }
 
 /// Turns a key such as `pull_number` or `issueId` into `Pull number` or `Issue id`.
@@ -419,7 +419,7 @@ impl<'a> Reviewer<'a> {
                 url: item.url,
             }),
             preview: Some(preview),
-            basis: Vec::new(),
+            consulted: Vec::new(),
         }
     }
 

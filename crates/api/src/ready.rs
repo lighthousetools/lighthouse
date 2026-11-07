@@ -188,7 +188,7 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
         let mut review = reviewer
             .call(&approval.tool, &approval.input, approval.reason.as_deref())
             .await;
-        review.basis = reviewer.basis(&approval.consulted).await;
+        review.consulted = reviewer.basis(&approval.consulted).await;
         items.push(ReadyItem {
             kind: "approval".to_owned(),
             group: "decisions".to_owned(),
@@ -256,7 +256,7 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
                 continue;
             }
             let mut review = reviewer.call(&call.tool, &input, None).await;
-            review.basis = reviewer
+            review.consulted = reviewer
                 .basis(&run_tools(&state, call.run_id, Some(&call.tool)).await)
                 .await;
             items.push(ReadyItem {
@@ -744,7 +744,7 @@ mod tests {
                 .unwrap()
                 .contains(&json!("context"))
         );
-        let labels: Vec<&str> = item["basis"]
+        let labels: Vec<&str> = item["consulted"]
             .as_array()
             .unwrap()
             .iter()
@@ -855,7 +855,7 @@ mod tests {
         assert_eq!(feed["counts"]["draft"], 1, "{body}");
         let draft = &feed["items"][0];
         assert_eq!(draft["title"], "Second");
-        assert_eq!(draft["basis"][0]["label"], "Gmail · 0 threads");
+        assert_eq!(draft["consulted"][0]["label"], "Gmail · 0 threads");
         let uri = format!("/runs/{}/basis", run.as_uuid());
         let (status, body) = call(&harness.app, "GET", &uri, Some(TOKEN)).await;
         assert_eq!(status, StatusCode::OK);
