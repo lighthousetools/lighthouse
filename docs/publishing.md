@@ -24,6 +24,13 @@ as IDs of Brain entries, and a status:
 | `POST /posts/check` | Check a text, see below |
 | `POST /posts/{id}/publish` | Ask to publish, see below |
 
+A post can hold up to ten `variants`, each with a `name` and a `text`, and a `first_comment`, for example for the link
+you would rather not put into the post. Publishing templates can use `{{post.first_comment}}`.
+
+`POST /posts/{id}/rewrite` with an optional `instruction` (such as "shorter") proposes a new text in your voice: the
+writer sees your brand profile and confirmed facts, and its cost is logged as a run of `writer`. The answer is a
+proposal with `text` and `run_id`; nothing changes unless you send `save_as`, which keeps it as a variant of that name.
+
 A published post keeps its text, time and status. Its `metrics` can still be filled in: `impressions`, `reactions`,
 `comments`, `shares`, `clicks`, `followers` and `icp_share`, the share of reactions from your ideal customers.
 
@@ -95,7 +102,14 @@ starts a new slide.
 | `GET /decks/{id}/export?format=html` | One HTML page with a slide per screen. Raw HTML in the Markdown is shown as text |
 | `GET /decks/{id}/export?format=markdown` | The Markdown |
 
-For a PDF, open the HTML export and print it: the page breaks after every slide.
+For a PDF, open the HTML export and print it: the page breaks after every slide. There is no PPTX export. A PowerPoint
+file needs a zip container with a dozen XML parts per deck, and no maintained pure-Rust writer exists; import the
+HTML or Markdown into your presentation app instead.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /decks/generate` | `{"title", "brief"}` has the writer draft a deck in your voice and stores it as a deck. Gaps are marked `[TODO]` |
+| `POST /decks/{id}/attach` | `{"room_id"}` attaches a deck to a deal room through the room source's `attach` action, with `title`, `markdown` and `html` as input. A writing tool waits for your approval |
 
 ## Brand profile
 

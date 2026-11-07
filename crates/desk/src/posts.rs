@@ -14,7 +14,8 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 const COLUMNS: &str = "id, org, channel, kind, pillar, topic, title, body, status, scheduled_at, published_at, \
-                       url, external_id, images, metrics, origin, publish_run, created_at, updated_at";
+                       url, external_id, images, metrics, origin, publish_run, created_at, updated_at, \
+                       variants, first_comment";
 const MAX_BODY: usize = 10_000;
 /// Analytics fields an import or the owner may set.
 pub const METRICS: [&str; 7] = [
@@ -70,6 +71,30 @@ pub struct Post {
     pub created_at: DateTime<Utc>,
     /// Last change.
     pub updated_at: DateTime<Utc>,
+    /// Alternative texts, each with a `name` and a `text`.
+    pub variants: Value,
+    /// The comment to post first, for example with the link.
+    pub first_comment: Option<String>,
+}
+
+/// An alternative text of a post.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Variant {
+    /// Short name, such as `shorter` or `story`.
+    pub name: String,
+    /// The text.
+    pub text: String,
+}
+
+fn variants_value(variants: &[Variant]) -> Result<Value, DeskError> {
+    if variants.len() > 10 {
+        return Err(invalid("at most 10 variants"));
+    }
+    for variant in variants {
+        required_text("name", &variant.name, 100)?;
+        check_body(&variant.text)?;
+    }
+    Ok(serde_json::to_value(variants).unwrap_or(Value::Array(Vec::new())))
 }
 
 /// A post to create.
@@ -105,6 +130,12 @@ pub struct NewPost {
     /// Images as Brain entry IDs.
     #[serde(default)]
     pub images: Vec<Uuid>,
+    /// Alternative texts.
+    #[serde(default)]
+    pub variants: Vec<Variant>,
+    /// The comment to post first.
+    #[serde(default)]
+    pub first_comment: Option<String>,
 }
 
 /// Changes to a post. Missing fields stay, `null` clears.
@@ -150,6 +181,13 @@ pub struct PostPatch {
     #[serde(default, deserialize_with = "double_option")]
     #[schema(value_type = Option<String>)]
     pub url: Option<Option<String>>,
+    /// New alternative texts, replacing the old ones.
+    #[serde(default)]
+    pub variants: Option<Vec<Variant>>,
+    /// New first comment.
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<String>)]
+    pub first_comment: Option<Option<String>>,
 }
 
 /// Which posts to list.
@@ -317,7 +355,8 @@ impl Desk {
         };
         let query = format!(
             "INSERT INTO posts (id, tenant_id, org, channel, kind, pillar, topic, title, body, status, \
-             scheduled_at, images, origin) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'owner') \
+             scheduled_at, images, origin, variants, first_comment) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'owner', $13, $14) \
              RETURNING {COLUMNS}"
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
@@ -333,6 +372,8 @@ impl Desk {
             .bind(status)
             .bind(post.scheduled_at)
             .bind(&post.images)
+            .bind(variants_value(&post.variants)?)
+            .bind(&post.first_comment)
             .fetch_one(self.pool())
             .await?)
     }
@@ -454,6 +495,12 @@ impl Desk {
         if let Some(images) = patch.images {
             post.images = images;
         }
+        if let Some(variants) = patch.variants {
+            post.variants = variants_value(&variants)?;
+        }
+        if let Some(first_comment) = patch.first_comment {
+            post.first_comment = first_comment;
+        }
         if let Some(metrics) = patch.metrics {
             let Value::Object(metrics) = metrics else {
                 return Err(invalid("`metrics` must be an object"));
@@ -464,7 +511,8 @@ impl Desk {
         }
         let query = format!(
             "UPDATE posts SET org = $3, kind = $4, pillar = $5, topic = $6, title = $7, body = $8, \
-             status = $9, scheduled_at = $10, url = $11, images = $12, metrics = $13, updated_at = now() \
+             status = $9, scheduled_at = $10, url = $11, images = $12, metrics = $13, variants = $14, \
+             first_comment = $15, updated_at = now() \
              WHERE tenant_id = $1 AND id = $2 RETURNING {COLUMNS}"
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
@@ -481,6 +529,8 @@ impl Desk {
             .bind(&post.url)
             .bind(&post.images)
             .bind(&post.metrics)
+            .bind(&post.variants)
+            .bind(&post.first_comment)
             .fetch_optional(self.pool())
             .await?)
     }
@@ -884,6 +934,15 @@ mod tests {
         assert_eq!(measured.metrics["impressions"], 1200.0);
         let bad: PostPatch = serde_json::from_value(json!({"metrics": {"likes": 1}})).unwrap();
         assert!(desk.update_post(draft.id, bad).await.is_err());
+        let variants: PostPatch = serde_json::from_value(json!({
+            "variants": [{"name": "shorter", "text": "Hook"}], "first_comment": "Link below"}))
+        .unwrap();
+        let varied = desk.update_post(draft.id, variants).await.unwrap().unwrap();
+        assert_eq!(varied.variants[0]["name"], "shorter");
+        assert_eq!(varied.first_comment.as_deref(), Some("Link below"));
+        let unnamed: PostPatch =
+            serde_json::from_value(json!({"variants": [{"name": " ", "text": "x"}]})).unwrap();
+        assert!(desk.update_post(draft.id, unnamed).await.is_err());
         assert!(desk.delete_post(draft.id).await.unwrap());
         assert!(!desk.delete_post(draft.id).await.unwrap());
         let bad_status = NewPost {

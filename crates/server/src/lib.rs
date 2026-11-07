@@ -810,6 +810,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         connected,
         publisher,
         talk_agent: config.talk.agent.clone(),
+        writer: Arc::new(publishing::ServerWriter::new(pool.runtime.clone())),
     });
     let router = match &config.paths.web {
         Some(directory) => lighthouse_api::with_web_app(router, directory),

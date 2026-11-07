@@ -147,3 +147,30 @@ pub async fn finish_publishing(
 pub fn is_publishing(agent_id: &str) -> bool {
     agent_id.starts_with(POST_PREFIX) && agent_id.len() > ACTION_PREFIX.len()
 }
+
+/// Writes rewrites and decks through the runtime.
+pub struct ServerWriter {
+    runtime: Arc<Runtime>,
+}
+
+impl ServerWriter {
+    /// Creates the writer.
+    pub fn new(runtime: Arc<Runtime>) -> Self {
+        Self { runtime }
+    }
+}
+
+#[async_trait]
+impl lighthouse_api::Writer for ServerWriter {
+    async fn write(
+        &self,
+        instructions: &str,
+        material: &str,
+    ) -> Result<lighthouse_api::Written, String> {
+        let (run, text) = self.runtime.compose(instructions, material).await?;
+        Ok(lighthouse_api::Written {
+            run_id: run.as_uuid(),
+            text,
+        })
+    }
+}

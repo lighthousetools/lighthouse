@@ -882,3 +882,43 @@ async fn writing_agents_get_the_brand_voice_and_others_do_not() {
     ));
     assert!(!requests[1].system.contains("<owner_brand>"));
 }
+
+#[tokio::test]
+async fn a_text_is_composed_in_the_owner_voice_and_logged() {
+    let fixture = fixture(
+        vec![ChatResponse::text("```\nShorter text\n```", usage())],
+        false,
+    )
+    .await;
+    fixture
+        .desk
+        .save_brand_profile(&lighthouse_desk::BrandProfile {
+            voice: Some("Warm".to_owned()),
+            ..lighthouse_desk::BrandProfile::default()
+        })
+        .await
+        .unwrap();
+    let (run, text) = fixture
+        .runtime
+        .compose("Rewrite the post shorter.", "A long post")
+        .await
+        .unwrap();
+    assert_eq!(text, "Shorter text");
+    let requests = fixture.provider.requests();
+    assert!(requests[0].system.contains("Rewrite the post shorter."));
+    assert!(requests[0].system.contains("- Voice: Warm"));
+    let detail = fixture
+        .audit
+        .run_detail(run.as_uuid())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (detail.run.agent_id.as_str(), detail.run.status.as_str()),
+        ("writer", "succeeded")
+    );
+    assert!(
+        fixture.runtime.compose("x", "y").await.is_err(),
+        "the script is used up"
+    );
+}

@@ -40,8 +40,10 @@ pub use connected::{
     ActionError, ActionRequest, ActionResult, BusyBlock, Connected, ItemDetail, RefreshResult,
     SourceInfo,
 };
-pub use decks::{NewDeck, render_html as render_deck};
-pub use posts::{CheckRequest, ImportRequest, ImportResult, Publisher};
+pub use decks::{DeckAttachment, DeckBrief, NewDeck, render_html as render_deck};
+pub use posts::{
+    CheckRequest, ImportRequest, ImportResult, Publisher, RewriteRequest, Writer, Written,
+};
 pub use ready::{ReadyFeed, ReadyItem, Snooze};
 pub use sessions::{
     NewSessionMessage, NodeChange, PermissionDecision, SessionDetail, SessionEvents,
@@ -174,6 +176,8 @@ pub struct ApiState {
     pub publisher: Arc<dyn Publisher>,
     /// Agent that answers in conversations. Without one, the Brain answers.
     pub talk_agent: Option<String>,
+    /// Writes rewrites and decks.
+    pub writer: Arc<dyn Writer>,
 }
 
 /// Answer of the health check.
@@ -515,7 +519,8 @@ impl utoipa::Modify for SecurityAddon {
         posts::list, posts::create, posts::get, posts::update, posts::delete, posts::check,
         posts::publish, posts::import, posts::calendar, posts::slots, posts::set_slots,
         posts::pillars, posts::save_pillar, posts::delete_pillar, posts::branding,
-        posts::save_branding, decks::list, decks::create, decks::export,
+        posts::save_branding, posts::rewrite, decks::list, decks::create, decks::export,
+        decks::generate, decks::attach,
         talk::list, talk::create, talk::get, talk::update, talk::delete, talk::send,
     ),
     components(schemas(
@@ -553,7 +558,8 @@ impl utoipa::Modify for SecurityAddon {
         lighthouse_desk::CalendarSlot, lighthouse_desk::Pillar, lighthouse_desk::PillarInput,
         lighthouse_desk::ImportedPost, lighthouse_desk::BrandProfile, CheckRequest, ImportRequest,
         ImportResult, NewDeck, lighthouse_desk::TalkThread, lighthouse_desk::TalkMessage,
-        NewThread, ThreadPatch, ThreadDetail, NewMessage, Exchange,
+        NewThread, ThreadPatch, ThreadDetail, NewMessage, Exchange, Written, RewriteRequest,
+        DeckBrief, DeckAttachment, lighthouse_desk::Variant,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -694,6 +700,7 @@ pub fn router(state: ApiState) -> Router {
             get(posts::get).patch(posts::update).delete(posts::delete),
         )
         .route("/posts/{id}/publish", post(posts::publish))
+        .route("/posts/{id}/rewrite", post(posts::rewrite))
         .route("/branding", get(posts::branding).put(posts::save_branding))
         .route("/talk/threads", get(talk::list).post(talk::create))
         .route(
@@ -702,7 +709,9 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/talk/threads/{id}/messages", post(talk::send))
         .route("/decks", get(decks::list).post(decks::create))
+        .route("/decks/generate", post(decks::generate))
         .route("/decks/{id}/export", get(decks::export))
+        .route("/decks/{id}/attach", post(decks::attach))
         .route("/deals", get(connected::deals))
         .route("/bank/accounts", get(connected::accounts))
         .route("/bank/transactions", get(connected::transactions))
@@ -990,6 +999,21 @@ mod tests {
         }
     }
 
+    struct FakeWriter;
+
+    #[async_trait]
+    impl Writer for FakeWriter {
+        async fn write(&self, _instructions: &str, material: &str) -> Result<Written, String> {
+            if material == "fail" {
+                return Err("no model".to_owned());
+            }
+            Ok(Written {
+                run_id: Uuid::nil(),
+                text: format!("rewritten: {material}"),
+            })
+        }
+    }
+
     struct FakePublisher;
 
     #[async_trait]
@@ -1152,6 +1176,7 @@ mod tests {
             connected: Arc::new(FakeConnected),
             publisher: Arc::new(FakePublisher),
             talk_agent,
+            writer: Arc::new(FakeWriter),
         };
         Harness {
             app: router(state),

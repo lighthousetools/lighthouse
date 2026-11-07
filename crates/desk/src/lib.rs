@@ -26,7 +26,7 @@ pub use facts::{Fact, FactFilter, FactPatch, FactSource, NewFact, ProposedFact};
 pub use post_check::{CheckIssue, PostCheck, check_post};
 pub use posts::{
     CalendarSlot, ImportedPost, NewPost, Pillar, PillarInput, Post, PostFilter, PostPatch,
-    PostSlot, parse_csv,
+    PostSlot, Variant, parse_csv,
 };
 pub use rules::{NewRule, Rule, RulePatch};
 pub use talk::{TalkMessage, TalkThread, transcript};

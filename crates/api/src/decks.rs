@@ -36,6 +36,22 @@ pub struct NewDeck {
     pub links: Vec<String>,
 }
 
+/// A brief for a new deck.
+#[derive(Deserialize, ToSchema)]
+pub struct DeckBrief {
+    /// Title.
+    pub title: String,
+    /// What the deck is for, who sees it and what it should say.
+    pub brief: String,
+}
+
+/// Where to attach a deck.
+#[derive(Deserialize, ToSchema)]
+pub struct DeckAttachment {
+    /// The room, as a connected item.
+    pub room_id: Uuid,
+}
+
 /// Format of the export.
 #[derive(Deserialize)]
 pub(crate) struct ExportQuery {
@@ -157,6 +173,89 @@ pub(crate) async fn create(
     Ok((StatusCode::CREATED, Json(entry)))
 }
 
+/// Writes a deck from a brief, in the owner's voice, and stores it in the Brain
+/// as a draft to edit. Nothing is shared.
+#[utoipa::path(
+    post,
+    operation_id = "generate_deck",
+    path = "/decks/generate",
+    request_body = DeckBrief,
+    responses((status = 201, body = Entry), (status = 502, description = "The model failed")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn generate(
+    State(state): State<ApiState>,
+    Json(brief): Json<DeckBrief>,
+) -> Result<(StatusCode, Json<Entry>), ApiError> {
+    let instructions = "Write a presentation in Markdown. Start every slide after the first with a line that \
+        holds only ---. Each slide has a heading and at most five short points. Use only facts from the brief \
+        and mark anything the owner must fill in as [TODO].";
+    let written = state
+        .writer
+        .write(instructions, &brief.brief)
+        .await
+        .map_err(|error| ApiError(StatusCode::BAD_GATEWAY, error))?;
+    create(
+        State(state),
+        Json(NewDeck {
+            title: brief.title,
+            markdown: written.text,
+            links: Vec::new(),
+        }),
+    )
+    .await
+}
+
+/// Attaches a deck to a deal room through the room source's `attach` action,
+/// with `title`, `markdown` and `html` as input. A writing tool waits for approval.
+#[utoipa::path(
+    post,
+    operation_id = "attach_deck",
+    path = "/decks/{id}/attach",
+    params(("id" = Uuid, Path, description = "Deck ID")),
+    request_body = DeckAttachment,
+    responses(
+        (status = 202, body = crate::ActionResult),
+        (status = 404, description = "Unknown deck or room"),
+        (status = 422, description = "Not a room, or its source has no attach action")
+    ),
+    security(("bearer" = []))
+)]
+pub(crate) async fn attach(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+    Json(attachment): Json<DeckAttachment>,
+) -> Result<(StatusCode, Json<crate::ActionResult>), ApiError> {
+    let entry = deck(&state, id).await?;
+    let room = state
+        .sync
+        .item(attachment.room_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| not_found("room"))?;
+    let input = serde_json::json!({
+        "title": entry.title,
+        "markdown": entry.body,
+        "html": render_html(&entry.title, &entry.body),
+    });
+    let result = state
+        .connected
+        .act(&room.source, "attach", Some(&room), input)
+        .await
+        .map_err(|error| match error {
+            crate::ActionError::Rejected(reason) => {
+                ApiError(StatusCode::UNPROCESSABLE_ENTITY, reason)
+            }
+            crate::ActionError::Failed(reason) => internal(reason),
+        })?;
+    let status = if result.status == "proposed" {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(result)))
+}
+
 /// Exports a deck as one HTML page with a slide per page, or as Markdown.
 ///
 /// For a PDF, open the HTML export and print it; the page breaks after every slide.
@@ -255,6 +354,68 @@ mod tests {
         let unknown = format!("/decks/{}/export", Uuid::nil());
         assert_eq!(
             call(app, "GET", &unknown, Some(TOKEN)).await.0,
+            StatusCode::NOT_FOUND
+        );
+        let (status, body) = send(
+            app,
+            "POST",
+            "/decks/generate",
+            Some(TOKEN),
+            Some(json!({"title": "Pitch", "brief": "Three slides"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let generated: Value = serde_json::from_str(&body).unwrap();
+        let export = format!("/decks/{}/export?format=md", generated["id"].as_str().unwrap());
+        assert_eq!(call(app, "GET", &export, Some(TOKEN)).await.1, "rewritten: Three slides");
+        assert_eq!(
+            send(
+                app,
+                "POST",
+                "/decks/generate",
+                Some(TOKEN),
+                Some(json!({"title": "x", "brief": "fail"}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_GATEWAY
+        );
+        let room = harness
+            .sync
+            .upsert(
+                "rooms",
+                "rooms",
+                "room",
+                &[lighthouse_sync::MappedItem {
+                    external_id: "r1".to_owned(),
+                    data: json!({}),
+                    ..lighthouse_sync::MappedItem::default()
+                }],
+                &[],
+            )
+            .await
+            .unwrap();
+        let attach = format!("/decks/{id}/attach");
+        let (status, body) = send(
+            app,
+            "POST",
+            &attach,
+            Some(TOKEN),
+            Some(json!({"room_id": room[0].id})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        assert!(body.contains("rooms.attach"));
+        assert_eq!(
+            send(
+                app,
+                "POST",
+                &attach,
+                Some(TOKEN),
+                Some(json!({"room_id": Uuid::nil()}))
+            )
+            .await
+            .0,
             StatusCode::NOT_FOUND
         );
         let empty = json!({"title": " ", "markdown": "x"});

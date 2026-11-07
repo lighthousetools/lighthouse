@@ -25,6 +25,33 @@ pub trait Publisher: Send + Sync {
     async fn publish(&self, post: &Post) -> Result<ActionResult, ActionError>;
 }
 
+/// Writes texts for the owner, such as rewrites of posts and decks.
+#[async_trait]
+pub trait Writer: Send + Sync {
+    /// Writes a text from instructions and material. The error is safe to show.
+    async fn write(&self, instructions: &str, material: &str) -> Result<Written, String>;
+}
+
+/// A text the writer proposes.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct Written {
+    /// The run that wrote it, with its cost.
+    pub run_id: Uuid,
+    /// The text.
+    pub text: String,
+}
+
+/// How to rewrite a post.
+#[derive(Deserialize, ToSchema)]
+pub struct RewriteRequest {
+    /// What to change, such as "shorter" or "start with the number". Defaults to a clearer, tighter version.
+    #[serde(default)]
+    pub instruction: Option<String>,
+    /// Also keep the proposal as a variant of this name.
+    #[serde(default)]
+    pub save_as: Option<String>,
+}
+
 /// Text to check.
 #[derive(Deserialize, ToSchema)]
 pub struct CheckRequest {
@@ -266,6 +293,64 @@ pub(crate) async fn publish(
     }
     changed(&state, Some(id));
     Ok((StatusCode::ACCEPTED, Json(result)))
+}
+
+/// Proposes a rewrite of a post in the owner's voice. Nothing changes and
+/// nothing is published, unless `save_as` keeps it as a variant.
+#[utoipa::path(
+    post,
+    operation_id = "rewrite_post",
+    path = "/posts/{id}/rewrite",
+    params(("id" = Uuid, Path, description = "Post ID")),
+    request_body = RewriteRequest,
+    responses(
+        (status = 200, body = Written),
+        (status = 404, description = "Unknown post"),
+        (status = 502, description = "The model failed")
+    ),
+    security(("bearer" = []))
+)]
+pub(crate) async fn rewrite(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<RewriteRequest>,
+) -> Result<Json<Written>, ApiError> {
+    let post = state
+        .desk
+        .post(id)
+        .await
+        .map_err(desk_error)?
+        .ok_or_else(|| not_found("post"))?;
+    let instruction = request
+        .instruction
+        .unwrap_or_else(|| "Make it clearer and tighter, with a strong first line.".to_owned());
+    let instructions = format!(
+        "Rewrite this post for the owner. {instruction} Keep its meaning and facts, and keep it under 3,000 characters."
+    );
+    let written = state
+        .writer
+        .write(&instructions, &post.body)
+        .await
+        .map_err(|error| ApiError(StatusCode::BAD_GATEWAY, error))?;
+    if let Some(name) = request.save_as {
+        let mut variants: Vec<lighthouse_desk::Variant> =
+            serde_json::from_value(post.variants.clone()).unwrap_or_default();
+        variants.push(lighthouse_desk::Variant {
+            name,
+            text: written.text.clone(),
+        });
+        let patch = PostPatch {
+            variants: Some(variants),
+            ..PostPatch::default()
+        };
+        state
+            .desk
+            .update_post(id, patch)
+            .await
+            .map_err(desk_error)?;
+        changed(&state, Some(id));
+    }
+    Ok(Json(written))
 }
 
 /// Adds published posts to the archive, from a list or from CSV.
@@ -595,6 +680,75 @@ mod tests {
         );
         assert_eq!(
             send(app, "PATCH", &uri, Some(TOKEN), Some(json!({})))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn rewrites_are_proposed_and_kept_as_variants_on_request() {
+        let harness = harness(Some(TOKEN)).await;
+        let app = &harness.app;
+        let (_, body) = send(
+            app,
+            "POST",
+            "/posts",
+            Some(TOKEN),
+            Some(json!({"body": "A long post"})),
+        )
+        .await;
+        let post: Value = serde_json::from_str(&body).unwrap();
+        let uri = format!("/posts/{}/rewrite", post["id"].as_str().unwrap());
+        let (status, body) = send(app, "POST", &uri, Some(TOKEN), Some(json!({}))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("rewritten: A long post"));
+        let (_, body) = call(
+            app,
+            "GET",
+            &format!("/posts/{}", post["id"].as_str().unwrap()),
+            Some(TOKEN),
+        )
+        .await;
+        assert!(
+            body.contains("\"variants\":[]"),
+            "a proposal changes nothing"
+        );
+        send(
+            app,
+            "POST",
+            &uri,
+            Some(TOKEN),
+            Some(json!({"instruction": "shorter", "save_as": "short"})),
+        )
+        .await;
+        let (_, body) = call(
+            app,
+            "GET",
+            &format!("/posts/{}", post["id"].as_str().unwrap()),
+            Some(TOKEN),
+        )
+        .await;
+        assert!(body.contains("\"name\":\"short\""));
+        let (_, body) = send(
+            app,
+            "POST",
+            "/posts",
+            Some(TOKEN),
+            Some(json!({"body": "fail"})),
+        )
+        .await;
+        let failing: Value = serde_json::from_str(&body).unwrap();
+        let uri = format!("/posts/{}/rewrite", failing["id"].as_str().unwrap());
+        assert_eq!(
+            send(app, "POST", &uri, Some(TOKEN), Some(json!({})))
+                .await
+                .0,
+            StatusCode::BAD_GATEWAY
+        );
+        let missing = format!("/posts/{}/rewrite", uuid::Uuid::nil());
+        assert_eq!(
+            send(app, "POST", &missing, Some(TOKEN), Some(json!({})))
                 .await
                 .0,
             StatusCode::NOT_FOUND
