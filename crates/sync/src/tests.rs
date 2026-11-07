@@ -543,8 +543,16 @@ async fn numbers_sum_pipeline_cash_burn_invoices_and_revenue() {
     let mut paid = money("i2", 2_000.0, Some("paid"), &["receivable"]);
     paid.starts_at = Some(now);
     let bill = money("i3", 400.0, Some("open"), &["payable"]);
+    let mut earlier = money("i4", 1_500.0, Some("paid"), &["receivable"]);
+    earlier.starts_at = Some(now - Duration::days(120));
     store
-        .upsert("books", "invoices", "invoice", &[overdue, paid, bill], &[])
+        .upsert(
+            "books",
+            "invoices",
+            "invoice",
+            &[overdue, paid, bill, earlier],
+            &[],
+        )
         .await
         .unwrap();
     store
@@ -591,6 +599,9 @@ async fn numbers_sum_pipeline_cash_burn_invoices_and_revenue() {
         eur.revenue[0].amount, 3_000.0,
         "paid invoices count as revenue"
     );
+    assert_eq!(eur.revenue_total, 3_000.0);
+    assert_eq!(eur.revenue_previous_total, 1_500.0);
+    assert_eq!(eur.revenue_change_percent, Some(100.0));
     assert_eq!(eur.holdings, 700.0);
 
     store
@@ -725,4 +736,17 @@ async fn splits_save_filters_and_list_their_items() {
     );
     assert!(store.delete_split("newsletters").await.unwrap());
     assert!(!store.delete_split("newsletters").await.unwrap());
+}
+
+#[test]
+fn periods_start_at_the_first_of_a_month() {
+    let now = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 3, 15, 12, 0, 0).unwrap();
+    assert_eq!(
+        numbers::period_start(now, 1).to_rfc3339(),
+        "2026-03-01T00:00:00+00:00"
+    );
+    assert_eq!(
+        numbers::period_start(now, 6).to_rfc3339(),
+        "2025-10-01T00:00:00+00:00"
+    );
 }

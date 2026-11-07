@@ -511,6 +511,39 @@ impl SyncStore {
             .await
     }
 
+    /// Returns won deals like this one, latest first: of the same source, and of
+    /// the same `pipeline` or `category` field when the deal has one.
+    pub async fn similar_won_deals(
+        &self,
+        deal: &SyncedItem,
+        limit: i64,
+    ) -> Result<Vec<SyncedItem>, sqlx::Error> {
+        let (field, value) = ["pipeline", "category"]
+            .iter()
+            .find_map(|field| {
+                deal.data
+                    .get(*field)
+                    .and_then(crate::mapping::text_of)
+                    .map(|value| ((*field).to_owned(), value))
+            })
+            .map_or((None, None), |(field, value)| (Some(field), Some(value)));
+        let query = format!(
+            "SELECT {COLUMNS} FROM synced_items WHERE tenant_id = $1 AND source = $2 AND kind = 'deal' \
+             AND lower(state) = 'won' AND amount IS NOT NULL AND id <> $3 \
+             AND ($4::text IS NULL OR data->>$4 = $5) \
+             ORDER BY occurred_at DESC NULLS LAST LIMIT $6"
+        );
+        sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant.as_uuid())
+            .bind(&deal.source)
+            .bind(deal.id)
+            .bind(field)
+            .bind(value)
+            .bind(limit)
+            .fetch_all(self.pool())
+            .await
+    }
+
     /// Returns the item as the tool returned it.
     pub async fn raw(&self, id: Uuid) -> Result<Option<Value>, sqlx::Error> {
         let row: Option<(Option<Value>,)> =

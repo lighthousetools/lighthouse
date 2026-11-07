@@ -280,6 +280,13 @@ signs or sends by itself, and holdings have no actions at all.
 | `GET /holdings`, `GET /holdings/quotes` | Holdings and quotes |
 | `GET /numbers?org=&months=` | Key numbers, see below |
 
+### Pipeline
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /deals/{id}/suggestion` | A suggested value: the median of won deals of the same source, and of the same `pipeline` or `category` field if the deal has one, in its currency. The answer explains the basis and names up to five of those deals |
+| `POST /deals/top-tasks` | `{"limit", "org"}` proposes a task "Move … forward" for each of the top open deals, by value times `probability`, with cold deals weighted up. Deals with an open or proposed task are skipped. You accept or reject each task |
+
 ### Numbers
 
 `GET /numbers` computes key numbers from the cache, per currency and without conversion:
@@ -295,7 +302,12 @@ signs or sends by itself, and holdings have no actions at all.
 | `receivables_open`, `receivables_overdue`, `invoices_overdue` | Open issued invoices, those past due and their number |
 | `payables_open` | Open received invoices |
 | `revenue` | Issued invoices per month by issue date, without drafts and void ones |
+| `revenue_total`, `revenue_previous_total`, `revenue_change_percent` | Revenue of the months asked for, of as many months before, and the change in percent |
 | `holdings` | Value of holdings |
+
+`revenue_total` and `revenue_previous_total` compare the months asked for with as many months before them, and
+`revenue_change_percent` gives the change. `GET /numbers/export?org=&months=` returns the same numbers as CSV with the
+columns `currency`, `metric`, `period` and `value`.
 
 `XXX` stands for items without a currency. With `org=`, only the sources of that organization count.
 

@@ -68,6 +68,12 @@ pub struct CurrencyNumbers {
     pub payables_open: f64,
     /// Issued invoices per month, newest first.
     pub revenue: Vec<PeriodAmount>,
+    /// Revenue of the months asked for.
+    pub revenue_total: f64,
+    /// Revenue of the same number of months before them, for comparison.
+    pub revenue_previous_total: f64,
+    /// Change against the months before, in percent, if there was revenue then.
+    pub revenue_change_percent: Option<f64>,
     /// Value of holdings.
     pub holdings: f64,
 }
@@ -94,6 +100,18 @@ fn entry(map: &mut BTreeMap<String, CurrencyNumbers>, currency: String) -> &mut 
             currency,
             ..CurrencyNumbers::default()
         })
+}
+
+/// Start of the month that lies `months - 1` months before the month of `now`.
+pub fn period_start(now: DateTime<Utc>, months: i32) -> DateTime<Utc> {
+    use chrono::{Datelike, Months, TimeZone};
+    let first = Utc
+        .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+        .single()
+        .unwrap_or(now);
+    first
+        .checked_sub_months(Months::new(u32::try_from(months - 1).unwrap_or(0)))
+        .unwrap_or(first)
 }
 
 fn closed() -> Vec<String> {
@@ -217,6 +235,32 @@ impl SyncStore {
             entry(&mut by_currency, currency)
                 .revenue
                 .push(PeriodAmount { period, amount });
+        }
+
+        let totals: Vec<(String, f64, f64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT coalesce(currency, ''), \
+             coalesce(sum(amount) FILTER (WHERE coalesce(starts_at, occurred_at) >= $6), 0), \
+             coalesce(sum(amount) FILTER (WHERE coalesce(starts_at, occurred_at) < $6), 0) \
+             FROM synced_items WHERE tenant_id = $1 AND kind = 'invoice' AND {ORG} \
+             AND NOT 'payable' = ANY(flags) AND coalesce(lower(state), '') NOT IN ('void', 'canceled', 'cancelled', 'draft') \
+             AND $3::text[] IS NOT NULL AND $4::timestamptz IS NOT NULL AND $5::int IS NOT NULL \
+             AND coalesce(starts_at, occurred_at) >= $7 GROUP BY 1"
+        )))
+        .bind(tenant)
+        .bind(org)
+        .bind(closed())
+        .bind(now)
+        .bind(months.max(1))
+        .bind(period_start(now, months.max(1)))
+        .bind(period_start(now, 2 * months.max(1)))
+        .fetch_all(self.pool())
+        .await?;
+        for (currency, current, previous) in totals {
+            let numbers = entry(&mut by_currency, currency);
+            numbers.revenue_total = current;
+            numbers.revenue_previous_total = previous;
+            numbers.revenue_change_percent =
+                (previous > 0.0).then(|| (current - previous) / previous * 100.0);
         }
 
         let mut currencies: Vec<CurrencyNumbers> = by_currency.into_values().collect();
