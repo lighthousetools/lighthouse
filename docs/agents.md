@@ -68,6 +68,8 @@ Use `lht connectors tools <connector>` to see the real tool names of a server.
 | `tasks.propose` | `draft` | Propose a task for the owner's list. It waits as `proposed` until the owner accepts it |
 | `memory.propose` | `draft` | Propose a fact about the owner with a `confidence` from 0 to 1. It reaches prompts only once the owner confirms it |
 
+A briefing agent can end its report with a structured document for the apps, see [documents.md](documents.md).
+
 Every run also sees the owner's enabled [rules](api.md#rules) and confirmed [facts](api.md#memory) in its system prompt.
 
 ## Schedules

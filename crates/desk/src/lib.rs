@@ -5,12 +5,17 @@
 //! accepts it.
 
 pub mod alerts;
+pub mod documents;
 pub mod facts;
 pub mod ready;
 pub mod rules;
 pub mod tasks;
 
 pub use alerts::{Alert, AlertCounts, AlertView, NewAlert, Raised, Severity};
+pub use documents::{
+    BriefingContent, BriefingDocument, DocumentItem, DocumentSection, ItemNumber, ItemSource,
+    MORNING_BRIEF, WEEKLY_RECAP, extract_document,
+};
 pub use facts::{Fact, FactFilter, FactPatch, FactSource, NewFact, ProposedFact};
 pub use rules::{NewRule, Rule, RulePatch};
 pub use tasks::{NewTask, Proposer, Task, TaskPatch, TaskStatus, TaskView};

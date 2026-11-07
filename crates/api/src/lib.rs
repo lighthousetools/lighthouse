@@ -9,6 +9,7 @@ mod approvals;
 mod auth;
 mod brain;
 mod catalog;
+mod documents;
 mod memory;
 mod ready;
 mod rules;
@@ -448,6 +449,8 @@ impl utoipa::Modify for SecurityAddon {
         memory::list, memory::create, memory::get, memory::update, memory::confirm, memory::delete,
         alerts::list, alerts::counts, alerts::get, alerts::acknowledge, alerts::resolve,
         ready::feed, ready::dismiss_draft,
+        documents::list, documents::latest_brief, documents::recaps, documents::recap,
+        documents::of_run,
     ),
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -462,6 +465,9 @@ impl utoipa::Modify for SecurityAddon {
         Rule, NewRule, RulePatch, Fact, FactSource, NewFact, FactPatch,
         Alert, AlertCounts, AlertView, lighthouse_desk::Severity,
         ReadyFeed, ReadyItem, lighthouse_audit::ToolCall,
+        lighthouse_desk::BriefingDocument, lighthouse_desk::BriefingContent,
+        lighthouse_desk::DocumentSection, lighthouse_desk::DocumentItem,
+        lighthouse_desk::ItemSource, lighthouse_desk::ItemNumber,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -552,6 +558,11 @@ pub fn router(state: ApiState) -> Router {
                 .delete(memory::delete),
         )
         .route("/memory/{id}/confirm", post(memory::confirm))
+        .route("/runs/{id}/document", get(documents::of_run))
+        .route("/documents", get(documents::list))
+        .route("/briefs/latest", get(documents::latest_brief))
+        .route("/recaps", get(documents::recaps))
+        .route("/recaps/{week}", get(documents::recap))
         .route("/ready", get(ready::feed))
         .route("/ready/drafts/{id}/dismiss", post(ready::dismiss_draft))
         .route("/alerts", get(alerts::list))

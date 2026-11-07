@@ -339,7 +339,8 @@ impl AuditLog {
              (SELECT count(*)::text || sum(count)::text || \
               max(greatest(last_seen_at, acknowledged_at, resolved_at))::text \
               FROM alerts WHERE tenant_id = $1), \
-             (SELECT count(*) FROM ready_dismissals WHERE tenant_id = $1))",
+             (SELECT count(*) FROM ready_dismissals WHERE tenant_id = $1), \
+             (SELECT count(*) FROM run_documents WHERE tenant_id = $1))",
         )
         .bind(self.tenant.as_uuid())
         .fetch_one(self.store.pool())

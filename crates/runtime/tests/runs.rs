@@ -724,3 +724,57 @@ async fn confirmed_facts_reach_the_prompt_and_proposals_do_not() {
     assert!(system.contains("<owner_facts>\n- Prefers answers in English\n</owner_facts>"));
     assert!(!system.contains("Unconfirmed guess"));
 }
+
+#[tokio::test]
+async fn a_briefing_document_is_stored_and_left_out_of_the_report() {
+    let report = "# Brief\nOne thing.\n\n```lighthouse-document\n{\"kind\": \"morning_brief\", \
+                  \"title\": \"Brief\", \"sections\": [{\"key\": \"needs_you\", \"title\": \"Needs you\", \
+                  \"items\": [{\"text\": \"Review ENG-1\", \"source\": {\"service\": \"linear\", \
+                  \"reference\": \"ENG-1\"}}]}]}\n```\n";
+    let fixture = fixture(vec![ChatResponse::text(report, usage())], false).await;
+    let detail = run(&fixture, &agent("")).await;
+    assert_eq!(detail.run.report.as_deref(), Some("# Brief\nOne thing."));
+    let delivered = fixture.notifier.delivered.lock().unwrap().clone();
+    assert!(!delivered[0].2.contains("lighthouse-document"));
+    let document = fixture
+        .desk
+        .run_document(detail.run.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(document.kind, "morning_brief");
+    assert_eq!(document.agent_id, "brief");
+    assert_eq!(document.period.len(), 10);
+    let step = detail
+        .steps
+        .iter()
+        .find(|step| step.kind == "document")
+        .unwrap();
+    assert_eq!(
+        (step.name.as_str(), step.status.as_str()),
+        ("morning_brief", "ok")
+    );
+}
+
+#[tokio::test]
+async fn a_broken_document_is_logged_and_the_report_still_goes_out() {
+    let report = "# Brief\n\n```lighthouse-document\n{\"kind\": \"morning_brief\"}\n```";
+    let fixture = fixture(vec![ChatResponse::text(report, usage())], false).await;
+    let detail = run(&fixture, &agent("")).await;
+    assert_eq!(detail.run.status, "succeeded");
+    assert_eq!(detail.run.report.as_deref(), Some("# Brief"));
+    let step = detail
+        .steps
+        .iter()
+        .find(|step| step.kind == "document")
+        .unwrap();
+    assert_eq!(step.status, "error");
+    assert!(
+        fixture
+            .desk
+            .run_document(detail.run.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

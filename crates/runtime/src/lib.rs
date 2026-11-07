@@ -578,6 +578,43 @@ impl Runtime {
         )))
     }
 
+    /// Stores the structured document at the end of a report and returns the
+    /// report without it. A broken document is logged and the report stays.
+    async fn keep_document(
+        &self,
+        run: RunId,
+        agent: &AgentDefinition,
+        report: &str,
+    ) -> Result<String, lighthouse_audit::AuditError> {
+        let (markdown, document) = lighthouse_desk::extract_document(report);
+        let Some(document) = document else {
+            return Ok(markdown);
+        };
+        let mut record = step("document", "document", "ok");
+        match document {
+            Ok(content) => {
+                let day = Utc::now().with_timezone(&self.zone).date_naive();
+                let period = content.period(day);
+                record.name = content.kind.clone();
+                record.detail = Some(period.clone());
+                if let Err(error) = self
+                    .desk
+                    .save_document(run.as_uuid(), &agent.id, &period, &content)
+                    .await
+                {
+                    record.status = "error".to_owned();
+                    record.detail = Some(error.to_string());
+                }
+            }
+            Err(error) => {
+                record.status = "error".to_owned();
+                record.detail = Some(error);
+            }
+        }
+        self.audit.record_step(run, &record).await?;
+        Ok(markdown)
+    }
+
     async fn deliver(&self, run: RunId, agent: &AgentDefinition, report: &str) -> Result<(), Stop> {
         let mut failures = Vec::new();
         for target in &agent.deliver {
@@ -870,6 +907,7 @@ impl Runtime {
         };
         let (report, stopped) = match result {
             Ok(report) => {
+                let report = self.keep_document(run, agent, &report).await?;
                 let delivered = self.deliver(run, agent, &report).await;
                 (Some(report), delivered.err())
             }

@@ -269,6 +269,13 @@ impl Outcomes {
             json!({"run_id": run, "agent_id": agent, "status": record.status}),
         );
         if record.status == "succeeded" {
+            if let Some(document) = self.desk.run_document(run).await? {
+                self.events.emit(
+                    "document.created",
+                    json!({"id": document.id, "run_id": run, "kind": document.kind,
+                           "period": document.period}),
+                );
+            }
             self.resolve(&format!("run:{agent}")).await?;
             self.resolve(&format!("cost:{agent}")).await?;
             for connector in self.connectors_of(&agent) {
@@ -525,6 +532,28 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn a_stored_document_is_announced() {
+        let fixture = fixture(NotificationsConfig::default()).await;
+        let mut events = fixture.events.subscribe();
+        let run = finished(&fixture.audit, "brief", RunStatus::Succeeded, "").await;
+        let report = "```lighthouse-document\n{\"kind\": \"morning_brief\", \"title\": \"B\", \"sections\": []}\n```";
+        let content = lighthouse_desk::extract_document(report)
+            .1
+            .unwrap()
+            .unwrap();
+        fixture
+            .desk
+            .save_document(run, "brief", "2026-11-06", &content)
+            .await
+            .unwrap();
+        fixture.outcomes.after_run(run).await.unwrap();
+        assert_eq!(events.recv().await.unwrap().name, "run.finished");
+        let event = events.recv().await.unwrap();
+        assert_eq!(event.name, "document.created");
+        assert_eq!(event.data["period"], "2026-11-06");
     }
 
     #[tokio::test]
