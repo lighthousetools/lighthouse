@@ -115,7 +115,10 @@ impl ConnectedService {
 
     /// Refreshes the source of an action run in the background, after it acted.
     pub fn refresh_after(self: &Arc<Self>, agent_id: &str) {
-        let Some(source) = agent_id.strip_prefix(ACTION_PREFIX) else {
+        let Some(source) = agent_id
+            .strip_prefix(ACTION_PREFIX)
+            .filter(|source| self.syncer.source(source).is_some())
+        else {
             return;
         };
         let service = self.clone();

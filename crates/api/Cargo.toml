@@ -25,6 +25,7 @@ lighthouse-notify.workspace = true
 lighthouse-sessions.workspace = true
 lighthouse-sync.workspace = true
 lighthouse-vault.workspace = true
+pulldown-cmark.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true

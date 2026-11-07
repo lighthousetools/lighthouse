@@ -7,7 +7,9 @@
 
 pub mod sources;
 
-pub use sources::{ActionConfig, CollectionConfig, FieldMap, FieldRule, SourceConfig};
+pub use sources::{
+    ActionConfig, CollectionConfig, FieldMap, FieldRule, PublishingConfig, SourceConfig,
+};
 
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
@@ -61,6 +63,9 @@ pub struct Config {
     /// Sources of mail, calendar, issues and pull requests, by name.
     #[serde(default)]
     pub sources: BTreeMap<String, SourceConfig>,
+    /// The tool that publishes posts, if any.
+    #[serde(default)]
+    pub publishing: Option<PublishingConfig>,
 }
 
 /// HTTP server settings.
@@ -430,6 +435,14 @@ impl Config {
                     source.connector
                 )));
             }
+        }
+        if let Some(publishing) = &self.publishing
+            && !self.connectors.contains_key(&publishing.connector)
+        {
+            return Err(ConfigError::Inconsistent(format!(
+                "publishing names unknown connector `{}`",
+                publishing.connector
+            )));
         }
         if !["info", "warning", "critical"].contains(&self.notifications.alerts.as_str()) {
             return Err(ConfigError::Inconsistent(format!(

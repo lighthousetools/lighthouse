@@ -11,9 +11,11 @@ mod automations;
 mod brain;
 mod catalog;
 mod connected;
+mod decks;
 mod documents;
 mod memory;
 mod organizations;
+mod posts;
 mod ready;
 mod rules;
 mod sessions;
@@ -36,6 +38,8 @@ pub use connected::{
     ActionError, ActionRequest, ActionResult, BusyBlock, Connected, ItemDetail, RefreshResult,
     SourceInfo,
 };
+pub use decks::{NewDeck, render_html as render_deck};
+pub use posts::{CheckRequest, ImportRequest, ImportResult, Publisher};
 pub use ready::{ReadyFeed, ReadyItem};
 pub use sessions::{
     NewSessionMessage, NodeChange, PermissionDecision, SessionDetail, SessionEvents,
@@ -156,6 +160,8 @@ pub struct ApiState {
     pub sync: lighthouse_sync::SyncStore,
     /// Refreshes sources and carries out actions.
     pub connected: Arc<dyn Connected>,
+    /// Publishes posts after approval.
+    pub publisher: Arc<dyn Publisher>,
 }
 
 /// Answer of the health check.
@@ -486,6 +492,10 @@ impl utoipa::Modify for SecurityAddon {
         connected::deals, connected::accounts, connected::transactions, connected::invoices,
         connected::contracts, connected::rooms, connected::holdings, connected::quotes,
         connected::numbers,
+        posts::list, posts::create, posts::get, posts::update, posts::delete, posts::check,
+        posts::publish, posts::import, posts::calendar, posts::slots, posts::set_slots,
+        posts::pillars, posts::save_pillar, posts::delete_pillar, posts::branding,
+        posts::save_branding, decks::list, decks::create, decks::export,
     ),
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -512,6 +522,11 @@ impl utoipa::Modify for SecurityAddon {
         lighthouse_sync::Organization, lighthouse_sync::OrganizationInput,
         lighthouse_sync::Numbers, lighthouse_sync::CurrencyNumbers, lighthouse_sync::StageTotal,
         lighthouse_sync::PeriodAmount,
+        lighthouse_desk::Post, lighthouse_desk::NewPost, lighthouse_desk::PostPatch,
+        lighthouse_desk::PostCheck, lighthouse_desk::CheckIssue, lighthouse_desk::PostSlot,
+        lighthouse_desk::CalendarSlot, lighthouse_desk::Pillar, lighthouse_desk::PillarInput,
+        lighthouse_desk::ImportedPost, lighthouse_desk::BrandProfile, CheckRequest, ImportRequest,
+        ImportResult, NewDeck,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -633,6 +648,24 @@ pub fn router(state: ApiState) -> Router {
             "/organizations/{id}",
             put(organizations::save).delete(organizations::delete),
         )
+        .route("/posts", get(posts::list).post(posts::create))
+        .route("/posts/check", post(posts::check))
+        .route("/posts/import", post(posts::import))
+        .route("/posts/calendar", get(posts::calendar))
+        .route("/posts/slots", get(posts::slots).put(posts::set_slots))
+        .route("/posts/pillars", get(posts::pillars))
+        .route(
+            "/posts/pillars/{id}",
+            put(posts::save_pillar).delete(posts::delete_pillar),
+        )
+        .route(
+            "/posts/{id}",
+            get(posts::get).patch(posts::update).delete(posts::delete),
+        )
+        .route("/posts/{id}/publish", post(posts::publish))
+        .route("/branding", get(posts::branding).put(posts::save_branding))
+        .route("/decks", get(decks::list).post(decks::create))
+        .route("/decks/{id}/export", get(decks::export))
         .route("/deals", get(connected::deals))
         .route("/bank/accounts", get(connected::accounts))
         .route("/bank/transactions", get(connected::transactions))
@@ -881,6 +914,21 @@ mod tests {
         }
     }
 
+    struct FakePublisher;
+
+    #[async_trait]
+    impl Publisher for FakePublisher {
+        async fn publish(&self, post: &lighthouse_desk::Post) -> Result<ActionResult, ActionError> {
+            Ok(ActionResult {
+                status: "proposed".to_owned(),
+                run_id: post.id,
+                approval_id: Some(Uuid::nil()),
+                tool: "social.create_post".to_owned(),
+                output: None,
+            })
+        }
+    }
+
     struct FakeConnected;
 
     #[async_trait]
@@ -1009,6 +1057,7 @@ mod tests {
             automations: Arc::new(FakeAutomations),
             sync: sync.clone(),
             connected: Arc::new(FakeConnected),
+            publisher: Arc::new(FakePublisher),
         };
         Harness {
             app: router(state),
@@ -1098,6 +1147,16 @@ mod tests {
             "/sessions/{node}/{id}",
             "/sessions/{node}/{id}/messages",
             "/node/events",
+            "/organizations/{id}",
+            "/numbers",
+            "/deals",
+            "/invoices",
+            "/holdings",
+            "/posts/{id}/publish",
+            "/posts/import",
+            "/posts/calendar",
+            "/decks/{id}/export",
+            "/branding",
         ] {
             assert!(spec["paths"].get(path).is_some(), "{path}");
         }

@@ -107,3 +107,17 @@ pub struct ActionConfig {
     #[serde(default)]
     pub kind: Option<String>,
 }
+
+/// The tool that publishes posts. It must be a `write` tool, so every post
+/// waits for the owner's approval.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishingConfig {
+    /// Connector of the channel.
+    pub connector: String,
+    /// Tool name without the connector.
+    pub tool: String,
+    /// Arguments, with `{{post.<field>}}` placeholders such as `{{post.body}}`.
+    #[serde(default)]
+    pub input: Option<Value>,
+}

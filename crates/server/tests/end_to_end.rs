@@ -125,6 +125,10 @@ kind = "issue"
 input = {{ issue = "{{{{item.external_id}}}}", body = "{{{{input.body}}}}" }}
 [sources.demo.actions.lookup]
 tool = "list_issues"
+[publishing]
+connector = "demo"
+tool = "echo"
+input = {{ text = "{{{{post.body}}}}" }}
 [brain]
 path = "{brain}"
 "#,
@@ -601,4 +605,88 @@ async fn a_source_that_would_write_does_not_start() {
         .err()
         .unwrap();
     assert!(error.to_string().contains("read_tools"), "{error}");
+}
+
+#[tokio::test]
+async fn a_post_is_published_only_after_approval() {
+    let (base, _dir, _database) = start().await;
+    let client = reqwest::Client::new();
+    let body = format!(
+        "Most invoices are late for one reason.\n\n{} #finance",
+        "Here is why. ".repeat(30)
+    );
+    let post: Value = client
+        .post(format!("{base}/posts"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"body": body}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = post["id"].as_str().unwrap().to_owned();
+    let response = client
+        .post(format!("{base}/posts/{id}/publish"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 202);
+    let waiting = get(&base, &format!("/posts/{id}")).await;
+    assert_eq!(waiting["status"], "publishing");
+    let ready = get(&base, "/ready").await;
+    let approval = &ready["items"][0]["detail"];
+    assert_eq!(approval["agent_id"], format!("action:post:{id}"), "{ready}");
+    assert_eq!(approval["tool"], "demo.echo");
+    let response = client
+        .post(format!(
+            "{base}/approvals/{}/decision",
+            approval["id"].as_str().unwrap()
+        ))
+        .bearer_auth(TOKEN)
+        .json(&json!({"approve": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let published = wait_for(&base, &format!("/posts/{id}"), |post| {
+        post["status"] == "published"
+    })
+    .await;
+    assert!(published["published_at"].is_string());
+
+    let second: Value = client
+        .post(format!("{base}/posts"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"body": body}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let second = second["id"].as_str().unwrap().to_owned();
+    client
+        .post(format!("{base}/posts/{second}/publish"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    let ready = get(&base, "/ready").await;
+    let approval = ready["items"][0]["detail"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    client
+        .post(format!("{base}/approvals/{approval}/decision"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"approve": false}))
+        .send()
+        .await
+        .unwrap();
+    wait_for(&base, &format!("/posts/{second}"), |post| {
+        post["status"] == "draft"
+    })
+    .await;
 }

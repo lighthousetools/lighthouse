@@ -16,6 +16,9 @@ watches your Claude Code sessions. Every run is logged with all tool calls, toke
   [docs/automations.md](docs/automations.md).
 - **Connected work:** a searchable cache of mail, calendar, issues and pull requests through your MCP connectors, with
   a unified inbox and approval-gated replies, comments and reviews. See [docs/connected.md](docs/connected.md).
+- **Business and publishing:** deals, bank, invoices, contracts, deal rooms and holdings per company with key numbers,
+  and posts, decks and a brand profile. Nothing is paid, signed, sent or published without your approval. See
+  [docs/connected.md](docs/connected.md) and [docs/publishing.md](docs/publishing.md).
 - **Briefings as data:** the Morning Brief and the weekly recap as structured documents for the apps. See
   [docs/documents.md](docs/documents.md).
 - **Second Brain:** Markdown files with hybrid search, covering text, PDF, images and audio. See [docs/brain.md](docs/brain.md).

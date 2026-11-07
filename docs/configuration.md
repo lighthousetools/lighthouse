@@ -32,6 +32,11 @@ selects the default provider and fallback of a task. Prices are in EUR per milli
 finished runs and new alerts from a severity on. Without `deliver` targets, only the apps hear about it through live
 events. See [api.md](api.md#pushes).
 
+## Publishing
+
+`[publishing]` names the connector tool that publishes posts. It must be a `write` tool, so every post waits for your
+approval. See [publishing.md](publishing.md#publishing).
+
 ## Connectors
 
 | Key | Meaning |

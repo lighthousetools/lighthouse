@@ -37,6 +37,7 @@ use uuid::Uuid;
 pub mod automations;
 pub mod connected;
 pub mod outcomes;
+pub mod publishing;
 
 use automations::{AutomationEngine, ServerAutomations};
 use connected::ConnectedService;
@@ -69,6 +70,7 @@ fn owner_context(owner: &OwnerConfig) -> String {
 
 /// Starts runs of the loaded agents in the background.
 pub struct AgentPool {
+    desk: Desk,
     runtime: Arc<Runtime>,
     agents: Arc<AgentRegistry>,
     outcomes: Arc<Outcomes>,
@@ -117,9 +119,21 @@ impl AgentPool {
             let runtime = self.runtime.clone();
             let outcomes = self.outcomes.clone();
             let connected = self.connected.clone();
+            let desk = self.desk.clone();
             tokio::spawn(async move {
                 if let Err(error) = runtime.resume_action(id, checkpoint.state).await {
                     tracing::error!(%error, "resumed action failed");
+                }
+                if publishing::is_publishing(&checkpoint.agent_id)
+                    && let Err(error) = publishing::finish_publishing(
+                        &runtime.audit,
+                        &desk,
+                        &checkpoint.agent_id,
+                        id.as_uuid(),
+                    )
+                    .await
+                {
+                    tracing::error!(%error, "cannot record the publishing outcome");
                 }
                 if let Err(error) = outcomes.after_run(id.as_uuid()).await {
                     tracing::error!(%error, "cannot handle the end of an action");
@@ -709,7 +723,13 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         outcomes.clone(),
         events.clone(),
     ));
+    let publisher = Arc::new(publishing::ServerPublisher::new(
+        runtime.clone(),
+        outcomes.clone(),
+        config.publishing.clone(),
+    ));
     let pool = Arc::new(AgentPool {
+        desk: desk.clone(),
         runtime,
         agents: agents.clone(),
         outcomes,
@@ -759,6 +779,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         automations,
         sync: sync_store,
         connected,
+        publisher,
     });
     let router = match &config.paths.web {
         Some(directory) => lighthouse_api::with_web_app(router, directory),

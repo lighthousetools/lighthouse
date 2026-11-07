@@ -1927,6 +1927,7 @@ dependencies = [
  "lighthouse-store",
  "lighthouse-sync",
  "lighthouse-vault",
+ "pulldown-cmark",
  "secrecy",
  "serde",
  "serde_json",
