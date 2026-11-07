@@ -271,6 +271,8 @@ pub struct SessionDetail {
     pub timeline: Vec<SessionEvent>,
     /// Messages the owner sent to it.
     pub messages: Vec<SessionMessage>,
+    /// Costs and tokens, if Claude Code exports its OpenTelemetry metrics.
+    pub usage: Option<lighthouse_sessions::SessionUsage>,
 }
 
 /// Stores what the sessions of this desktop agent did.
@@ -305,6 +307,39 @@ pub(crate) async fn record_events(
         );
     }
     Ok(StatusCode::ACCEPTED)
+}
+
+/// Takes the OpenTelemetry metrics Claude Code exports, as OTLP over HTTP with
+/// JSON, and keeps cost and tokens per session. Set
+/// `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` to this address and send the node
+/// token as `Authorization` header.
+#[utoipa::path(
+    post,
+    operation_id = "export_metrics",
+    path = "/node/otel/v1/metrics",
+    request_body(content = Value, description = "OTLP metrics export in JSON"),
+    responses((status = 200, description = "Stored")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn export_metrics(
+    State(state): State<ApiState>,
+    Extension(caller): Extension<Caller>,
+    Json(export): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let node = node_of(caller)?;
+    let reports = lighthouse_sessions::parse_otlp(&export);
+    state
+        .sessions
+        .record_usage(node, &reports)
+        .await
+        .map_err(internal)?;
+    for report in &reports {
+        state.events.emit(
+            "sessions.changed",
+            json!({"node_id": node, "session_id": report.session_id}),
+        );
+    }
+    Ok(Json(json!({})))
 }
 
 /// Hands over the messages the owner sent to a session of this desktop agent.
@@ -390,6 +425,7 @@ pub(crate) async fn session(
             .await
             .map_err(internal)?,
         messages: sessions.messages(node, &id).await.map_err(internal)?,
+        usage: sessions.usage(node, &id).await.map_err(internal)?,
     }))
 }
 

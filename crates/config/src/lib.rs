@@ -8,7 +8,7 @@
 pub mod sources;
 
 pub use sources::{
-    ActionConfig, CollectionConfig, FieldMap, FieldRule, PublishingConfig, SourceConfig,
+    ActionConfig, CollectionConfig, FieldMap, FieldRule, PublishingConfig, SourceConfig, TalkConfig,
 };
 
 use figment::Figment;
@@ -66,6 +66,9 @@ pub struct Config {
     /// The tool that publishes posts, if any.
     #[serde(default)]
     pub publishing: Option<PublishingConfig>,
+    /// Conversations in the apps.
+    #[serde(default)]
+    pub talk: TalkConfig,
 }
 
 /// HTTP server settings.

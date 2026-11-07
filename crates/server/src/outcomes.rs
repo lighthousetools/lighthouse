@@ -271,6 +271,18 @@ impl Outcomes {
             json!({"run_id": run, "agent_id": agent, "status": record.status}),
         );
         let result = record.report.as_deref().or(record.reason.as_deref());
+        if let Some(message) = self
+            .desk
+            .finish_answer(
+                run,
+                record.status == "succeeded",
+                result.unwrap_or_default(),
+            )
+            .await?
+        {
+            self.events
+                .emit("talk.changed", json!({"thread_id": message.thread_id}));
+        }
         if let Some(task) = self
             .desk
             .finish_delegation(run, &record.status, result)

@@ -809,6 +809,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         sync: sync_store,
         connected,
         publisher,
+        talk_agent: config.talk.agent.clone(),
     });
     let router = match &config.paths.web {
         Some(directory) => lighthouse_api::with_web_app(router, directory),

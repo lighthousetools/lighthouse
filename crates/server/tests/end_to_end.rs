@@ -125,6 +125,8 @@ kind = "issue"
 input = {{ issue = "{{{{item.external_id}}}}", body = "{{{{input.body}}}}" }}
 [sources.demo.actions.lookup]
 tool = "list_issues"
+[talk]
+agent = "reader"
 [publishing]
 connector = "demo"
 tool = "echo"
@@ -767,4 +769,35 @@ async fn a_delegated_task_gets_the_report_of_its_run() {
     .await;
     assert_eq!(task["result"], "mock answer");
     assert_eq!(task["result_status"], "succeeded");
+}
+
+#[tokio::test]
+async fn a_talk_agent_answers_a_conversation_through_a_run() {
+    let (base, _dir, _database) = start().await;
+    let client = reqwest::Client::new();
+    let thread: Value = client
+        .post(format!("{base}/talk/threads"))
+        .bearer_auth(TOKEN)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = thread["id"].as_str().unwrap().to_owned();
+    let response = client
+        .post(format!("{base}/talk/threads/{id}/messages"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"text": "What is open?"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 202);
+    let detail = wait_for(&base, &format!("/talk/threads/{id}"), |detail| {
+        detail["messages"][1]["status"] == "done"
+    })
+    .await;
+    assert_eq!(detail["messages"][1]["text"], "mock answer");
+    assert_eq!(detail["thread"]["title"], "What is open?");
 }

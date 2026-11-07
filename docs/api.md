@@ -24,6 +24,7 @@ never report texts, tool arguments or other private content.
 | `sessions.changed` | `{"node_id", "session_id"}` | A Claude Code session reported work or got a message, see [desktop-agent.md](desktop-agent.md) |
 | `posts.changed`, `decks.changed`, `branding.changed` | `{"id"}` or `{}` | Posts, decks or the brand profile changed, see [publishing.md](publishing.md) |
 | `organizations.changed` | `{"id"}` | An organization changed |
+| `talk.changed` | `{"thread_id"}` | A conversation got a message or an answer |
 | `document.created` | `{"id", "run_id", "kind", "period"}` | A run stored a briefing document, see [documents.md](documents.md) |
 
 A client that falls behind gets a `changed` event instead of the events it missed.
@@ -164,3 +165,20 @@ alerts = "critical"   # lowest severity of new or escalated alerts to push
 
 A push names the agent and the tools it proposes, never their arguments. Failed pushes are logged and do not affect
 the run.
+
+## Talk
+
+Talk is a conversation with the assistant, kept as threads of messages.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /talk/threads` | Threads, pinned ones first |
+| `POST /talk/threads` | Start one, with an optional `title` |
+| `GET`, `PATCH`, `DELETE /talk/threads/{id}` | Read with all messages, rename or pin (`{"pinned": true}`), delete |
+| `POST /talk/threads/{id}/messages` | `{"text": "..."}` sends a message and returns the `question` and the `answer` |
+
+With `[talk] agent = "<agent id>"` in the configuration, a run of that agent answers, with the last twelve messages as
+context. The answer is `pending` (`202`) until the run ends, then `done` or `failed`, and its `run_id` leads to the run
+with its tool calls and approvals, so the apps can show them inline. Anything the agent wants to send waits for your
+approval as usual. Without a talk agent, the Second Brain answers at once (`200`) and the answer lists its `sources`.
+The first message names a thread that has no title of its own.

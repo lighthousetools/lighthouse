@@ -62,6 +62,22 @@ only at its next stop. To reach such sessions, set `stop_hold_seconds` (at most 
 Every stopped session then waits that long for a message before it hands control back to the terminal. While it waits,
 the terminal shows the session as busy. A paused machine hands over no messages.
 
+## Costs and tokens
+
+Claude Code exports metrics through OpenTelemetry. Point it at your server to see cost and tokens per session:
+
+```sh
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_METRICS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://lighthouse.example/node/otel/v1/metrics
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $LIGHTHOUSE_NODE_TOKEN"
+```
+
+The server reads `claude_code.cost.usage` (USD) and `claude_code.token.usage` by type: input, output, cache read and
+cache creation. `GET /sessions/{node}/{id}` shows them as `usage`. Increments add up and running totals replace, so
+both temporalities work.
+
 ## What the official interfaces cannot do
 
 | Wish | Why not, or not yet |
@@ -72,7 +88,7 @@ the terminal shows the session as busy. A paused machine hands over no messages.
 | Type into an idle session at any time | Hooks only run during a turn. `stop_hold_seconds` is the closest official way |
 | Start a new turn from outside | Possible with headless mode (`claude -p --resume <id>`), but it would run a second process on the same session next to your terminal. Not done |
 | Remote Control | A separate official product with no interface for other programs |
-| Costs per session | Claude Code can export metrics through OpenTelemetry. Lighthouse does not collect them yet, so `cost_eur` stays 0 |
+| Context window fill | Claude Code exports tokens, not how full the context window is. `usage` shows the tokens |
 
 ## Kill switch
 

@@ -19,6 +19,7 @@ mod posts;
 mod ready;
 mod rules;
 mod sessions;
+mod talk;
 mod tasks;
 
 pub use approvals::{BatchDecision, BatchResult, Decision};
@@ -45,6 +46,7 @@ pub use ready::{ReadyFeed, ReadyItem, Snooze};
 pub use sessions::{
     NewSessionMessage, NodeChange, PermissionDecision, SessionDetail, SessionEvents,
 };
+pub use talk::{Exchange, NewMessage, NewThread, ThreadDetail, ThreadPatch};
 pub use tasks::{Delegation, TaskOrder, TaskOrderResult};
 
 use async_trait::async_trait;
@@ -174,6 +176,8 @@ pub struct ApiState {
     pub connected: Arc<dyn Connected>,
     /// Publishes posts after approval.
     pub publisher: Arc<dyn Publisher>,
+    /// Agent that answers in conversations. Without one, the Brain answers.
+    pub talk_agent: Option<String>,
 }
 
 /// Answer of the health check.
@@ -485,6 +489,7 @@ impl utoipa::Modify for SecurityAddon {
         sessions::report, sessions::request, sessions::await_decision, sessions::nodes,
         sessions::update_node, sessions::sessions, sessions::permissions, sessions::decide,
         sessions::record_events, sessions::take_messages, sessions::session, sessions::send_message,
+        sessions::export_metrics,
         tasks::list, tasks::create, tasks::get, tasks::update, tasks::delete, tasks::complete,
         tasks::reopen, tasks::accept, tasks::reorder, tasks::delegate,
         rules::list, rules::create, rules::get, rules::update, rules::delete,
@@ -510,6 +515,7 @@ impl utoipa::Modify for SecurityAddon {
         posts::publish, posts::import, posts::calendar, posts::slots, posts::set_slots,
         posts::pillars, posts::save_pillar, posts::delete_pillar, posts::branding,
         posts::save_branding, decks::list, decks::create, decks::export,
+        talk::list, talk::create, talk::get, talk::update, talk::delete, talk::send,
     ),
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -522,6 +528,7 @@ impl utoipa::Modify for SecurityAddon {
         Session, SessionReport, SessionEvents, NewSessionMessage, SessionDetail,
         lighthouse_sessions::NewSessionEvent, lighthouse_sessions::SessionEvent,
         lighthouse_sessions::SessionMessage, lighthouse_sessions::ChangedFile,
+        lighthouse_sessions::SessionUsage,
         Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Delegation, Origin, SourceLink,
         Rule, NewRule, RulePatch, Fact, FactSource, NewFact, FactPatch,
         Alert, AlertCounts, AlertView, lighthouse_desk::Severity,
@@ -543,7 +550,8 @@ impl utoipa::Modify for SecurityAddon {
         lighthouse_desk::PostCheck, lighthouse_desk::CheckIssue, lighthouse_desk::PostSlot,
         lighthouse_desk::CalendarSlot, lighthouse_desk::Pillar, lighthouse_desk::PillarInput,
         lighthouse_desk::ImportedPost, lighthouse_desk::BrandProfile, CheckRequest, ImportRequest,
-        ImportResult, NewDeck,
+        ImportResult, NewDeck, lighthouse_desk::TalkThread, lighthouse_desk::TalkMessage,
+        NewThread, ThreadPatch, ThreadDetail, NewMessage, Exchange,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -591,6 +599,7 @@ pub fn router(state: ApiState) -> Router {
             post(sessions::send_message),
         )
         .route("/node/events", post(sessions::record_events))
+        .route("/node/otel/v1/metrics", post(sessions::export_metrics))
         .route("/node/sessions/{id}/messages", get(sessions::take_messages))
         .route("/permissions", get(sessions::permissions))
         .route("/permissions/{id}/decision", post(sessions::decide))
@@ -684,6 +693,12 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/posts/{id}/publish", post(posts::publish))
         .route("/branding", get(posts::branding).put(posts::save_branding))
+        .route("/talk/threads", get(talk::list).post(talk::create))
+        .route(
+            "/talk/threads/{id}",
+            get(talk::get).patch(talk::update).delete(talk::delete),
+        )
+        .route("/talk/threads/{id}/messages", post(talk::send))
         .route("/decks", get(decks::list).post(decks::create))
         .route("/decks/{id}/export", get(decks::export))
         .route("/deals", get(connected::deals))
@@ -1080,6 +1095,14 @@ mod tests {
     }
 
     pub(crate) async fn harness(token: Option<&str>) -> Harness {
+        build_harness(token, None).await
+    }
+
+    pub(crate) async fn harness_with_talk_agent(token: Option<&str>, agent: &str) -> Harness {
+        build_harness(token, Some(agent.to_owned())).await
+    }
+
+    async fn build_harness(token: Option<&str>, talk_agent: Option<String>) -> Harness {
         let resumed = Arc::new(Mutex::new(Vec::new()));
         let store = fresh_store().await;
         let key = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
@@ -1116,6 +1139,7 @@ mod tests {
             sync: sync.clone(),
             connected: Arc::new(FakeConnected),
             publisher: Arc::new(FakePublisher),
+            talk_agent,
         };
         Harness {
             app: router(state),

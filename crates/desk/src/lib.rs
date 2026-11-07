@@ -13,6 +13,7 @@ pub mod post_check;
 pub mod posts;
 pub mod ready;
 pub mod rules;
+pub mod talk;
 pub mod tasks;
 
 pub use alerts::{Alert, AlertCounts, AlertView, NewAlert, Raised, Severity};
@@ -28,6 +29,7 @@ pub use posts::{
     PostSlot, parse_csv,
 };
 pub use rules::{NewRule, Rule, RulePatch};
+pub use talk::{TalkMessage, TalkThread, transcript};
 pub use tasks::{NewTask, Proposer, Task, TaskPatch, TaskStatus, TaskView};
 
 use lighthouse_core::TenantId;

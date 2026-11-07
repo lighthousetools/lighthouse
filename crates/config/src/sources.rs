@@ -121,3 +121,12 @@ pub struct PublishingConfig {
     #[serde(default)]
     pub input: Option<Value>,
 }
+
+/// The conversations of the apps.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TalkConfig {
+    /// Agent that answers. Without one, the Second Brain answers.
+    #[serde(default)]
+    pub agent: Option<String>,
+}
