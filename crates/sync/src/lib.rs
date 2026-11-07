@@ -1,0 +1,21 @@
+//! Caches mail, calendar, issues and pull requests from connectors, with search.
+//!
+//! Each source calls a few connector tools. An adapter in the configuration, or
+//! a bundled preset, maps their results to items. The services stay the truth:
+//! the cache only makes reading fast and searchable, and every write goes
+//! through the owner's approval elsewhere.
+
+pub mod engine;
+pub mod mapping;
+pub mod sources;
+pub mod store;
+
+pub use engine::{
+    CheckChange, PreparedAction, SyncError, SyncEvent, SyncReport, Syncer, prune_empty,
+};
+pub use mapping::{MappedItem, MappingError, Owner};
+pub use sources::{DOMAINS, PRESETS, Source, SourceError, preset, resolve};
+pub use store::{ItemFilter, ItemPage, Order, SyncStatus, SyncStore, SyncedItem};
+
+#[cfg(test)]
+mod tests;

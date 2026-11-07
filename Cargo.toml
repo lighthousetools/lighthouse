@@ -25,6 +25,7 @@ lighthouse-scheduler = { path = "crates/scheduler" }
 lighthouse-sessions = { path = "crates/sessions" }
 lighthouse-skills = { path = "crates/skills" }
 lighthouse-store = { path = "crates/store" }
+lighthouse-sync = { path = "crates/sync" }
 lighthouse-vault = { path = "crates/vault" }
 
 aes-gcm = "0.11"

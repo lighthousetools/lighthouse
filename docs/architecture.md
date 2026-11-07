@@ -36,6 +36,7 @@ flowchart LR
 | `lighthouse-brain` | Second Brain: Markdown files, hybrid search, ingestion and `brain.*` tools, see [brain.md](brain.md) |
 | `lighthouse-router` | Provider adapters, routing, fallback, costs |
 | `lighthouse-mcp` | MCP client, OAuth flow, tool classification |
+| `lighthouse-sync` | Cache of mail, calendar, issues and pull requests from connectors, see [connected.md](connected.md) |
 | `lighthouse-skills` | `SKILL.md` loading |
 | `lighthouse-notify` | Email and Slack delivery, live events for the apps |
 | `lighthouse-runtime` | The agent loop and the steps of automations |

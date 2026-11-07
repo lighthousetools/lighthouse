@@ -2028,6 +2028,7 @@ dependencies = [
  "figment",
  "secrecy",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
 ]
@@ -2256,6 +2257,28 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.21",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "lighthouse-sync"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "lighthouse-config",
+ "lighthouse-core",
+ "lighthouse-mcp",
+ "lighthouse-router",
+ "lighthouse-store",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "utoipa",
  "uuid",
 ]
 

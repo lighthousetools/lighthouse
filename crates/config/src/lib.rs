@@ -5,6 +5,10 @@
 //! Secrets such as API keys live in the vault, not here. The only exception is
 //! the admin token, which should be set through the environment.
 
+pub mod sources;
+
+pub use sources::{ActionConfig, CollectionConfig, FieldMap, FieldRule, SourceConfig};
+
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
 use secrecy::SecretString;
@@ -54,6 +58,9 @@ pub struct Config {
     /// Pushes to the owner about decisions, finished runs and alerts.
     #[serde(default)]
     pub notifications: NotificationsConfig,
+    /// Sources of mail, calendar, issues and pull requests, by name.
+    #[serde(default)]
+    pub sources: BTreeMap<String, SourceConfig>,
 }
 
 /// HTTP server settings.
@@ -416,6 +423,14 @@ impl Config {
                 }
             }
         }
+        for (name, source) in &self.sources {
+            if !self.connectors.contains_key(&source.connector) {
+                return Err(ConfigError::Inconsistent(format!(
+                    "source `{name}` names unknown connector `{}`",
+                    source.connector
+                )));
+            }
+        }
         if !["info", "warning", "critical"].contains(&self.notifications.alerts.as_str()) {
             return Err(ConfigError::Inconsistent(format!(
                 "notifications.alerts is `{}`, not info, warning or critical",
@@ -452,6 +467,35 @@ mod tests {
             assert!(config.connectors.contains_key("linear"));
             assert_eq!(config.notifications.deliver, ["owner"]);
             assert!(config.notifications.decisions);
+        });
+    }
+
+    #[test]
+    fn sources_map_fields_and_need_a_known_connector() {
+        let with_source = format!(
+            "{EXAMPLE}\n[sources.mail]\nconnector = \"linear\"\ndomain = \"mail\"\n\
+             [sources.mail.collections.inbox]\ntool = \"list_threads\"\nitems = \"threads\"\n\
+             kind = \"thread\"\ninput = {{ query = \"after:{{{{since_date}}}}\" }}\n\
+             [sources.mail.collections.inbox.fields]\nexternal_id = \"id\"\n\
+             important = {{ path = \"labels\", contains = \"IMPORTANT\" }}\n"
+        );
+        with_config(&with_source, |config| {
+            let config = config.unwrap();
+            assert_eq!(config.sources["github"].preset.as_deref(), Some("github"));
+            let inbox = &config.sources["mail"].collections["inbox"];
+            assert_eq!(inbox.fields["external_id"], FieldMap::Path("id".to_owned()));
+            let FieldMap::Rule(rule) = &inbox.fields["important"] else {
+                panic!("not a rule")
+            };
+            assert_eq!(rule.contains.as_deref(), Some("IMPORTANT"));
+            assert_eq!(
+                inbox.input.as_ref().unwrap()["query"],
+                "after:{{since_date}}"
+            );
+        });
+        let unknown = format!("{EXAMPLE}\n[sources.mail]\nconnector = \"nowhere\"\n");
+        with_config(&unknown, |config| {
+            assert!(matches!(config, Err(ConfigError::Inconsistent(_))));
         });
     }
 

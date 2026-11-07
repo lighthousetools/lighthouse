@@ -1,0 +1,75 @@
+# Preset for the Linear MCP server. Tool names and result shapes change between
+# versions of the server, so check them with `lht connectors tools <connector>`
+# and override what differs in lighthouse.toml.
+connector = ""
+domain = "issues"
+
+[collections.assigned]
+tool = "list_issues"
+input = { assignee = "me", limit = 50 }
+items = ""
+kind = "issue"
+flags = ["assigned"]
+
+[collections.assigned.fields]
+external_id = "id"
+key = "identifier"
+title = "title"
+summary = "description"
+state = "status"
+assignee = "assignee"
+project = "project"
+priority = "priority"
+url = "url"
+occurred_at = "updatedAt"
+
+[collections.projects]
+tool = "list_projects"
+items = ""
+kind = "project"
+
+[collections.projects.fields]
+external_id = "id"
+title = "name"
+state = "status"
+url = "url"
+occurred_at = "updatedAt"
+
+[collections.cycles]
+tool = "list_cycles"
+items = ""
+kind = "cycle"
+
+[collections.cycles.fields]
+external_id = "id"
+title = "name"
+starts_at = "startsAt"
+ends_at = "endsAt"
+
+[collections.comments]
+tool = "list_comments"
+parent = "issue"
+parents_limit = 10
+input = { issueId = "{{parent.external_id}}" }
+items = ""
+kind = "comment"
+
+[collections.comments.fields]
+external_id = "id"
+summary = "body"
+author = "user"
+occurred_at = "createdAt"
+
+[actions.create]
+tool = "create_issue"
+input = { title = "{{input.title}}", description = "{{input.description}}", team = "{{input.team}}" }
+
+[actions.update]
+tool = "update_issue"
+kind = "issue"
+input = { id = "{{item.external_id}}", state = "{{input.state}}", assignee = "{{input.assignee}}" }
+
+[actions.comment]
+tool = "create_comment"
+kind = "issue"
+input = { issueId = "{{item.external_id}}", body = "{{input.body}}" }

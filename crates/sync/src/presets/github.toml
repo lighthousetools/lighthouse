@@ -1,0 +1,83 @@
+# Preset for the GitHub MCP server. Tool names and result shapes change between
+# versions of the server, so check them with `lht connectors tools <connector>`
+# and override what differs in lighthouse.toml.
+connector = ""
+domain = "code"
+
+[collections.review_requests]
+tool = "search_pull_requests"
+input = { query = "is:open is:pr review-requested:{{account}}" }
+items = "items"
+kind = "pull_request"
+flags = ["review_requested"]
+
+[collections.review_requests.fields]
+external_id = { path = "html_url", after = "github.com/" }
+number = "number"
+title = "title"
+summary = "body"
+author = "user.login"
+state = "state"
+url = "html_url"
+occurred_at = "updated_at"
+owner = { path = "repository_url", after = "/repos/", before = "/" }
+repo = { path = "repository_url", after_last = "/" }
+
+[collections.mine]
+tool = "search_pull_requests"
+input = { query = "is:open is:pr author:{{account}}" }
+items = "items"
+kind = "pull_request"
+flags = ["mine"]
+
+[collections.mine.fields]
+external_id = { path = "html_url", after = "github.com/" }
+number = "number"
+title = "title"
+summary = "body"
+author = "user.login"
+state = "state"
+url = "html_url"
+occurred_at = "updated_at"
+owner = { path = "repository_url", after = "/repos/", before = "/" }
+repo = { path = "repository_url", after_last = "/" }
+
+[collections.checks]
+tool = "get_pull_request_status"
+parent = "pull_request"
+input = { owner = "{{parent.data.owner}}", repo = "{{parent.data.repo}}", pullNumber = "{{parent.data.number}}" }
+items = "statuses"
+kind = "check"
+
+[collections.checks.fields]
+external_id = "context"
+title = "context"
+state = "state"
+summary = "description"
+url = "target_url"
+occurred_at = "updated_at"
+
+[collections.files]
+tool = "get_pull_request_files"
+parent = "pull_request"
+input = { owner = "{{parent.data.owner}}", repo = "{{parent.data.repo}}", pullNumber = "{{parent.data.number}}" }
+items = ""
+kind = "file"
+
+[collections.files.fields]
+external_id = "filename"
+title = "filename"
+state = "status"
+additions = "additions"
+deletions = "deletions"
+patch = "patch"
+
+[actions.approve]
+tool = "create_pull_request_review"
+kind = "pull_request"
+input = { owner = "{{item.data.owner}}", repo = "{{item.data.repo}}", pullNumber = "{{item.data.number}}", event = "APPROVE", body = "{{input.body}}" }
+
+[actions.comment]
+tool = "add_issue_comment"
+kind = "pull_request"
+input = { owner = "{{item.data.owner}}", repo = "{{item.data.repo}}", issue_number = "{{item.data.number}}", body = "{{input.body}}" }
