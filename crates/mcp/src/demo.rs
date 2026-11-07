@@ -4,7 +4,7 @@
 //! are the two demo companies, and Jane Doe and John Roe are their people.
 //! Dates are relative to now, so the demo always looks current.
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
@@ -65,12 +65,22 @@ fn tool(name: &'static str, description: &'static str) -> Tool {
     Tool::new(name, description, Arc::new(schema))
 }
 
-fn ago(days: i64) -> String {
-    (Utc::now() - Duration::days(days)).to_rfc3339()
+/// The fixed point of all demo times: the start of the current day in UTC, so
+/// the data stays the same on every refresh of a day.
+fn anchor() -> DateTime<Utc> {
+    Utc::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .map_or_else(Utc::now, |start| start.and_utc())
 }
 
+fn ago(days: i64) -> String {
+    (anchor() - Duration::days(days)).to_rfc3339()
+}
+
+/// Hours after the start of today.
 fn ahead(hours: i64) -> String {
-    (Utc::now() + Duration::hours(hours)).to_rfc3339()
+    (anchor() + Duration::hours(hours)).to_rfc3339()
 }
 
 fn company(arguments: &Value) -> &str {
@@ -106,11 +116,11 @@ pub fn sample(name: &str, arguments: &Value) -> Option<Value> {
              "snippet": "Ten things to read this week.", "labels": ["INBOX", "UNREAD"], "date": ago(3)},
         ]}),
         "list_events" => json!([
-            {"id": "e1", "summary": "Weekly planning with Jane Doe", "start": ahead(2), "end": ahead(3),
+            {"id": "e1", "summary": "Weekly planning with Jane Doe", "start": ahead(10), "end": ahead(11),
              "attendees": ["jane.doe@acme.example"], "status": "confirmed"},
-            {"id": "e2", "summary": "Globex offer call", "start": ahead(26), "end": ahead(27),
+            {"id": "e2", "summary": "Globex offer call", "start": ahead(24 + 14), "end": ahead(24 + 15),
              "attendees": ["john.roe@globex.example"], "status": "confirmed"},
-            {"id": "e3", "summary": "Focus: write the proposal", "start": ahead(50), "end": ahead(52),
+            {"id": "e3", "summary": "Focus: write the proposal", "start": ahead(48 + 9), "end": ahead(48 + 11),
              "status": "confirmed"},
         ]),
         "list_tickets" => json!([
@@ -214,7 +224,7 @@ pub fn sample(name: &str, arguments: &Value) -> Option<Value> {
             {"id": "r2", "name": "Globex renewal", "phase": "negotiation", "updated": ago(12)},
         ]),
         "list_room_steps" => json!([
-            {"id": "s1", "title": "Send the updated offer", "status": "open", "due": ahead(48)},
+            {"id": "s1", "title": "Send the updated offer", "status": "open", "due": ahead(48 + 17)},
             {"id": "s2", "title": "Book the kickoff", "status": "open", "due": ahead(24 * 9)},
         ]),
         "list_room_milestones" => json!([
@@ -313,5 +323,15 @@ mod tests {
         assert_eq!(review["items"][0]["number"], 42);
         let failing = sample("get_pull_request_status", &json!({"pullNumber": 41})).unwrap();
         assert_eq!(failing["statuses"][0]["state"], "failure");
+    }
+
+    #[test]
+    fn demo_times_do_not_drift_between_refreshes() {
+        let first = sample("list_events", &json!({})).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let second = sample("list_events", &json!({})).unwrap();
+        assert_eq!(first, second);
+        let steps = sample("list_room_steps", &json!({})).unwrap();
+        assert!(steps[0]["due"].as_str().unwrap().contains("T17:00:00"));
     }
 }
