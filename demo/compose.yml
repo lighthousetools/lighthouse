@@ -39,7 +39,7 @@ services:
         condition: service_healthy
     environment: *demo-environment
     volumes:
-      - ./lighthouse.toml:/etc/lighthouse/lighthouse.toml:ro
+      - ./lighthouse.demo.toml:/etc/lighthouse/lighthouse.toml:ro
       - demo-data:/var/lib/lighthouse/data
     command: ["lht", "demo", "seed"]
 
@@ -52,7 +52,7 @@ services:
     ports:
       - "127.0.0.1:8088:8080"
     volumes:
-      - ./lighthouse.toml:/etc/lighthouse/lighthouse.toml:ro
+      - ./lighthouse.demo.toml:/etc/lighthouse/lighthouse.toml:ro
       - demo-data:/var/lib/lighthouse/data
       - ${LIGHTHOUSE_WEB_DIST:-../../lighthouse-web/dist}:/srv/web:ro
 

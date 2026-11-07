@@ -56,7 +56,7 @@ the inbox agent stops at an approval before it "sends" a reply. Afterwards `demo
 data.
 
 Remove the demo and all its data with `docker compose -f demo/compose.yml down -v`. Everything in it is made up, and
-its keys protect nothing: never use `demo/lighthouse.toml` for a real instance.
+its keys protect nothing: never use `demo/lighthouse.demo.toml` for a real instance.
 
 ## Quickstart
 

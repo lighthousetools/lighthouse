@@ -1,0 +1,329 @@
+# Configuration of the local demo. Everything here is fictional: the companies
+# Acme Ltd and Globex Inc, the people and every amount come from the demo MCP
+# server, and the "demo" provider answers without a model. Do not use this file
+# for a real instance.
+
+[server]
+bind = "0.0.0.0:8080"
+public_url = "http://localhost:8088"
+timezone = "Europe/Berlin"
+
+[database]
+url = "postgres://lighthouse:lighthouse-demo@demo-postgres:5432/lighthouse"
+
+# The compose file sets a fixed demo key through LIGHTHOUSE_VAULT__MASTER_KEY.
+[vault]
+
+[owner]
+name = "Alex Example"
+email = "alex@example.com"
+
+[owner.accounts]
+demo = "alex-example"
+
+[paths]
+agents = "/usr/share/lighthouse/demo/agents"
+automations = "/usr/share/lighthouse/demo/automations"
+skills = "/usr/share/lighthouse/skills"
+created_agents = "/var/lib/lighthouse/data/agents"
+created_automations = "/var/lib/lighthouse/data/automations"
+web = "/srv/web"
+
+[providers.demo]
+kind = "demo"
+
+[providers.demo.tasks.text]
+model = "demo"
+input_eur_per_mtok = 0.5
+output_eur_per_mtok = 1.5
+
+[routing.text]
+provider = "demo"
+
+[connectors.demo]
+transport = "stdio"
+command = "lighthouse-demo-mcp"
+read_tools = [
+  "list_issues", "list_threads", "list_events", "list_tickets", "search_pull_requests",
+  "get_pull_request_status", "get_pull_request_files", "list_deals", "list_accounts",
+  "list_transactions", "list_invoices", "list_contracts", "list_rooms", "list_room_steps",
+  "list_room_milestones", "list_holdings", "list_quotes",
+]
+draft_tools = ["create_draft"]
+
+[talk]
+agent = "assistant"
+
+[publishing]
+connector = "demo"
+tool = "create_post"
+input = { text = "{{post.body}}", first_comment = "{{post.first_comment}}" }
+
+[brain]
+path = "/var/lib/lighthouse/data/brain"
+
+[sources.mail]
+connector = "demo"
+domain = "mail"
+account = "alex@example.com"
+[sources.mail.collections.inbox]
+tool = "list_threads"
+items = "threads"
+kind = "thread"
+[sources.mail.collections.inbox.fields]
+external_id = "id"
+title = "subject"
+author = "from"
+summary = "snippet"
+occurred_at = "date"
+labels = "labels"
+important = { path = "labels", contains = "IMPORTANT" }
+unread = { path = "labels", contains = "UNREAD" }
+[sources.mail.actions.draft]
+tool = "create_draft"
+kind = "thread"
+input = { thread_id = "{{item.external_id}}", body = "{{input.body}}" }
+[sources.mail.actions.reply]
+tool = "send_reply"
+kind = "thread"
+input = { thread_id = "{{item.external_id}}", body = "{{input.body}}" }
+
+[sources.calendar]
+connector = "demo"
+domain = "calendar"
+[sources.calendar.collections.events]
+tool = "list_events"
+kind = "event"
+[sources.calendar.collections.events.fields]
+external_id = "id"
+title = "summary"
+starts_at = "start"
+ends_at = "end"
+state = "status"
+attendees = "attendees"
+[sources.calendar.actions.create]
+tool = "create_event"
+input = { title = "{{input.title}}", start = "{{input.start}}", end = "{{input.end}}" }
+
+[sources.issues]
+connector = "demo"
+domain = "issues"
+[sources.issues.collections.assigned]
+tool = "list_tickets"
+kind = "issue"
+flags = ["assigned"]
+[sources.issues.collections.assigned.fields]
+external_id = "id"
+key = "identifier"
+title = "title"
+state = "status"
+assignee = "assignee"
+project = "project"
+url = "url"
+occurred_at = "updatedAt"
+
+[sources.code]
+connector = "demo"
+preset = "github"
+account = "alex-example"
+interval = "30m"
+
+[sources.crm-acme]
+connector = "demo"
+domain = "deals"
+[sources.crm-acme.collections.deals]
+tool = "list_deals"
+input = { company = "acme" }
+kind = "deal"
+[sources.crm-acme.collections.deals.fields]
+external_id = "id"
+title = "title"
+state = "stage"
+amount = "value"
+currency = "currency"
+probability = "probability"
+assignee = "owner"
+last_activity_at = "last_activity"
+occurred_at = "updated"
+pipeline = "pipeline"
+[sources.crm-acme.actions.move]
+tool = "move_deal"
+kind = "deal"
+input = { id = "{{item.external_id}}", stage = "{{input.stage}}" }
+
+[sources.crm-globex]
+connector = "demo"
+domain = "deals"
+[sources.crm-globex.collections.deals]
+tool = "list_deals"
+input = { company = "globex" }
+kind = "deal"
+[sources.crm-globex.collections.deals.fields]
+external_id = "id"
+title = "title"
+state = "stage"
+amount = "value"
+currency = "currency"
+probability = "probability"
+assignee = "owner"
+last_activity_at = "last_activity"
+occurred_at = "updated"
+
+[sources.bank-acme]
+connector = "demo"
+domain = "bank"
+[sources.bank-acme.collections.accounts]
+tool = "list_accounts"
+input = { company = "acme" }
+kind = "account"
+[sources.bank-acme.collections.accounts.fields]
+external_id = "id"
+title = "name"
+amount = "balance"
+currency = "currency"
+[sources.bank-acme.collections.transactions]
+tool = "list_transactions"
+input = { company = "acme" }
+kind = "transaction"
+[sources.bank-acme.collections.transactions.fields]
+external_id = "id"
+title = "label"
+amount = "amount"
+currency = "currency"
+occurred_at = "settled_at"
+
+[sources.bank-globex]
+connector = "demo"
+domain = "bank"
+[sources.bank-globex.collections.accounts]
+tool = "list_accounts"
+input = { company = "globex" }
+kind = "account"
+[sources.bank-globex.collections.accounts.fields]
+external_id = "id"
+title = "name"
+amount = "balance"
+currency = "currency"
+[sources.bank-globex.collections.transactions]
+tool = "list_transactions"
+input = { company = "globex" }
+kind = "transaction"
+[sources.bank-globex.collections.transactions.fields]
+external_id = "id"
+title = "label"
+amount = "amount"
+currency = "currency"
+occurred_at = "settled_at"
+
+[sources.books-acme]
+connector = "demo"
+domain = "invoices"
+[sources.books-acme.collections.invoices]
+tool = "list_invoices"
+input = { company = "acme" }
+kind = "invoice"
+[sources.books-acme.collections.invoices.fields]
+external_id = "id"
+title = "number"
+author = "customer"
+state = "status"
+amount = "total"
+currency = "currency"
+starts_at = "issue_date"
+due_at = "due_date"
+direction = "type"
+[sources.books-acme.actions.draft]
+tool = "create_invoice_draft"
+input = { customer = "{{input.customer}}", total = "{{input.total}}" }
+
+[sources.books-globex]
+connector = "demo"
+domain = "invoices"
+[sources.books-globex.collections.invoices]
+tool = "list_invoices"
+input = { company = "globex" }
+kind = "invoice"
+[sources.books-globex.collections.invoices.fields]
+external_id = "id"
+title = "number"
+author = "customer"
+state = "status"
+amount = "total"
+currency = "currency"
+starts_at = "issue_date"
+due_at = "due_date"
+direction = "type"
+
+[sources.contracts]
+connector = "demo"
+domain = "documents"
+[sources.contracts.collections.contracts]
+tool = "list_contracts"
+kind = "contract"
+[sources.contracts.collections.contracts.fields]
+external_id = "id"
+title = "title"
+state = "status"
+assignee = "signer"
+expires_at = "expires"
+
+[sources.rooms]
+connector = "demo"
+domain = "rooms"
+[sources.rooms.collections.rooms]
+tool = "list_rooms"
+kind = "room"
+[sources.rooms.collections.rooms.fields]
+external_id = "id"
+title = "name"
+state = "phase"
+occurred_at = "updated"
+[sources.rooms.collections.steps]
+tool = "list_room_steps"
+parent = "room"
+input = { room_id = "{{parent.external_id}}" }
+kind = "step"
+[sources.rooms.collections.steps.fields]
+external_id = "id"
+title = "title"
+state = "status"
+due_at = "due"
+[sources.rooms.collections.milestones]
+tool = "list_room_milestones"
+parent = "room"
+input = { room_id = "{{parent.external_id}}" }
+kind = "milestone"
+[sources.rooms.collections.milestones.fields]
+external_id = "id"
+title = "title"
+starts_at = "date"
+[sources.rooms.actions.add_step]
+tool = "add_next_step"
+kind = "room"
+input = { room_id = "{{item.external_id}}", title = "{{input.title}}" }
+[sources.rooms.actions.attach]
+tool = "add_next_step"
+kind = "room"
+input = { room_id = "{{item.external_id}}", title = "Attach {{input.title}}" }
+
+[sources.depot]
+connector = "demo"
+domain = "holdings"
+[sources.depot.collections.holdings]
+tool = "list_holdings"
+kind = "holding"
+[sources.depot.collections.holdings.fields]
+external_id = "symbol"
+title = "name"
+amount = "value"
+currency = "currency"
+next_earnings_at = "next_earnings"
+[sources.depot.collections.quotes]
+tool = "list_quotes"
+kind = "quote"
+[sources.depot.collections.quotes.fields]
+external_id = "symbol"
+title = "symbol"
+amount = "price"
+currency = "currency"
+occurred_at = "time"

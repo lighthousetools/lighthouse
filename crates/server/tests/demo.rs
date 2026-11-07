@@ -15,7 +15,7 @@ fn demo() -> PathBuf {
 
 #[test]
 fn the_demo_configuration_loads_and_its_sources_only_read() {
-    let config = Config::load(&demo().join("lighthouse.toml")).unwrap();
+    let config = Config::load(&demo().join("lighthouse.demo.toml")).unwrap();
     let policy = ToolPolicy::new(&config.connectors);
     assert!(config.sources.len() >= 12);
     for (name, source) in &config.sources {
@@ -39,7 +39,7 @@ fn the_demo_configuration_loads_and_its_sources_only_read() {
 
 #[test]
 fn the_demo_agents_and_automations_are_valid() {
-    let config = Config::load(&demo().join("lighthouse.toml")).unwrap();
+    let config = Config::load(&demo().join("lighthouse.demo.toml")).unwrap();
     let policy = ToolPolicy::new(&config.connectors);
     let agents = load_agents(&demo().join("agents")).unwrap();
     assert_eq!(agents.len(), 4);
