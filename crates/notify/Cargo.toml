@@ -1,6 +1,6 @@
 [package]
 name = "lighthouse-notify"
-description = "Delivery by email and Slack."
+description = "Delivery by email and Slack, and live events for the apps."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,11 +19,12 @@ lighthouse-vault.workspace = true
 pulldown-cmark.workspace = true
 reqwest.workspace = true
 secrecy.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 lighthouse-store = { workspace = true, features = ["testing"] }
 base64.workspace = true
-tokio.workspace = true
 wiremock.workspace = true

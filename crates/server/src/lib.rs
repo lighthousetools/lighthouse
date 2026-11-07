@@ -14,8 +14,9 @@ use lighthouse_brain::{Brain, BrainToolFactory, Embedder, MediaError, MediaReade
 use lighthouse_config::{Config, ConnectorAuth, ConnectorTransport, OwnerConfig};
 use lighthouse_core::agent::{AgentDefinition, Delivery, ToolLevel, Trigger, parse_cron};
 use lighthouse_core::{RunId, TenantId};
+use lighthouse_desk::Desk;
 use lighthouse_mcp::{McpConnector, OAuthFlows, ToolHostFactory, ToolPolicy};
-use lighthouse_notify::ChannelNotifier;
+use lighthouse_notify::{ChannelNotifier, EventBus};
 use lighthouse_router::media::OpenAiMedia;
 use lighthouse_runtime::{AgentRegistry, LoadedAgent, RegistryError, Runtime, VaultRouterSource};
 use lighthouse_scheduler::{AgentRunner, ScheduleHandle, Scheduler};
@@ -536,6 +537,8 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
     if interrupted > 0 {
         tracing::warn!(interrupted, "marked interrupted runs as failed");
     }
+    let desk = Desk::new(store.clone(), tenant);
+    let events = EventBus::new();
     let auth_store = store.clone();
     let session_store = store.clone();
     let delivery = lighthouse_config::DeliveryConfig {
@@ -619,6 +622,9 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         owner_name: config.owner.name.clone(),
         sessions: Sessions::new(session_store, tenant),
         admin_token: config.server.admin_token.clone(),
+        events: events.clone(),
+        desk: desk.clone(),
+        zone,
     });
     let router = match &config.paths.web {
         Some(directory) => lighthouse_api::with_web_app(router, directory),

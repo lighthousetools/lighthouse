@@ -48,7 +48,8 @@ automatically. A pending authorization lives in the server's memory, so finish i
 `GET /openapi.json` describes the API. Everything except `/health`, `/openapi.json`, `/auth/status`, `/auth/login` and
 `/oauth/callback` needs a device token or the admin token as a bearer token.
 
-Other endpoints: `/agents`, `/connectors`, `/skills` and `/costs`.
+Other endpoints: `/agents`, `/connectors`, `/skills` and `/costs`. See [api.md](api.md) for live events, tasks and the
+other parts of the owner's desk.
 
 To serve the web app from the same address, build `lighthousetools/lighthouse-web` and set `paths.web` to its `dist`
 directory.

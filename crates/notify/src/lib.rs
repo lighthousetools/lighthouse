@@ -1,4 +1,8 @@
-//! Delivery by email and Slack.
+//! Delivery by email and Slack, and live events for the apps.
+
+pub mod events;
+
+pub use events::{AppEvent, EventBus};
 
 use async_trait::async_trait;
 use lettre::message::{Mailbox, MultiPart};

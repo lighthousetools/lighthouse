@@ -21,6 +21,7 @@ lighthouse-auth.workspace = true
 lighthouse-brain.workspace = true
 lighthouse-config.workspace = true
 lighthouse-core.workspace = true
+lighthouse-desk.workspace = true
 lighthouse-mcp.workspace = true
 lighthouse-notify.workspace = true
 lighthouse-router.workspace = true

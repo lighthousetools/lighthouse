@@ -1,0 +1,26 @@
+[package]
+name = "lighthouse-desk"
+description = "The owner's desk: tasks, rules, memory, alerts and briefing documents."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono.workspace = true
+lighthouse-core.workspace = true
+lighthouse-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+lighthouse-store = { workspace = true, features = ["testing"] }
+tokio.workspace = true

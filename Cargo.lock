@@ -1914,12 +1914,15 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "chrono-tz",
  "lighthouse-audit",
  "lighthouse-auth",
  "lighthouse-brain",
  "lighthouse-config",
  "lighthouse-core",
+ "lighthouse-desk",
  "lighthouse-mcp",
+ "lighthouse-notify",
  "lighthouse-sessions",
  "lighthouse-store",
  "lighthouse-vault",
@@ -2041,6 +2044,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "lighthouse-desk"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "lighthouse-core",
+ "lighthouse-store",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.21",
+ "tokio",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "lighthouse-mcp"
 version = "0.1.0"
 dependencies = [
@@ -2098,6 +2117,7 @@ dependencies = [
  "pulldown-cmark",
  "reqwest",
  "secrecy",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
@@ -2179,6 +2199,7 @@ dependencies = [
  "lighthouse-brain",
  "lighthouse-config",
  "lighthouse-core",
+ "lighthouse-desk",
  "lighthouse-mcp",
  "lighthouse-notify",
  "lighthouse-router",

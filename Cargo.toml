@@ -16,6 +16,7 @@ lighthouse-auth = { path = "crates/auth" }
 lighthouse-brain = { path = "crates/brain" }
 lighthouse-config = { path = "crates/config" }
 lighthouse-core = { path = "crates/core" }
+lighthouse-desk = { path = "crates/desk" }
 lighthouse-mcp = { path = "crates/mcp" }
 lighthouse-notify = { path = "crates/notify" }
 lighthouse-router = { path = "crates/router" }

@@ -9,6 +9,7 @@ mod auth;
 mod brain;
 mod catalog;
 mod sessions;
+mod tasks;
 
 pub use approvals::{BatchDecision, BatchResult, Decision};
 pub use auth::{
@@ -20,6 +21,7 @@ pub use catalog::{
     SkillInfo,
 };
 pub use sessions::{NodeChange, PermissionDecision};
+pub use tasks::{TaskOrder, TaskOrderResult};
 
 use async_trait::async_trait;
 use axum::Json;
@@ -34,7 +36,11 @@ pub use axum::Router;
 use lighthouse_audit::{Approval, AuditLog, DailyCost, RunDetail, RunRecord, StepRecord};
 use lighthouse_auth::{Auth, Device, DeviceKind};
 use lighthouse_brain::{Brain, Entry, EntryPatch, EntrySummary, NewEntry, SearchHit, Source};
+use lighthouse_desk::{
+    Desk, DeskError, NewTask, Origin, SourceLink, Task, TaskPatch, TaskStatus, TaskView,
+};
 use lighthouse_mcp::{McpError, OAuthFlows};
+use lighthouse_notify::EventBus;
 use lighthouse_sessions::{
     NewPermission, Node, NodeReport, NodeState, Permission, Session, SessionReport, Sessions,
 };
@@ -115,6 +121,12 @@ pub struct ApiState {
     pub owner_name: String,
     /// Admin token. Without one, the password can only be set by the CLI.
     pub admin_token: Option<SecretString>,
+    /// Live events for the apps.
+    pub events: EventBus,
+    /// Tasks, rules, memory, alerts and briefing documents.
+    pub desk: Desk,
+    /// Time zone of the owner, for dates such as "today".
+    pub zone: chrono_tz::Tz,
 }
 
 /// Answer of the health check.
@@ -178,6 +190,17 @@ fn internal(error: impl std::fmt::Display) -> ApiError {
     )
 }
 
+fn not_found(what: &str) -> ApiError {
+    ApiError(StatusCode::NOT_FOUND, format!("unknown {what}"))
+}
+
+fn desk_error(error: DeskError) -> ApiError {
+    match error {
+        DeskError::Invalid(message) => ApiError(StatusCode::BAD_REQUEST, message),
+        other => internal(other),
+    }
+}
+
 fn bearer_token(request: &Request) -> Option<&str> {
     request
         .headers()
@@ -221,7 +244,9 @@ async fn me(State(state): State<ApiState>) -> Json<Me> {
 
 /// Tells a client when to reload, as a stream of server-sent events.
 ///
-/// A `changed` event means something the apps show has changed.
+/// A `changed` event means something the apps show has changed. Named events
+/// such as `run.finished`, `run.waiting`, `alert.raised` or `tasks.changed`
+/// say what changed and carry IDs. See `docs/api.md` for the list.
 #[utoipa::path(
     get,
     path = "/events",
@@ -229,24 +254,40 @@ async fn me(State(state): State<ApiState>) -> Json<Me> {
     security(("bearer" = []))
 )]
 async fn events(State(state): State<ApiState>) -> impl IntoResponse {
-    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(4);
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(16);
+    let mut bus = state.events.subscribe();
     tokio::spawn(async move {
         let mut last = None;
         let mut ticker = tokio::time::interval(EVENT_INTERVAL);
+        let mut bus_open = true;
         loop {
-            ticker.tick().await;
-            if sender.is_closed() {
-                return;
-            }
-            let Ok(revision) = state.audit.revision().await else {
-                continue;
-            };
-            if last.as_ref() != Some(&revision) {
-                last = Some(revision);
-                let event = Event::default().event("changed").data("{}");
-                if sender.send(Ok(event)).await.is_err() {
-                    return;
+            let event = tokio::select! {
+                _ = ticker.tick() => {
+                    let Ok(revision) = state.audit.revision().await else {
+                        continue;
+                    };
+                    if last.as_ref() == Some(&revision) {
+                        if sender.is_closed() {
+                            return;
+                        }
+                        continue;
+                    }
+                    last = Some(revision);
+                    Event::default().event("changed").data("{}")
                 }
+                received = bus.recv(), if bus_open => match received {
+                    Ok(event) => Event::default().event(event.name).data(event.data.to_string()),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        Event::default().event("changed").data("{}")
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        bus_open = false;
+                        continue;
+                    }
+                },
+            };
+            if sender.send(Ok(event)).await.is_err() {
+                return;
             }
         }
     });
@@ -395,6 +436,8 @@ impl utoipa::Modify for SecurityAddon {
         catalog::costs,
         sessions::report, sessions::request, sessions::await_decision, sessions::nodes,
         sessions::update_node, sessions::sessions, sessions::permissions, sessions::decide,
+        tasks::list, tasks::create, tasks::get, tasks::update, tasks::delete, tasks::complete,
+        tasks::reopen, tasks::accept, tasks::reorder,
     ),
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -405,6 +448,7 @@ impl utoipa::Modify for SecurityAddon {
         AgentInfo, AgentTool, ConnectorInfo, SkillInfo, AgentDraftRequest, AgentSource, DailyCost,
         Node, NodeChange, NodeReport, NodeState, NewPermission, Permission, PermissionDecision,
         Session, SessionReport,
+        Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Origin, SourceLink,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -473,6 +517,15 @@ pub fn router(state: ApiState) -> Router {
             post(brain::upload).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
         )
         .route("/brain/files/{id}", get(brain::download))
+        .route("/tasks", get(tasks::list).post(tasks::create))
+        .route("/tasks/order", post(tasks::reorder))
+        .route(
+            "/tasks/{id}",
+            get(tasks::get).patch(tasks::update).delete(tasks::delete),
+        )
+        .route("/tasks/{id}/complete", post(tasks::complete))
+        .route("/tasks/{id}/reopen", post(tasks::reopen))
+        .route("/tasks/{id}/accept", post(tasks::accept))
         .route("/credentials", get(auth::list_credentials))
         .route(
             "/credentials/{name}",
@@ -512,7 +565,7 @@ mod tests {
     use tokio_stream::StreamExt;
     use tower::ServiceExt;
 
-    const TOKEN: &str = "test-admin-token";
+    pub(crate) const TOKEN: &str = "test-admin-token";
 
     struct FakeAssistant;
 
@@ -636,6 +689,20 @@ mod tests {
     }
 
     async fn app_with_resumes(token: Option<&str>) -> (Router, AuditLog, Arc<Mutex<Vec<Uuid>>>) {
+        let harness = harness(token).await;
+        (harness.app, harness.audit, harness.resumed)
+    }
+
+    /// A router with real storage and fakes for everything that calls out.
+    pub(crate) struct Harness {
+        pub(crate) app: Router,
+        pub(crate) audit: AuditLog,
+        pub(crate) desk: Desk,
+        pub(crate) events: EventBus,
+        pub(crate) resumed: Arc<Mutex<Vec<Uuid>>>,
+    }
+
+    pub(crate) async fn harness(token: Option<&str>) -> Harness {
         let resumed = Arc::new(Mutex::new(Vec::new()));
         let store = fresh_store().await;
         let key = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
@@ -645,6 +712,9 @@ mod tests {
             &MasterKey::from_base64(&key).unwrap(),
         );
         let audit = AuditLog::new(store.clone(), TenantId::SINGLE);
+        let desk = Desk::new(store.clone(), TenantId::SINGLE);
+        let sessions = Sessions::new(store.clone(), TenantId::SINGLE);
+        let events = EventBus::new();
         let state = ApiState {
             audit: audit.clone(),
             trigger: Arc::new(FakeTrigger(Uuid::nil(), resumed.clone())),
@@ -656,16 +726,25 @@ mod tests {
             auth: Auth::new(store.clone(), TenantId::SINGLE),
             vault,
             brain: Brain::new(store.clone(), TenantId::SINGLE, brain_root()).unwrap(),
-            sessions: Sessions::new(store, TenantId::SINGLE),
+            sessions: sessions.clone(),
             owner_name: "Alex".to_owned(),
             assistant: Arc::new(FakeAssistant),
             catalog: Arc::new(FakeCatalog),
             admin_token: token.map(|token| SecretString::from(token.to_owned())),
+            events: events.clone(),
+            desk: desk.clone(),
+            zone: chrono_tz::Europe::Berlin,
         };
-        (router(state), audit, resumed)
+        Harness {
+            app: router(state),
+            audit,
+            desk,
+            events,
+            resumed,
+        }
     }
 
-    async fn call(
+    pub(crate) async fn call(
         app: &Router,
         method: &str,
         uri: &str,
@@ -674,7 +753,7 @@ mod tests {
         send(app, method, uri, token, None).await
     }
 
-    async fn send(
+    pub(crate) async fn send(
         app: &Router,
         method: &str,
         uri: &str,
@@ -1356,6 +1435,32 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(String::from_utf8_lossy(&bytes).contains("event: changed"));
+    }
+
+    #[tokio::test]
+    async fn the_event_stream_passes_named_events_on() {
+        let harness = harness(Some(TOKEN)).await;
+        let request = HttpRequest::builder()
+            .uri("/events")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = harness.app.clone().oneshot(request).await.unwrap();
+        let mut body = response.into_body().into_data_stream();
+        let mut seen = String::new();
+        for _ in 0..5 {
+            harness.events.emit("tasks.changed", json!({"id": null}));
+            let chunk = tokio::time::timeout(Duration::from_secs(5), body.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            seen.push_str(&String::from_utf8_lossy(&chunk));
+            if seen.contains("event: tasks.changed") {
+                return;
+            }
+        }
+        panic!("no named event in {seen}");
     }
 
     #[tokio::test]
