@@ -14,7 +14,8 @@ use uuid::Uuid;
 
 const MAX_TEXT: usize = 2_000;
 const MAX_CATEGORY: usize = 100;
-const COLUMNS: &str = "id, text, agent_id, category, enabled, created_at, updated_at";
+const COLUMNS: &str =
+    "id, text, agent_id, category, enabled, created_at, updated_at, applied_count, last_applied_at";
 
 /// A standing rule.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, FromRow, ToSchema)]
@@ -33,6 +34,10 @@ pub struct Rule {
     pub created_at: DateTime<Utc>,
     /// Last change.
     pub updated_at: DateTime<Utc>,
+    /// How many runs it reached.
+    pub applied_count: i32,
+    /// When a run last got it.
+    pub last_applied_at: Option<DateTime<Utc>>,
 }
 
 /// A rule to create.
@@ -145,6 +150,29 @@ impl Desk {
             .await?)
     }
 
+    /// Like [`Desk::active_rules`], for a run that is about to start: counts
+    /// each rule as applied.
+    pub async fn apply_rules(&self, agent_id: &str) -> Result<Vec<Rule>, DeskError> {
+        let query = format!(
+            "UPDATE rules SET applied_count = applied_count + 1, last_applied_at = now() \
+             WHERE tenant_id = $1 AND enabled AND (agent_id IS NULL OR agent_id = $2) \
+             RETURNING {COLUMNS}"
+        );
+        let mut rules: Vec<Rule> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant())
+            .bind(agent_id)
+            .fetch_all(self.pool())
+            .await?;
+        rules.sort_by(|left, right| {
+            (left.agent_id.is_some(), left.created_at, left.id).cmp(&(
+                right.agent_id.is_some(),
+                right.created_at,
+                right.id,
+            ))
+        });
+        Ok(rules)
+    }
+
     /// Changes a rule. Returns `None` for an unknown rule.
     pub async fn update_rule(&self, id: Uuid, patch: RulePatch) -> Result<Option<Rule>, DeskError> {
         let Some(mut rule) = self.rule(id).await? else {
@@ -232,6 +260,23 @@ mod tests {
             ["Keep briefs short"]
         );
         assert_eq!(desk.rules().await.unwrap().len(), 3);
+        assert!(
+            desk.rules()
+                .await
+                .unwrap()
+                .iter()
+                .all(|rule| rule.applied_count == 0)
+        );
+        let applied = desk.apply_rules("morning-brief").await.unwrap();
+        assert_eq!(
+            texts(applied.clone()),
+            texts(desk.active_rules("morning-brief").await.unwrap())
+        );
+        assert!(
+            applied
+                .iter()
+                .all(|rule| rule.applied_count == 1 && rule.last_applied_at.is_some())
+        );
     }
 
     #[tokio::test]

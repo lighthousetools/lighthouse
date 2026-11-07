@@ -251,7 +251,7 @@ impl Runtime {
     async fn owner_instructions(&self, agent: &AgentDefinition) -> Result<OwnerInstructions, Stop> {
         let rules = self
             .desk
-            .active_rules(&agent.id)
+            .apply_rules(&agent.id)
             .await
             .map_err(|error| Stop::Failed(format!("cannot read the owner's rules: {error}")))?;
         let facts =

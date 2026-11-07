@@ -108,7 +108,8 @@ for the suggestions of those pages, without a run. Deleting a proposal rejects i
 
 Rules are standing instructions in the owner's words, such as "Always ask before booking anything" or "Never answer a
 customer before the account manager has replied". A rule applies to every agent, or to one agent when `agent_id` is
-set. `category` is free text for grouping in the apps.
+set. `category` is free text for grouping in the apps. `applied_count` and `last_applied_at` tell how many runs got a
+rule in their prompt and when the last one did.
 
 | Endpoint | Purpose |
 |---|---|
