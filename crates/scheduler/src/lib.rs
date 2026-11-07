@@ -10,6 +10,7 @@ use chrono_tz::Tz;
 use croner::Cron;
 use lighthouse_core::TenantId;
 use lighthouse_core::agent::{AgentDefinition, Trigger, parse_cron};
+use lighthouse_core::automation::RUN_PREFIX;
 use lighthouse_store::Store;
 use lighthouse_store::sqlx;
 use std::sync::{Arc, RwLock};
@@ -89,9 +90,30 @@ fn schedules_of(agents: &[AgentDefinition]) -> Result<Vec<(String, Cron)>, Sched
 pub struct ScheduleHandle(Schedules);
 
 impl ScheduleHandle {
-    /// Replaces all schedules.
+    /// Replaces the schedules of all agents. Automations keep theirs.
     pub fn update(&self, agents: &[AgentDefinition]) -> Result<(), SchedulerError> {
-        *self.0.write().expect("schedules lock") = schedules_of(agents)?;
+        let agents = schedules_of(agents)?;
+        let mut schedules = self.0.write().expect("schedules lock");
+        schedules.retain(|(id, _)| id.starts_with(RUN_PREFIX));
+        schedules.extend(agents);
+        Ok(())
+    }
+
+    /// Replaces the schedules of all automations, given as ID and cron
+    /// expression. They fire as `automation:<id>`. Agents keep theirs.
+    pub fn update_automations(
+        &self,
+        automations: &[(String, String)],
+    ) -> Result<(), SchedulerError> {
+        let mut parsed = Vec::new();
+        for (id, expression) in automations {
+            let cron = parse_cron(expression)
+                .map_err(|error| SchedulerError::Schedule(error.to_string()))?;
+            parsed.push((format!("{RUN_PREFIX}{id}"), cron));
+        }
+        let mut schedules = self.0.write().expect("schedules lock");
+        schedules.retain(|(id, _)| !id.starts_with(RUN_PREFIX));
+        schedules.extend(parsed);
         Ok(())
     }
 }
@@ -271,6 +293,40 @@ mod tests {
         scheduler.tick(at(7, 0)).await.unwrap();
         let fired = recorder.0.lock().unwrap().clone();
         assert_eq!(fired, [("brief".to_owned(), "cron".to_owned())]);
+    }
+
+    #[tokio::test]
+    async fn automations_fire_beside_agents_and_updates_keep_the_other_kind() {
+        let recorder = Arc::new(Recorder::default());
+        let agents = [agent("cron: \"0 8 * * *\"")];
+        let scheduler = Scheduler::new(
+            fresh_store().await,
+            TenantId::SINGLE,
+            "Europe/Berlin",
+            &agents,
+            recorder.clone(),
+        )
+        .unwrap();
+        let handle = scheduler.handle();
+        let automations = [("follow-up".to_owned(), "0 8 * * *".to_owned())];
+        handle.update_automations(&automations).unwrap();
+        handle.update(&agents).unwrap();
+        assert_eq!(scheduler.agents.read().unwrap().len(), 2);
+        scheduler.tick(at(6, 0)).await.unwrap();
+        scheduler.tick(at(7, 0)).await.unwrap();
+        let mut fired = recorder.0.lock().unwrap().clone();
+        fired.sort();
+        assert_eq!(
+            fired,
+            [
+                ("automation:follow-up".to_owned(), "cron".to_owned()),
+                ("brief".to_owned(), "cron".to_owned())
+            ]
+        );
+        handle.update_automations(&[]).unwrap();
+        assert_eq!(scheduler.agents.read().unwrap().len(), 1);
+        let bad = [("x".to_owned(), "nonsense".to_owned())];
+        assert!(handle.update_automations(&bad).is_err());
     }
 
     #[tokio::test]

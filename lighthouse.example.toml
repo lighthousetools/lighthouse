@@ -25,6 +25,7 @@ github = "alex-example"
 [paths]
 agents = "agents"
 skills = "skills"
+automations = "automations"
 
 [providers.anthropic]
 kind = "anthropic"

@@ -38,8 +38,8 @@ flowchart LR
 | `lighthouse-mcp` | MCP client, OAuth flow, tool classification |
 | `lighthouse-skills` | `SKILL.md` loading |
 | `lighthouse-notify` | Email and Slack delivery, live events for the apps |
-| `lighthouse-runtime` | The agent loop |
-| `lighthouse-scheduler` | Cron triggers and catch-up |
+| `lighthouse-runtime` | The agent loop and the steps of automations |
+| `lighthouse-scheduler` | Cron triggers and catch-up for agents and automations |
 | `lighthouse-api` | HTTP API and OpenAPI description |
 | `lighthouse-server` | Wiring and the server binary |
 | `lighthouse-cli` | The `lht` binary |

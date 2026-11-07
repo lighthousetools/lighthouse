@@ -14,5 +14,6 @@ workspace = true
 croner.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

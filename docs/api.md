@@ -19,6 +19,7 @@ never report texts, tool arguments or other private content.
 | `alert.raised` | `{"id", "kind", "severity", "new"}` | A problem appeared or happened again |
 | `alerts.changed` | `{"id": <alert>}` | An alert was acknowledged or resolved |
 | `ready.changed` | `{"id": <item>}` | An item was cleared from the ready feed |
+| `automations.changed` | `{"id": <automation>}` | An automation was created, switched or deleted, see [automations.md](automations.md) |
 | `document.created` | `{"id", "run_id", "kind", "period"}` | A run stored a briefing document, see [documents.md](documents.md) |
 
 A client that falls behind gets a `changed` event instead of the events it missed.

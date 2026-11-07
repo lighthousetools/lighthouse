@@ -5,6 +5,7 @@
 //! accepts it.
 
 pub mod alerts;
+pub mod automations;
 pub mod documents;
 pub mod facts;
 pub mod ready;

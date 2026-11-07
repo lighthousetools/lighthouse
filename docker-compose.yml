@@ -26,11 +26,13 @@ services:
       LHT_SERVER: http://lighthouse:8080
       LIGHTHOUSE_BRAIN__PATH: /var/lib/lighthouse/data/brain
       LIGHTHOUSE_PATHS__CREATED_AGENTS: /var/lib/lighthouse/data/agents
+      LIGHTHOUSE_PATHS__CREATED_AUTOMATIONS: /var/lib/lighthouse/data/automations
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./lighthouse.toml:/etc/lighthouse/lighthouse.toml:ro
       - ./agents:/var/lib/lighthouse/agents:ro
+      - ./automations:/var/lib/lighthouse/automations:ro
       - ./skills:/var/lib/lighthouse/skills:ro
       - lighthouse-data:/var/lib/lighthouse/data
 

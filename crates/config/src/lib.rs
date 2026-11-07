@@ -122,9 +122,23 @@ pub struct PathsConfig {
     /// Writable directory for agents created in the apps.
     #[serde(default = "default_created_agents_dir")]
     pub created_agents: PathBuf,
+    /// Directory with automation files.
+    #[serde(default = "default_automations_dir")]
+    pub automations: PathBuf,
+    /// Writable directory for automations created in the apps.
+    #[serde(default = "default_created_automations_dir")]
+    pub created_automations: PathBuf,
     /// Directory with the built web app. Without it, the server only offers the API.
     #[serde(default)]
     pub web: Option<PathBuf>,
+}
+
+fn default_automations_dir() -> PathBuf {
+    PathBuf::from("automations")
+}
+
+fn default_created_automations_dir() -> PathBuf {
+    PathBuf::from("automations-created")
 }
 
 fn default_created_agents_dir() -> PathBuf {
@@ -145,6 +159,8 @@ impl Default for PathsConfig {
             agents: default_agents_dir(),
             skills: default_skills_dir(),
             created_agents: default_created_agents_dir(),
+            automations: default_automations_dir(),
+            created_automations: default_created_automations_dir(),
             web: None,
         }
     }
@@ -431,6 +447,7 @@ mod tests {
             let config = config.unwrap();
             assert_eq!(config.server.timezone, "Europe/Berlin");
             assert_eq!(config.paths.agents, PathBuf::from("agents"));
+            assert_eq!(config.paths.automations, PathBuf::from("automations"));
             assert!(config.routing.contains_key("text"));
             assert!(config.connectors.contains_key("linear"));
             assert_eq!(config.notifications.deliver, ["owner"]);

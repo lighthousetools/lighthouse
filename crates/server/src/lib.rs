@@ -19,7 +19,8 @@ use lighthouse_mcp::{McpConnector, OAuthFlows, ToolHostFactory, ToolPolicy};
 use lighthouse_notify::{ChannelNotifier, EventBus};
 use lighthouse_router::media::OpenAiMedia;
 use lighthouse_runtime::{
-    AgentRegistry, DeskToolFactory, LoadedAgent, RegistryError, Runtime, VaultRouterSource,
+    AgentRegistry, AutomationRegistry, DeskToolFactory, LoadedAgent, RegistryError, Runtime,
+    VaultRouterSource,
 };
 use lighthouse_scheduler::{AgentRunner, ScheduleHandle, Scheduler};
 use lighthouse_sessions::Sessions;
@@ -33,8 +34,11 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
+pub mod automations;
 pub mod outcomes;
 
+use automations::{AutomationEngine, ServerAutomations};
+use lighthouse_core::automation::RUN_PREFIX;
 use outcomes::{OutcomeParts, Outcomes, Pushes};
 
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60);
@@ -66,11 +70,16 @@ pub struct AgentPool {
     runtime: Arc<Runtime>,
     agents: Arc<AgentRegistry>,
     outcomes: Arc<Outcomes>,
+    engine: Arc<AutomationEngine>,
 }
 
-async fn after_run(outcomes: &Outcomes, run: RunId) {
-    if let Err(error) = outcomes.after_run(run.as_uuid()).await {
-        tracing::error!(run = %run.as_uuid(), %error, "cannot handle the end of a run");
+async fn after_run(outcomes: &Outcomes, engine: &Arc<AutomationEngine>, run: RunId) {
+    match outcomes.after_run(run.as_uuid()).await {
+        Ok(Some(record)) => engine.after_agent_run(&record).await,
+        Ok(None) => {}
+        Err(error) => {
+            tracing::error!(run = %run.as_uuid(), %error, "cannot handle the end of a run");
+        }
     }
 }
 
@@ -80,11 +89,12 @@ impl AgentPool {
         self.runtime.register(run, &agent, trigger).await?;
         let runtime = self.runtime.clone();
         let outcomes = self.outcomes.clone();
+        let engine = self.engine.clone();
         tokio::spawn(async move {
             if let Err(error) = runtime.execute(run, &agent).await {
                 tracing::error!(agent = %agent.id, %error, "run failed");
             }
-            after_run(&outcomes, run).await;
+            after_run(&outcomes, &engine, run).await;
         });
         Ok(run)
     }
@@ -97,6 +107,12 @@ impl AgentPool {
             return Ok(());
         };
         let id = RunId::from_uuid(run);
+        if checkpoint.agent_id.starts_with(RUN_PREFIX) {
+            self.engine
+                .resume(id, &checkpoint.agent_id, checkpoint.state)
+                .await;
+            return Ok(());
+        }
         let Some(agent) = self
             .agents
             .get(&checkpoint.agent_id)
@@ -109,16 +125,17 @@ impl AgentPool {
                 report: None,
             };
             audit.finish_run(id, end).await?;
-            after_run(&self.outcomes, id).await;
+            after_run(&self.outcomes, &self.engine, id).await;
             return Ok(());
         };
         let runtime = self.runtime.clone();
         let outcomes = self.outcomes.clone();
+        let engine = self.engine.clone();
         tokio::spawn(async move {
             if let Err(error) = runtime.resume(id, &agent, checkpoint.state).await {
                 tracing::error!(agent = %agent.id, %error, "resumed run failed");
             }
-            after_run(&outcomes, id).await;
+            after_run(&outcomes, &engine, id).await;
         });
         Ok(())
     }
@@ -173,6 +190,10 @@ impl RunTrigger for AgentPool {
 #[async_trait]
 impl AgentRunner for AgentPool {
     async fn start(&self, agent_id: &str, trigger: &str) {
+        if agent_id.starts_with(RUN_PREFIX) {
+            self.engine.start_scheduled(agent_id).await;
+            return;
+        }
         if let Some(known) = self.agents.get(agent_id)
             && let Err(error) = self.spawn(known.agent, trigger).await
         {
@@ -617,10 +638,23 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         pushes: Pushes::from_config(&config.notifications)?,
         agents: agents.clone(),
     }));
+    let automation_files = Arc::new(AutomationRegistry::load(
+        config.paths.automations.clone(),
+        config.paths.created_automations.clone(),
+    )?);
+    tracing::info!(count = automation_files.list().len(), "automations loaded");
+    let engine = Arc::new(AutomationEngine::new(
+        runtime.clone(),
+        agents.clone(),
+        automation_files,
+        outcomes.clone(),
+        desk.clone(),
+    ));
     let pool = Arc::new(AgentPool {
         runtime,
         agents: agents.clone(),
         outcomes,
+        engine: engine.clone(),
     });
     let scheduler = Scheduler::new(
         store,
@@ -629,6 +663,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         &definitions,
         pool.clone(),
     )?;
+    let automations = Arc::new(ServerAutomations::new(engine, scheduler.handle(), zone)?);
     let catalog = Arc::new(ServerCatalog {
         config: config.clone(),
         vault: vault.clone(),
@@ -661,6 +696,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         events: events.clone(),
         desk: desk.clone(),
         zone,
+        automations,
     });
     let router = match &config.paths.web {
         Some(directory) => lighthouse_api::with_web_app(router, directory),

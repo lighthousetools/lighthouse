@@ -778,3 +778,27 @@ async fn a_broken_document_is_logged_and_the_report_still_goes_out() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn context_from_an_automation_reaches_the_model_as_untrusted_content() {
+    let fixture = fixture(vec![ChatResponse::text("Done", usage())], false).await;
+    let agent = agent("");
+    let run = RunId::new();
+    fixture
+        .runtime
+        .register(run, &agent, "automation:x")
+        .await
+        .unwrap();
+    fixture
+        .runtime
+        .execute_with_context(run, &agent, Some("Event: {\"from\": \"a@example.com\"}"))
+        .await
+        .unwrap();
+    let requests = fixture.provider.requests();
+    let Block::Text { text } = &requests[0].messages[0].content[0] else {
+        panic!("no text")
+    };
+    assert!(text.starts_with("Write the brief."));
+    assert!(text.contains("<untrusted_content source=\"automation\">"));
+    assert!(text.contains("a@example.com"));
+}

@@ -15,6 +15,7 @@ COPY --from=build /src/target/release/lht /usr/local/bin/
 COPY --from=build /src/target/release/lighthouse-demo-mcp /usr/local/bin/
 COPY skills /usr/share/lighthouse/skills
 COPY agents/examples /usr/share/lighthouse/agents-examples
+COPY automations/examples /usr/share/lighthouse/automations-examples
 USER lighthouse
 WORKDIR /var/lib/lighthouse
 ENV LIGHTHOUSE_CONFIG=/etc/lighthouse/lighthouse.toml

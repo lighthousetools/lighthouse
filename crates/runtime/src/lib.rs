@@ -1,10 +1,14 @@
 //! Agent loop with limits for steps, cost and time.
 
 mod agents;
+mod automation_registry;
+mod automations;
 mod desk_tools;
 mod registry;
 
 pub use agents::{AgentFile, load_agents};
+pub use automation_registry::{AutomationRegistry, LoadedAutomation};
+pub use automations::{AgentOutcome, AgentSteps};
 pub use desk_tools::{DeskToolFactory, PROPOSE_FACT, PROPOSE_TASK};
 pub use registry::{AgentRegistry, LoadedAgent, RegistryError};
 
@@ -842,6 +846,17 @@ impl Runtime {
         run: RunId,
         agent: &AgentDefinition,
     ) -> Result<(), lighthouse_audit::AuditError> {
+        self.execute_with_context(run, agent, None).await
+    }
+
+    /// Executes a registered run with context from outside, such as an
+    /// automation event. The context reaches the model as untrusted content.
+    pub async fn execute_with_context(
+        &self,
+        run: RunId,
+        agent: &AgentDefinition,
+        context: Option<&str>,
+    ) -> Result<(), lighthouse_audit::AuditError> {
         let blocked = self.policy.blocked(agent);
         if !blocked.is_empty() {
             for tool in &blocked {
@@ -858,8 +873,16 @@ impl Runtime {
             };
             return self.audit.finish_run(run, end).await;
         }
+        let prompt = match context {
+            Some(context) => format!(
+                "{}\n\n{}",
+                agent.prompt,
+                mark_untrusted("automation", context)
+            ),
+            None => agent.prompt.clone(),
+        };
         let state = LoopState {
-            messages: vec![Message::user(agent.prompt.clone())],
+            messages: vec![Message::user(prompt)],
             ..LoopState::default()
         };
         self.drive(run, agent, state).await

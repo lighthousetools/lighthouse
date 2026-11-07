@@ -16,6 +16,26 @@ use uuid::Uuid;
 
 const TOKEN: &str = "test-admin-token";
 
+const ON_FAILURE: &str = "---
+name: On failure
+trigger:
+  event: run.failed
+  match:
+    agent_id: deleter
+steps:
+  - agent: reader
+  - tool:
+      name: demo.list_issues
+  - if:
+      contains: DEMO-1
+  - tool:
+      name: demo.echo
+      input:
+        note: \"{{event.agent_id}} failed\"
+---
+Looks into failed runs of the deleter.
+";
+
 async fn serve(router: Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -53,6 +73,9 @@ async fn start() -> (String, tempfile::TempDir, lighthouse_store::Store) {
     write_agent(&agents, "reader", "  - demo.list_issues");
     write_agent(&agents, "deleter", "  - demo.delete_issue");
     std::fs::write(agents.join("broken.md"), "not an agent").unwrap();
+    let automations = dir.path().join("automations");
+    std::fs::create_dir(&automations).unwrap();
+    std::fs::write(automations.join("on-failure.md"), ON_FAILURE).unwrap();
     let key = base64::engine::general_purpose::STANDARD.encode([5u8; 32]);
     let toml = format!(
         r#"
@@ -70,6 +93,8 @@ email = "alex@example.com"
 [paths]
 agents = "{agents}"
 created_agents = "{created}"
+automations = "{automations}"
+created_automations = "{created_automations}"
 skills = "{skills}"
 [providers.mock]
 kind = "mock"
@@ -88,6 +113,8 @@ path = "{brain}"
 "#,
         agents = agents.display(),
         created = dir.path().join("created").display(),
+        automations = automations.display(),
+        created_automations = dir.path().join("created-automations").display(),
         brain = dir.path().join("brain").display(),
         skills = dir.path().join("skills").display(),
     );
@@ -293,4 +320,180 @@ async fn an_agent_created_through_the_api_runs_without_a_restart() {
         .unwrap();
     assert_eq!(connectors[0]["name"], "demo");
     assert_eq!(connectors[0]["connected"], true);
+}
+
+async fn get(base: &str, path: &str) -> Value {
+    reqwest::Client::new()
+        .get(format!("{base}{path}"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+async fn wait_for(base: &str, path: &str, check: impl Fn(&Value) -> bool) -> Value {
+    for _ in 0..200 {
+        let value = get(base, path).await;
+        if check(&value) {
+            return value;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+        "{path} never reached the expected state: {}",
+        get(base, path).await
+    );
+}
+
+#[tokio::test]
+async fn a_failed_run_triggers_an_automation_that_asks_before_it_acts() {
+    let (base, _dir, _database) = start().await;
+    let automations = get(&base, "/automations").await;
+    assert_eq!(automations[0]["id"], "on-failure", "{automations}");
+    assert_eq!(automations[0]["steps"][3]["needs_approval"], true);
+
+    let detail = run_to_end(&base, "deleter").await;
+    assert_eq!(detail["run"]["status"], "rejected");
+    let runs = wait_for(&base, "/automations/on-failure/runs", |runs| {
+        runs[0]["status"] == "waiting"
+    })
+    .await;
+    let run = runs[0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(runs[0]["trigger"], "event:run.failed");
+
+    let alerts = get(&base, "/alerts").await;
+    assert_eq!(alerts[0]["key"], "run:deleter", "{alerts}");
+    let ready = get(&base, "/ready").await;
+    assert_eq!(ready["counts"]["approval"], 1, "{ready}");
+    let approval = &ready["items"][0]["detail"];
+    assert_eq!(approval["agent_id"], "automation:on-failure");
+    assert_eq!(approval["input"]["note"], "deleter failed");
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{base}/approvals/{}/decision",
+            approval["id"].as_str().unwrap()
+        ))
+        .bearer_auth(TOKEN)
+        .json(&json!({"approve": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let detail = wait_for(&base, &format!("/runs/{run}"), |detail| {
+        detail["run"]["status"] == "succeeded"
+    })
+    .await;
+    let steps: Vec<(String, String)> = detail["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| {
+            (
+                step["name"].as_str().unwrap().to_owned(),
+                step["status"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ("reader".to_owned(), "ok".to_owned()),
+            ("demo.list_issues".to_owned(), "ok".to_owned()),
+            ("contains DEMO-1".to_owned(), "ok".to_owned()),
+            ("demo.echo".to_owned(), "proposed".to_owned()),
+            ("demo.echo".to_owned(), "ok".to_owned()),
+        ]
+    );
+    assert!(
+        detail["run"]["report"]
+            .as_str()
+            .unwrap()
+            .contains("deleter failed")
+    );
+}
+
+#[tokio::test]
+async fn automations_are_created_switched_and_started_through_the_api() {
+    let (base, _dir, _database) = start().await;
+    let client = reqwest::Client::new();
+    let source = "---\nname: Hook\ntrigger:\n  webhook: true\n  match:\n    kind: deploy\nsteps:\n  - tool:\n      name: demo.list_issues\n---\n";
+    let response = client
+        .post(format!("{base}/automations"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"source": source}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let hook = |payload: Value| {
+        client
+            .post(format!("{base}/automations/hook/webhook"))
+            .bearer_auth(TOKEN)
+            .json(&payload)
+            .send()
+    };
+    let skipped: Value = hook(json!({"kind": "other"}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(skipped["runs"], json!([]));
+    let started: Value = hook(json!({"kind": "deploy"}))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let run = started["runs"][0].as_str().unwrap().to_owned();
+    wait_for(&base, &format!("/runs/{run}"), |detail| {
+        detail["run"]["status"] == "succeeded"
+    })
+    .await;
+
+    let response = client
+        .patch(format!("{base}/automations/hook"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+    let switched: Value = response.json().await.unwrap();
+    assert_eq!(switched["enabled"], false);
+    assert_eq!(hook(json!({"kind": "deploy"})).await.unwrap().status(), 409);
+    let manual = client
+        .post(format!("{base}/automations/hook/run"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(manual.status(), 202, "a manual run ignores the switch");
+    let wrong = client
+        .post(format!("{base}/automations/on-failure/webhook"))
+        .bearer_auth(TOKEN)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 409);
+    let event = client
+        .post(format!("{base}/automations/events"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"name": "mail.received", "payload": {}}))
+        .send()
+        .await
+        .unwrap();
+    let event: Value = event.json().await.unwrap();
+    assert_eq!(event["runs"], json!([]));
+    let deleted = client
+        .delete(format!("{base}/automations/hook"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 204);
 }

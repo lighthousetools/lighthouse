@@ -18,6 +18,7 @@ chrono-tz.workspace = true
 lighthouse-audit.workspace = true
 lighthouse-auth.workspace = true
 lighthouse-brain.workspace = true
+lighthouse-core.workspace = true
 lighthouse-desk.workspace = true
 lighthouse-mcp.workspace = true
 lighthouse-notify.workspace = true
@@ -38,6 +39,5 @@ uuid.workspace = true
 [dev-dependencies]
 base64.workspace = true
 lighthouse-config.workspace = true
-lighthouse-core.workspace = true
 lighthouse-store = { workspace = true, features = ["testing"] }
 tower.workspace = true

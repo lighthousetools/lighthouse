@@ -7,6 +7,7 @@
 mod alerts;
 mod approvals;
 mod auth;
+mod automations;
 mod brain;
 mod catalog;
 mod documents;
@@ -19,6 +20,10 @@ mod tasks;
 pub use approvals::{BatchDecision, BatchResult, Decision};
 pub use auth::{
     AuthStatus, Caller, CredentialValue, LoginRequest, SetupRequest, TokenIssued, TokenRequest,
+};
+pub use automations::{
+    AutomationInfo, AutomationRuns, AutomationStepInfo, AutomationSwitch, AutomationTriggerInfo,
+    Automations, ExternalEvent,
 };
 pub use brain::{AskAnswer, AskRequest, EntryDetail, ResolvedEntry};
 pub use catalog::{
@@ -74,6 +79,9 @@ pub enum TriggerError {
     /// No agent has this ID.
     #[error("unknown agent `{0}`")]
     UnknownAgent(String),
+    /// The run may not start, for example because its trigger does not allow it.
+    #[error("{0}")]
+    Refused(String),
     /// The run could not be registered.
     #[error("cannot start the run: {0}")]
     Failed(String),
@@ -134,6 +142,8 @@ pub struct ApiState {
     pub desk: Desk,
     /// Time zone of the owner, for dates such as "today".
     pub zone: chrono_tz::Tz,
+    /// Automations.
+    pub automations: Arc<dyn Automations>,
 }
 
 /// Answer of the health check.
@@ -353,6 +363,7 @@ async fn run_agent(
         .await
         .map_err(|error| match error {
             TriggerError::UnknownAgent(_) => ApiError(StatusCode::NOT_FOUND, error.to_string()),
+            TriggerError::Refused(_) => ApiError(StatusCode::CONFLICT, error.to_string()),
             TriggerError::Failed(_) => internal(error),
         })?;
     Ok((StatusCode::ACCEPTED, Json(RunStarted { id: run })))
@@ -451,6 +462,9 @@ impl utoipa::Modify for SecurityAddon {
         ready::feed, ready::dismiss_draft,
         documents::list, documents::latest_brief, documents::recaps, documents::recap,
         documents::of_run,
+        automations::list, automations::get, automations::save, automations::switch,
+        automations::delete, automations::runs, automations::run, automations::webhook,
+        automations::emit,
     ),
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -468,6 +482,8 @@ impl utoipa::Modify for SecurityAddon {
         lighthouse_desk::BriefingDocument, lighthouse_desk::BriefingContent,
         lighthouse_desk::DocumentSection, lighthouse_desk::DocumentItem,
         lighthouse_desk::ItemSource, lighthouse_desk::ItemNumber,
+        AutomationInfo, AutomationTriggerInfo, AutomationStepInfo, AutomationSwitch,
+        AutomationRuns, ExternalEvent,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -563,6 +579,20 @@ pub fn router(state: ApiState) -> Router {
         .route("/briefs/latest", get(documents::latest_brief))
         .route("/recaps", get(documents::recaps))
         .route("/recaps/{week}", get(documents::recap))
+        .route(
+            "/automations",
+            get(automations::list).post(automations::save),
+        )
+        .route("/automations/events", post(automations::emit))
+        .route(
+            "/automations/{id}",
+            get(automations::get)
+                .patch(automations::switch)
+                .delete(automations::delete),
+        )
+        .route("/automations/{id}/runs", get(automations::runs))
+        .route("/automations/{id}/run", post(automations::run))
+        .route("/automations/{id}/webhook", post(automations::webhook))
         .route("/ready", get(ready::feed))
         .route("/ready/drafts/{id}/dismiss", post(ready::dismiss_draft))
         .route("/alerts", get(alerts::list))
@@ -705,6 +735,79 @@ mod tests {
         }
     }
 
+    fn automation_info(id: &str, enabled: bool) -> AutomationInfo {
+        AutomationInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            description: String::new(),
+            enabled,
+            trigger: AutomationTriggerInfo {
+                kind: "webhook".to_owned(),
+                cron: None,
+                event: None,
+                filter: BTreeMap::new(),
+            },
+            steps: Vec::new(),
+            next_run: None,
+            editable: id != "fixed",
+            source: String::new(),
+        }
+    }
+
+    struct FakeAutomations;
+
+    #[async_trait]
+    impl Automations for FakeAutomations {
+        async fn list(&self) -> Result<Vec<AutomationInfo>, String> {
+            Ok(vec![automation_info("follow-up", true)])
+        }
+
+        async fn get(&self, id: &str) -> Result<Option<AutomationInfo>, String> {
+            Ok((id == "follow-up").then(|| automation_info(id, true)))
+        }
+
+        async fn save(&self, source: &str) -> Result<AutomationInfo, AgentChangeError> {
+            match source {
+                "bad" => Err(AgentChangeError::Rejected("invalid".to_owned())),
+                _ => Ok(automation_info("saved", true)),
+            }
+        }
+
+        async fn delete(&self, id: &str) -> Result<bool, AgentChangeError> {
+            match id {
+                "fixed" => Err(AgentChangeError::Rejected("read-only".to_owned())),
+                _ => Ok(id == "follow-up"),
+            }
+        }
+
+        async fn set_enabled(
+            &self,
+            id: &str,
+            enabled: bool,
+        ) -> Result<Option<AutomationInfo>, AgentChangeError> {
+            Ok((id == "follow-up").then(|| automation_info(id, enabled)))
+        }
+
+        async fn run(&self, id: &str, _payload: Value) -> Result<Uuid, TriggerError> {
+            match id {
+                "follow-up" => Ok(Uuid::nil()),
+                _ => Err(TriggerError::UnknownAgent(id.to_owned())),
+            }
+        }
+
+        async fn webhook(&self, id: &str, _payload: Value) -> Result<Option<Uuid>, TriggerError> {
+            match id {
+                "follow-up" => Ok(Some(Uuid::nil())),
+                "manual" => Err(TriggerError::Refused("not a webhook".to_owned())),
+                _ => Err(TriggerError::UnknownAgent(id.to_owned())),
+            }
+        }
+
+        async fn emit(&self, _name: &str, _payload: Value) -> Result<Vec<Uuid>, String> {
+            Ok(vec![Uuid::nil()])
+        }
+    }
+
     struct FakeTrigger(Uuid, Arc<Mutex<Vec<Uuid>>>);
 
     #[async_trait]
@@ -779,6 +882,7 @@ mod tests {
             events: events.clone(),
             desk: desk.clone(),
             zone: chrono_tz::Europe::Berlin,
+            automations: Arc::new(FakeAutomations),
         };
         Harness {
             app: router(state),

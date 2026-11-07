@@ -10,6 +10,12 @@ watches your Claude Code sessions. Every run is logged with all tool calls, toke
 
 - **Agents as files:** Markdown with frontmatter, or written for you from a description.
 - **Approvals:** anything with external effect pauses the run until you decide, from any device.
+- **Your desk:** tasks, standing rules, what the assistant knows about you, alerts and one feed of what waits for you.
+  See [docs/api.md](docs/api.md).
+- **Automations:** a trigger and a few steps as a file, with approvals for anything that acts. See
+  [docs/automations.md](docs/automations.md).
+- **Briefings as data:** the Morning Brief and the weekly recap as structured documents for the apps. See
+  [docs/documents.md](docs/documents.md).
 - **Second Brain:** Markdown files with hybrid search, covering text, PDF, images and audio. See [docs/brain.md](docs/brain.md).
 - **Claude Code:** see sessions and answer permission prompts remotely, using official hooks. See
   [docs/desktop-agent.md](docs/desktop-agent.md).
@@ -33,7 +39,7 @@ You need Docker and a public HTTPS URL if you want to use OAuth connectors.
 ```sh
 cp lighthouse.example.toml lighthouse.toml   # adjust owner, models and connectors
 cp .env.example .env                         # set both values
-mkdir -p agents && cp agents/examples/*.md agents/
+mkdir -p agents automations && cp agents/examples/*.md agents/
 docker compose build
 
 alias lht='docker compose run --rm lighthouse lht'
