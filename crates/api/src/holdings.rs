@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-const HOLDINGS_AGENT: &str = "holdings";
 /// Earnings further out than this get no reminder yet.
 const LOOKAHEAD_DAYS: i64 = 60;
 
@@ -192,10 +191,7 @@ pub(crate) async fn reminders(
                     }),
                     ..NewTask::default()
                 },
-                Some(Proposer {
-                    agent_id: HOLDINGS_AGENT.to_owned(),
-                    run_id: Uuid::nil(),
-                }),
+                Some(Proposer::system(lighthouse_desk::Origin::Holdings)),
             )
             .await
             .map_err(desk_error)?;
@@ -286,5 +282,7 @@ mod tests {
         assert_eq!((again.proposed.len(), again.skipped), (0, 1));
         let (_, body) = call(app, "GET", "/tasks?view=proposed", Some(TOKEN)).await;
         assert!(body.contains("Review Acme before its earnings"));
+        assert!(body.contains("\"origin\":\"holdings\""));
+        assert!(body.contains("\"run_id\":null"));
     }
 }

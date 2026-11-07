@@ -186,8 +186,8 @@ impl Desk {
             .bind(source.kind)
             .bind(source.reference)
             .bind(source.label)
-            .bind(proposer.map(|who| who.agent_id.clone()))
-            .bind(proposer.map(|who| who.run_id))
+            .bind(proposer.and_then(|who| who.agent_id.clone()))
+            .bind(proposer.and_then(|who| who.run_id))
             .fetch_one(self.pool())
             .await?;
         Ok(row.into())
@@ -215,7 +215,7 @@ impl Desk {
         }
         let source = FactSource {
             kind: "agent".to_owned(),
-            reference: Some(proposer.run_id.to_string()),
+            reference: proposer.run_id.map(|run| run.to_string()),
             label: fact
                 .evidence
                 .map(|text| text.trim().chars().take(MAX_TEXT).collect::<String>())
@@ -337,10 +337,7 @@ mod tests {
     use lighthouse_store::testing::fresh_store;
 
     fn proposer() -> Proposer {
-        Proposer {
-            agent_id: "inbox".to_owned(),
-            run_id: Uuid::now_v7(),
-        }
+        Proposer::agent("inbox".to_owned(), Uuid::now_v7())
     }
 
     #[tokio::test]

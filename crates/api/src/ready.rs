@@ -412,10 +412,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let proposer = Proposer {
-            agent_id: "inbox".to_owned(),
-            run_id: run.as_uuid(),
-        };
+        let proposer = Proposer::agent("inbox".to_owned(), run.as_uuid());
         harness
             .desk
             .create_task(

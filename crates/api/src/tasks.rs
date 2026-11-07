@@ -391,10 +391,7 @@ mod tests {
     #[tokio::test]
     async fn proposals_of_agents_wait_for_acceptance() {
         let harness = harness(Some(TOKEN)).await;
-        let proposer = Proposer {
-            agent_id: "inbox".to_owned(),
-            run_id: Uuid::now_v7(),
-        };
+        let proposer = Proposer::agent("inbox".to_owned(), Uuid::now_v7());
         let proposal = harness
             .desk
             .create_task(

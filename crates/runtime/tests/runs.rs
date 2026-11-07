@@ -709,10 +709,7 @@ async fn confirmed_facts_reach_the_prompt_and_proposals_do_not() {
     })
     .await
     .unwrap();
-    let proposer = Proposer {
-        agent_id: "inbox".to_owned(),
-        run_id: Uuid::now_v7(),
-    };
+    let proposer = Proposer::agent("inbox".to_owned(), Uuid::now_v7());
     let guess = ProposedFact {
         text: "Unconfirmed guess".to_owned(),
         confidence: 0.3,

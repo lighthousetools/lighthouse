@@ -135,11 +135,7 @@ impl From<TaskRow> for Task {
                 row.source_label,
                 row.source_url,
             ),
-            origin: if row.origin == "agent" {
-                Origin::Agent
-            } else {
-                Origin::Owner
-            },
+            origin: Origin::parse(&row.origin),
             agent_id: row.agent_id,
             run_id: row.run_id,
             created_at: row.created_at,
@@ -235,13 +231,35 @@ fn check_notes(notes: Option<String>) -> Result<Option<String>, DeskError> {
     Ok(notes)
 }
 
-/// Who proposes a task.
-#[derive(Clone, Debug)]
+/// Who proposes a task or a fact.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proposer {
-    /// The agent.
-    pub agent_id: String,
-    /// The run.
-    pub run_id: Uuid,
+    /// Where the proposal comes from.
+    pub origin: Origin,
+    /// The agent, for proposals of agents.
+    pub agent_id: Option<String>,
+    /// The run, for proposals of agents.
+    pub run_id: Option<Uuid>,
+}
+
+impl Proposer {
+    /// A proposal of an agent run.
+    pub fn agent(agent_id: impl Into<String>, run_id: Uuid) -> Self {
+        Self {
+            origin: Origin::Agent,
+            agent_id: Some(agent_id.into()),
+            run_id: Some(run_id),
+        }
+    }
+
+    /// A proposal of Lighthouse itself, such as the pipeline suggestions.
+    pub fn system(origin: Origin) -> Self {
+        Self {
+            origin,
+            agent_id: None,
+            run_id: None,
+        }
+    }
 }
 
 impl Desk {
@@ -257,8 +275,8 @@ impl Desk {
         if let Some(source) = &task.source {
             source.validate()?;
         }
-        let (status, origin) = match proposer {
-            Some(_) => (TaskStatus::Proposed, Origin::Agent),
+        let (status, origin) = match &proposer {
+            Some(proposer) => (TaskStatus::Proposed, proposer.origin),
             None => (TaskStatus::Open, Origin::Owner),
         };
         let source = task.source.as_ref();
@@ -282,8 +300,8 @@ impl Desk {
             .bind(source.and_then(|link| link.label.clone()))
             .bind(source.and_then(|link| link.url.clone()))
             .bind(origin.as_str())
-            .bind(proposer.as_ref().map(|who| who.agent_id.clone()))
-            .bind(proposer.as_ref().map(|who| who.run_id))
+            .bind(proposer.as_ref().and_then(|who| who.agent_id.clone()))
+            .bind(proposer.as_ref().and_then(|who| who.run_id))
             .fetch_one(self.pool())
             .await?;
         Ok(row.into())
@@ -537,10 +555,7 @@ mod tests {
             .await
             .unwrap();
         desk.create_task(new("Someday", None), None).await.unwrap();
-        let proposer = Proposer {
-            agent_id: "inbox".to_owned(),
-            run_id: Uuid::now_v7(),
-        };
+        let proposer = Proposer::agent("inbox".to_owned(), Uuid::now_v7());
         let proposal = desk
             .create_task(new("Reply to the offer", None), Some(proposer))
             .await
@@ -671,6 +686,44 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn old_placeholder_proposals_get_their_origin() {
+        let desk = desk().await;
+        sqlx::query(
+            "INSERT INTO tasks (id, tenant_id, title, status, position, origin, agent_id, run_id) \
+             VALUES ($1, $2, 'Old', 'proposed', 0, 'agent', 'pipeline', '00000000-0000-0000-0000-000000000000')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(lighthouse_core::TenantId::SINGLE.as_uuid())
+        .execute(desk.pool())
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../store/migrations/0024_proposal_origin.sql"
+        ))
+        .execute(desk.pool())
+        .await
+        .unwrap();
+        let today = day("2026-01-01");
+        let task = desk
+            .tasks(TaskView::Proposed, today, 5)
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            (task.origin, task.agent_id, task.run_id),
+            (Origin::Pipeline, None, None)
+        );
+        let system = desk
+            .create_task(new("New", None), Some(Proposer::system(Origin::Holdings)))
+            .await
+            .unwrap();
+        assert_eq!(
+            (system.origin, system.status),
+            (Origin::Holdings, TaskStatus::Proposed)
         );
     }
 

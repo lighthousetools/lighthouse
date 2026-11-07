@@ -216,10 +216,7 @@ impl ToolHostFactory for DeskToolFactory {
         };
         Ok(Box::new(DeskHost {
             desk: self.desk.clone(),
-            proposer: Proposer {
-                agent_id,
-                run_id: run.as_uuid(),
-            },
+            proposer: Proposer::agent(agent_id, run.as_uuid()),
             inner,
         }))
     }

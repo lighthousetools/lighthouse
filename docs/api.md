@@ -78,8 +78,9 @@ A delegated task starts a run of the agent with the task's title, notes and due 
 `delegated_agent` and `delegated_run`, and when the run ends, its report lands in `result` with `result_status`. The task
 stays open: you decide whether it is done. Anything the agent wants to send still waits for your approval.
 
-Agents cannot create tasks directly. A proposal from an agent has the status `proposed` and the origin `agent`, and stays
-off the list until the owner accepts it. Deleting a proposal rejects it.
+Agents cannot create tasks directly. A proposal has the status `proposed` and stays off the list until the owner
+accepts it. Its `origin` says where it comes from: `agent`, with `agent_id` and `run_id`, or `pipeline` and `holdings`
+for the suggestions of those pages, without a run. Deleting a proposal rejects it.
 
 ## Rules
 

@@ -16,7 +16,6 @@ use uuid::Uuid;
 
 const SIMILAR: i64 = 50;
 const EXAMPLES: usize = 5;
-const PIPELINE_AGENT: &str = "pipeline";
 
 /// A won deal the suggestion is based on.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -242,10 +241,7 @@ pub(crate) async fn top_tasks(
                     }),
                     ..NewTask::default()
                 },
-                Some(Proposer {
-                    agent_id: PIPELINE_AGENT.to_owned(),
-                    run_id: Uuid::nil(),
-                }),
+                Some(Proposer::system(lighthouse_desk::Origin::Pipeline)),
             )
             .await
             .map_err(desk_error)?;
@@ -411,6 +407,9 @@ mod tests {
         assert_eq!(result.proposed.len(), 1);
         let (_, body) = call(app, "GET", "/tasks?view=proposed", Some(TOKEN)).await;
         assert!(body.contains("Move Deal small forward"), "{body}");
+        let tasks: Vec<Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(tasks[0]["origin"], "pipeline");
+        assert!(tasks[0]["run_id"].is_null() && tasks[0]["agent_id"].is_null());
         let (_, body) = send(
             app,
             "POST",

@@ -60,6 +60,10 @@ pub enum Origin {
     Owner,
     /// An agent, as a proposal.
     Agent,
+    /// The pipeline suggestions, as a proposal.
+    Pipeline,
+    /// The reminders of holdings, as a proposal.
+    Holdings,
 }
 
 impl Origin {
@@ -68,7 +72,17 @@ impl Origin {
         match self {
             Self::Owner => "owner",
             Self::Agent => "agent",
+            Self::Pipeline => "pipeline",
+            Self::Holdings => "holdings",
         }
+    }
+
+    /// Reads a stored name. Unknown names count as the owner's.
+    pub fn parse(value: &str) -> Self {
+        [Self::Agent, Self::Pipeline, Self::Holdings]
+            .into_iter()
+            .find(|origin| origin.as_str() == value)
+            .unwrap_or(Self::Owner)
     }
 }
 
@@ -191,6 +205,9 @@ mod tests {
             None
         );
         assert_eq!(Origin::Agent.as_str(), "agent");
+        assert_eq!(Origin::parse("pipeline"), Origin::Pipeline);
+        assert_eq!(Origin::parse("holdings"), Origin::Holdings);
+        assert_eq!(Origin::parse("other"), Origin::Owner);
     }
 
     #[test]
