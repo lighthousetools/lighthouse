@@ -268,6 +268,10 @@ input = { room_id = "{{item.external_id}}", name = "{{input.title}}", html = "{{
 `add_step`, `add_milestone` and `attach` wait for your approval, and a room is never published to its customer by
 Lighthouse. A portfolio (`holdings`) can come from a sheet or a market data
 server: `amount` is the value of a holding, and `quote` items hold prices. Map `next_earnings_at` for reminders.
+`GET /holdings/watchlist` lists watched symbols: `quote` and `watch` items without a holding of the same ID.
+`POST /holdings/{id}/theses` takes a `kind`: `thesis` (the default), `metric` for a number you watch, such as "Gross
+margin above 40%", or `question` for one to answer. All three are notes in the Brain, linked to the holding, and
+`GET /holdings/{id}/notes` returns them as `theses`, `metrics` and `questions`.
 
 | Endpoint | Purpose |
 |---|---|

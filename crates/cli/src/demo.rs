@@ -330,14 +330,27 @@ pub async fn seed(store: &Store, brain_dir: &Path) -> anyhow::Result<Seeded> {
             Vec::new(),
         ))
         .await?;
-    brain
-        .remember(entry(
-            "note",
+    for (title, body, link) in [
+        (
             "Why I hold Example Corp",
             "Steady revenue and low debt. Check after each quarterly report.",
-            vec!["holding:depot:EXA".to_owned()],
-        ))
-        .await?;
+            "holding:depot:EXA",
+        ),
+        (
+            "Revenue growth above 10%",
+            "Below that for two quarters, the thesis no longer holds.",
+            "holding:depot:EXA#metric",
+        ),
+        (
+            "Does the new plant pay off by 2027?",
+            "Look for the utilization in the next report.",
+            "holding:depot:EXA#question",
+        ),
+    ] {
+        brain
+            .remember(entry("note", title, body, vec![link.to_owned()]))
+            .await?;
+    }
     Ok(Seeded::Added)
 }
 

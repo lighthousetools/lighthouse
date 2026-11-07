@@ -19,6 +19,10 @@ const LOOKAHEAD_DAYS: i64 = 60;
 /// A thesis of the owner.
 #[derive(Deserialize, ToSchema)]
 pub struct NewThesis {
+    /// `thesis` (the default), `metric` for a number the owner watches, such as
+    /// "Gross margin above 40%", or `question` for one to answer.
+    #[serde(default)]
+    pub kind: Option<String>,
     /// Title, such as "Why I hold it".
     pub title: String,
     /// The owner's reasoning in Markdown.
@@ -44,6 +48,69 @@ pub struct ReminderResult {
 
 fn link(holding: &SyncedItem) -> String {
     format!("holding:{}:{}", holding.source, holding.external_id)
+}
+
+/// The kinds of the owner's notes on a holding.
+const NOTE_KINDS: [&str; 3] = ["thesis", "metric", "question"];
+
+/// The Brain link of a kind of note: theses link to the holding itself.
+fn note_link(holding: &SyncedItem, kind: &str) -> String {
+    if kind == "thesis" {
+        link(holding)
+    } else {
+        format!("{}#{kind}", link(holding))
+    }
+}
+
+/// The owner's notes on a holding, by kind.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct HoldingNotes {
+    /// Why the owner holds it.
+    pub theses: Vec<EntrySummary>,
+    /// Numbers the owner watches.
+    pub metrics: Vec<EntrySummary>,
+    /// Open questions.
+    pub questions: Vec<EntrySummary>,
+}
+
+/// Lists the owner's theses, metrics and questions on a holding, from the Brain.
+#[utoipa::path(
+    get,
+    operation_id = "holding_notes",
+    path = "/holdings/{id}/notes",
+    params(("id" = Uuid, Path, description = "Holding ID")),
+    responses((status = 200, body = HoldingNotes), (status = 404, description = "Unknown holding")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn notes(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<HoldingNotes>, ApiError> {
+    let holding = holding(&state, id).await?;
+    let linked = |kind: &'static str| {
+        let state = state.clone();
+        let key = note_link(&holding, kind);
+        async move { state.brain.linked(&key, 100).await.map_err(internal) }
+    };
+    Ok(Json(HoldingNotes {
+        theses: linked("thesis").await?,
+        metrics: linked("metric").await?,
+        questions: linked("question").await?,
+    }))
+}
+
+/// Lists watched symbols: quotes and `watch` items without a position.
+#[utoipa::path(
+    get,
+    operation_id = "watchlist",
+    path = "/holdings/watchlist",
+    responses((status = 200, body = Vec<SyncedItem>)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn watchlist(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<SyncedItem>>, ApiError> {
+    Ok(Json(state.sync.watched().await.map_err(internal)?))
 }
 
 async fn holding(state: &ApiState, id: Uuid) -> Result<SyncedItem, ApiError> {
@@ -95,6 +162,13 @@ pub(crate) async fn create_thesis(
     Json(thesis): Json<NewThesis>,
 ) -> Result<(StatusCode, Json<Entry>), ApiError> {
     let holding = holding(&state, id).await?;
+    let kind = thesis.kind.as_deref().unwrap_or("thesis");
+    if !NOTE_KINDS.contains(&kind) {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "`kind` must be thesis, metric or question".to_owned(),
+        ));
+    }
     let entry = state
         .brain
         .remember(NewEntry {
@@ -105,7 +179,7 @@ pub(crate) async fn create_thesis(
                 kind: "app".to_owned(),
                 reference: "holdings".to_owned(),
             }],
-            links: vec![link(&holding)],
+            links: vec![note_link(&holding, kind)],
         })
         .await
         .map_err(|error| match error {
@@ -209,6 +283,74 @@ mod tests {
     use crate::tests::{TOKEN, call, harness, send};
     use lighthouse_sync::MappedItem;
     use serde_json::{Value, json};
+
+    #[tokio::test]
+    async fn metrics_and_questions_are_kept_apart_and_watched_symbols_listed() {
+        let harness = harness(Some(TOKEN)).await;
+        let symbol = |id: &str| MappedItem {
+            external_id: id.to_owned(),
+            title: Some(id.to_owned()),
+            data: json!({}),
+            ..MappedItem::default()
+        };
+        let held = harness
+            .sync
+            .upsert("depot", "holdings", "holding", &[symbol("EXA")], &[])
+            .await
+            .unwrap();
+        harness
+            .sync
+            .upsert(
+                "depot",
+                "holdings",
+                "quote",
+                &[symbol("EXA"), symbol("TRY")],
+                &[],
+            )
+            .await
+            .unwrap();
+        let app = &harness.app;
+        let uri = format!("/holdings/{}/theses", held[0].id);
+        for (kind, title) in [
+            (Some("metric"), "Margin above 40%"),
+            (Some("question"), "Will the plant pay off?"),
+            (None, "Why"),
+        ] {
+            let (status, body) = send(
+                app,
+                "POST",
+                &uri,
+                Some(TOKEN),
+                Some(json!({"kind": kind, "title": title, "body": "-"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+        }
+        let (status, _) = send(
+            app,
+            "POST",
+            &uri,
+            Some(TOKEN),
+            Some(json!({"kind": "rumor", "title": "x", "body": "y"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, body) = call(
+            app,
+            "GET",
+            &format!("/holdings/{}/notes", held[0].id),
+            Some(TOKEN),
+        )
+        .await;
+        let notes: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(notes["metrics"][0]["title"], "Margin above 40%", "{body}");
+        assert_eq!(notes["questions"].as_array().unwrap().len(), 1);
+        assert_eq!(notes["theses"].as_array().unwrap().len(), 1);
+        let (_, body) = call(app, "GET", "/holdings/watchlist", Some(TOKEN)).await;
+        let watched: Vec<Value> = serde_json::from_str(&body).expect(&body);
+        assert_eq!(watched.len(), 1, "{body}");
+        assert_eq!(watched[0]["external_id"], "TRY");
+    }
 
     #[tokio::test]
     async fn theses_are_linked_and_earnings_become_reminders() {

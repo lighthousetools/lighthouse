@@ -511,6 +511,20 @@ impl SyncStore {
             .await
     }
 
+    /// Lists watched symbols: quotes and `watch` items without a holding of the
+    /// same external ID, so without a position.
+    pub async fn watched(&self) -> Result<Vec<SyncedItem>, sqlx::Error> {
+        let query = format!(
+            "SELECT {COLUMNS} FROM synced_items WHERE tenant_id = $1 AND kind IN ('quote', 'watch') \
+             AND NOT EXISTS (SELECT 1 FROM synced_items h WHERE h.tenant_id = $1 AND h.kind = 'holding' \
+             AND h.external_id = synced_items.external_id) ORDER BY title NULLS LAST, external_id LIMIT 200"
+        );
+        sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant.as_uuid())
+            .fetch_all(self.pool())
+            .await
+    }
+
     /// Counts the cached items of a kind in a source.
     pub async fn count(&self, source: &str, kind: &str) -> Result<i64, sqlx::Error> {
         let row: (i64,) = sqlx::query_as(

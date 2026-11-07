@@ -248,6 +248,7 @@ pub fn sample(name: &str, arguments: &Value) -> Option<Value> {
         "list_quotes" => json!([
             {"symbol": "EXA", "price": "154.00", "currency": "EUR", "time": ago(0)},
             {"symbol": "SMP", "price": "41.00", "currency": "EUR", "time": ago(0)},
+            {"symbol": "TRY", "price": "12.40", "currency": "EUR", "time": ago(0)},
         ]),
         "create_draft"
         | "send_reply"

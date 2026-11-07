@@ -47,7 +47,7 @@ pub use connected::{
 };
 pub use contracts::{ComposeRequest, Composed, NewTemplate, fill as fill_template};
 pub use decks::{DeckAttachment, DeckBrief, NewDeck, render_html as render_deck};
-pub use holdings::{NewThesis, ReminderRequest, ReminderResult};
+pub use holdings::{HoldingNotes, NewThesis, ReminderRequest, ReminderResult};
 pub use pipeline::{DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult, median};
 pub use posts::{
     CheckRequest, ImportRequest, ImportResult, Publisher, RewriteRequest, Writer, Written,
@@ -534,7 +534,7 @@ impl utoipa::Modify for SecurityAddon {
         posts::save_branding, posts::rewrite, decks::list, decks::create, decks::export,
         decks::generate, decks::attach, contracts::templates, contracts::create_template,
         contracts::compose, pipeline::suggestion, pipeline::top_tasks, pipeline::export,
-        holdings::theses, holdings::create_thesis, holdings::reminders,
+        holdings::notes, holdings::watchlist, holdings::theses, holdings::create_thesis, holdings::reminders,
         talk::list, talk::create, talk::get, talk::update, talk::delete, talk::send,
     ),
     components(schemas(
@@ -576,7 +576,7 @@ impl utoipa::Modify for SecurityAddon {
         ImportResult, NewDeck, lighthouse_desk::TalkThread, lighthouse_desk::TalkMessage,
         NewThread, ThreadPatch, ThreadDetail, NewMessage, Exchange, Written, RewriteRequest,
         DeckBrief, DeckAttachment, lighthouse_desk::Variant, NewTemplate, ComposeRequest, Composed,
-        DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult, NewThesis, ReminderRequest,
+        DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult, NewThesis, HoldingNotes, ReminderRequest,
         ReminderResult,
     )),
     modifiers(&SecurityAddon)
@@ -752,6 +752,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/contracts", get(connected::contracts))
         .route("/rooms", get(connected::rooms))
         .route("/holdings", get(connected::holdings))
+        .route("/holdings/watchlist", get(holdings::watchlist))
+        .route("/holdings/{id}/notes", get(holdings::notes))
         .route("/holdings/quotes", get(connected::quotes))
         .route("/holdings/reminders", post(holdings::reminders))
         .route(
