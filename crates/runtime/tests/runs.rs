@@ -5,7 +5,7 @@ use lighthouse_audit::{Approval, AuditLog, RunDetail};
 use lighthouse_config::{ConnectorConfig, ConnectorTransport, ModelConfig};
 use lighthouse_core::agent::{AgentDefinition, Delivery};
 use lighthouse_core::{RunId, TenantId};
-use lighthouse_desk::{Desk, NewRule};
+use lighthouse_desk::{Desk, NewFact, NewRule, ProposedFact, Proposer};
 use lighthouse_mcp::{McpError, ToolHost, ToolHostFactory, ToolOutput, ToolPolicy};
 use lighthouse_notify::{Notifier, NotifyError};
 use lighthouse_router::mock::MockProvider;
@@ -697,4 +697,30 @@ async fn an_agent_without_rules_gets_no_rules_block() {
             .system
             .contains("<owner_rules>")
     );
+}
+
+#[tokio::test]
+async fn confirmed_facts_reach_the_prompt_and_proposals_do_not() {
+    let fixture = fixture(vec![ChatResponse::text("Done", usage())], false).await;
+    let desk = &fixture.desk;
+    desk.create_fact(NewFact {
+        text: "Prefers answers in English".to_owned(),
+        category: None,
+    })
+    .await
+    .unwrap();
+    let proposer = Proposer {
+        agent_id: "inbox".to_owned(),
+        run_id: Uuid::now_v7(),
+    };
+    let guess = ProposedFact {
+        text: "Unconfirmed guess".to_owned(),
+        confidence: 0.3,
+        ..ProposedFact::default()
+    };
+    desk.propose_fact(guess, &proposer).await.unwrap();
+    run(&fixture, &agent("")).await;
+    let system = &fixture.provider.requests()[0].system;
+    assert!(system.contains("<owner_facts>\n- Prefers answers in English\n</owner_facts>"));
+    assert!(!system.contains("Unconfirmed guess"));
 }

@@ -1,9 +1,11 @@
 //! Agent loop with limits for steps, cost and time.
 
 mod agents;
+mod desk_tools;
 mod registry;
 
 pub use agents::{AgentFile, load_agents};
+pub use desk_tools::{DeskToolFactory, PROPOSE_FACT, PROPOSE_TASK};
 pub use registry::{AgentRegistry, LoadedAgent, RegistryError};
 
 use async_trait::async_trait;
@@ -201,6 +203,7 @@ fn elapsed_ms(start: Instant) -> u64 {
 #[derive(Debug, Default)]
 struct OwnerInstructions {
     rules: Vec<String>,
+    facts: Vec<String>,
 }
 
 /// Puts owner text on one line that cannot close the surrounding tag.
@@ -217,8 +220,13 @@ impl Runtime {
             .active_rules(&agent.id)
             .await
             .map_err(|error| Stop::Failed(format!("cannot read the owner's rules: {error}")))?;
+        let facts =
+            self.desk.known_facts().await.map_err(|error| {
+                Stop::Failed(format!("cannot read the owner's memory: {error}"))
+            })?;
         Ok(OwnerInstructions {
             rules: rules.into_iter().map(|rule| rule.text).collect(),
+            facts: facts.into_iter().map(|fact| fact.text).collect(),
         })
     }
 
@@ -257,6 +265,15 @@ impl Runtime {
                 let _ = writeln!(system, "- {}", owner_line(rule));
             }
             system.push_str("</owner_rules>\n");
+        }
+        if !owner.facts.is_empty() {
+            system.push_str(
+                "\nWhat the owner confirmed about themselves. Fit your work to it:\n<owner_facts>\n",
+            );
+            for fact in &owner.facts {
+                let _ = writeln!(system, "- {}", owner_line(fact));
+            }
+            system.push_str("</owner_facts>\n");
         }
         system
     }

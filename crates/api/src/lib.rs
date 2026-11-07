@@ -8,6 +8,7 @@ mod approvals;
 mod auth;
 mod brain;
 mod catalog;
+mod memory;
 mod rules;
 mod sessions;
 mod tasks;
@@ -38,8 +39,8 @@ use lighthouse_audit::{Approval, AuditLog, DailyCost, RunDetail, RunRecord, Step
 use lighthouse_auth::{Auth, Device, DeviceKind};
 use lighthouse_brain::{Brain, Entry, EntryPatch, EntrySummary, NewEntry, SearchHit, Source};
 use lighthouse_desk::{
-    Desk, DeskError, NewRule, NewTask, Origin, Rule, RulePatch, SourceLink, Task, TaskPatch,
-    TaskStatus, TaskView,
+    Desk, DeskError, Fact, FactPatch, FactSource, NewFact, NewRule, NewTask, Origin, Rule,
+    RulePatch, SourceLink, Task, TaskPatch, TaskStatus, TaskView,
 };
 use lighthouse_mcp::{McpError, OAuthFlows};
 use lighthouse_notify::EventBus;
@@ -441,6 +442,7 @@ impl utoipa::Modify for SecurityAddon {
         tasks::list, tasks::create, tasks::get, tasks::update, tasks::delete, tasks::complete,
         tasks::reopen, tasks::accept, tasks::reorder,
         rules::list, rules::create, rules::get, rules::update, rules::delete,
+        memory::list, memory::create, memory::get, memory::update, memory::confirm, memory::delete,
     ),
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -452,7 +454,7 @@ impl utoipa::Modify for SecurityAddon {
         Node, NodeChange, NodeReport, NodeState, NewPermission, Permission, PermissionDecision,
         Session, SessionReport,
         Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Origin, SourceLink,
-        Rule, NewRule, RulePatch,
+        Rule, NewRule, RulePatch, Fact, FactSource, NewFact, FactPatch,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -535,6 +537,14 @@ pub fn router(state: ApiState) -> Router {
             "/rules/{id}",
             get(rules::get).patch(rules::update).delete(rules::delete),
         )
+        .route("/memory", get(memory::list).post(memory::create))
+        .route(
+            "/memory/{id}",
+            get(memory::get)
+                .patch(memory::update)
+                .delete(memory::delete),
+        )
+        .route("/memory/{id}/confirm", post(memory::confirm))
         .route("/credentials", get(auth::list_credentials))
         .route(
             "/credentials/{name}",

@@ -13,6 +13,7 @@ never report texts, tool arguments or other private content.
 | `changed` | `{}` | Something changed. Sent at the start and whenever the stored state changes, also for changes made by agents |
 | `tasks.changed` | `{"id": <task or null>}` | A task was created, changed, reordered or deleted |
 | `rules.changed` | `{"id": <rule>}` | A rule was created, changed or deleted |
+| `memory.changed` | `{"id": <fact>}` | A fact was stated, changed, confirmed or forgotten |
 
 A client that falls behind gets a `changed` event instead of the events it missed.
 
@@ -65,3 +66,25 @@ Standing rules from the owner. They come from the owner, not from a tool, and ap
 
 Tool results stay in `<untrusted_content>` tags, and their content cannot open or close an `<owner_rules>` tag. A rule
 cannot widen what an agent may do: tool levels and approvals apply as before.
+
+## Memory
+
+Memory is what the assistant knows about the owner: preferences, habits and circumstances, one sentence each. Every
+fact has a `source` and a `confidence` from 0 to 1.
+
+- A fact the owner states through `POST /memory` is `confirmed`, with the source `owner` and the confidence 1.
+- A fact an agent learned through the `memory.propose` tool is `proposed`, with the source `agent`, the run as
+  reference and what it was learned from as label.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /memory?status=&category=` | Facts, newest first |
+| `POST /memory` | State a fact |
+| `GET`, `PATCH`, `DELETE /memory/{id}` | Read, change or forget. `{"paused": true}` keeps a fact out of prompts. Rewording a fact confirms it |
+| `POST /memory/{id}/confirm` | Confirm a proposed fact |
+
+Runs see the newest 100 confirmed facts that are not paused, in an `<owner_facts>` block of the system prompt. Proposals
+never reach a prompt, because an agent may have learned them from untrusted content.
+
+Facts live in Postgres, not in the Second Brain. Brain entries are knowledge about the world in files you edit, while
+facts need a confidence, a confirmation and a place in every prompt.

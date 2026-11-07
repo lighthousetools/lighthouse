@@ -59,6 +59,17 @@ check those with extra care.
 
 Use `lht connectors tools <connector>` to see the real tool names of a server.
 
+### Built-in tools
+
+| Tool | Level | Purpose |
+|---|---|---|
+| `brain.search`, `brain.get` | `read` | Search and read the Second Brain, see [brain.md](brain.md) |
+| `brain.remember`, `brain.link` | `draft` | Store and link Brain entries |
+| `tasks.propose` | `draft` | Propose a task for the owner's list. It waits as `proposed` until the owner accepts it |
+| `memory.propose` | `draft` | Propose a fact about the owner with a `confidence` from 0 to 1. It reaches prompts only once the owner confirms it |
+
+Every run also sees the owner's enabled [rules](api.md#rules) and confirmed [facts](api.md#memory) in its system prompt.
+
 ## Schedules
 
 Cron expressions use the configured time zone. A run missed during a restart is caught up once if it is at most one

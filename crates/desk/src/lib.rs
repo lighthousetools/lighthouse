@@ -4,9 +4,11 @@
 //! only propose tasks and facts. A proposal changes nothing until the owner
 //! accepts it.
 
+pub mod facts;
 pub mod rules;
 pub mod tasks;
 
+pub use facts::{Fact, FactFilter, FactPatch, FactSource, NewFact, ProposedFact};
 pub use rules::{NewRule, Rule, RulePatch};
 pub use tasks::{NewTask, Proposer, Task, TaskPatch, TaskStatus, TaskView};
 
@@ -130,6 +132,17 @@ impl Desk {
 
     fn tenant(&self) -> uuid::Uuid {
         self.tenant.as_uuid()
+    }
+
+    /// Returns the agent of a run, for proposals that name their source.
+    pub async fn agent_of_run(&self, run: uuid::Uuid) -> Result<Option<String>, DeskError> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT agent_id FROM runs WHERE tenant_id = $1 AND id = $2")
+                .bind(self.tenant())
+                .bind(run)
+                .fetch_optional(self.pool())
+                .await?;
+        Ok(row.map(|(agent,)| agent))
     }
 }
 

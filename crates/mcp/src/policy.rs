@@ -6,6 +6,8 @@ const BRAIN: &str = "brain";
 const BRAIN_READ_TOOLS: [&str; 2] = ["search", "get"];
 /// Changes to the Brain are reversible and never leave the instance.
 const BRAIN_DRAFT_TOOLS: [&str; 2] = ["remember", "link"];
+/// Proposals to the owner, who accepts or rejects them. They never leave the instance.
+const PROPOSAL_TOOLS: [(&str, &str); 2] = [("tasks", "propose"), ("memory", "propose")];
 
 /// Classifies tools by the connector allowlists.
 ///
@@ -45,6 +47,9 @@ impl ToolPolicy {
         let builtin = |tools: &[&str]| tools.iter().map(|tool| (*tool).to_owned()).collect();
         read_tools.insert(BRAIN.to_owned(), builtin(&BRAIN_READ_TOOLS));
         draft_tools.insert(BRAIN.to_owned(), builtin(&BRAIN_DRAFT_TOOLS));
+        for (connector, tool) in PROPOSAL_TOOLS {
+            draft_tools.insert(connector.to_owned(), builtin(&[tool]));
+        }
         Self {
             read_tools,
             draft_tools,
@@ -166,5 +171,13 @@ mod tests {
         assert!(blocked[0].reason.contains("below its level"));
         let blocked = policy.blocked(&agent("  - linear.delete_issue: draft"));
         assert!(blocked[0].reason.contains("does not list it"));
+    }
+
+    #[test]
+    fn proposals_to_the_owner_are_drafts() {
+        let policy = policy();
+        assert_eq!(policy.level("tasks.propose"), ToolLevel::Draft);
+        assert_eq!(policy.level("memory.propose"), ToolLevel::Draft);
+        assert_eq!(policy.level("tasks.delete"), ToolLevel::Write);
     }
 }

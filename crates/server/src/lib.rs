@@ -18,7 +18,9 @@ use lighthouse_desk::Desk;
 use lighthouse_mcp::{McpConnector, OAuthFlows, ToolHostFactory, ToolPolicy};
 use lighthouse_notify::{ChannelNotifier, EventBus};
 use lighthouse_router::media::OpenAiMedia;
-use lighthouse_runtime::{AgentRegistry, LoadedAgent, RegistryError, Runtime, VaultRouterSource};
+use lighthouse_runtime::{
+    AgentRegistry, DeskToolFactory, LoadedAgent, RegistryError, Runtime, VaultRouterSource,
+};
 use lighthouse_scheduler::{AgentRunner, ScheduleHandle, Scheduler};
 use lighthouse_sessions::Sessions;
 use lighthouse_skills::SkillLibrary;
@@ -249,6 +251,8 @@ impl ServerCatalog {
             "brain.get".to_owned(),
             "brain.remember: draft".to_owned(),
             "brain.link: draft".to_owned(),
+            "tasks.propose: draft".to_owned(),
+            "memory.propose: draft".to_owned(),
         ];
         for (name, connector) in &self.config.connectors {
             tools.extend(
@@ -563,7 +567,10 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         Arc::new(McpConnector::new(config.connectors.clone(), vault.clone()));
     let runtime = Arc::new(Runtime {
         router: Arc::new(VaultRouterSource::new(config.clone(), vault.clone())),
-        tools: Arc::new(BrainToolFactory::new(brain.clone(), mcp)),
+        tools: Arc::new(BrainToolFactory::new(
+            brain.clone(),
+            Arc::new(DeskToolFactory::new(desk.clone(), mcp)),
+        )),
         policy: ToolPolicy::new(&config.connectors),
         skills: SkillLibrary::load(&config.paths.skills)?,
         audit: audit.clone(),

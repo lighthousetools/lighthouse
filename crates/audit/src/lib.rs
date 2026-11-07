@@ -296,7 +296,8 @@ impl AuditLog {
              (SELECT max(updated_at)::text FROM sessions WHERE tenant_id = $1), \
              (SELECT count(*) || max(updated_at)::text FROM brain_entries WHERE tenant_id = $1), \
              (SELECT count(*) || max(updated_at)::text FROM tasks WHERE tenant_id = $1), \
-             (SELECT count(*) || max(updated_at)::text FROM rules WHERE tenant_id = $1))",
+             (SELECT count(*) || max(updated_at)::text FROM rules WHERE tenant_id = $1), \
+             (SELECT count(*) || max(updated_at)::text FROM facts WHERE tenant_id = $1))",
         )
         .bind(self.tenant.as_uuid())
         .fetch_one(self.store.pool())
