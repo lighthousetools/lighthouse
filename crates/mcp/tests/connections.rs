@@ -272,7 +272,8 @@ async fn http_server_without_auth() {
         .into_iter()
         .map(|tool| tool.name)
         .collect();
-    assert_eq!(names, ["list_issues", "echo", "delete_issue"]);
+    assert_eq!(names.len(), lighthouse_mcp::demo::TOOLS.len());
+    assert_eq!(names[..3], ["list_issues", "echo", "delete_issue"]);
 }
 
 #[tokio::test]

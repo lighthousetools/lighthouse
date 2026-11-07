@@ -16,6 +16,7 @@ path = "src/bin/demo.rs"
 
 [dependencies]
 async-trait.workspace = true
+chrono.workspace = true
 lighthouse-config.workspace = true
 lighthouse-core.workspace = true
 lighthouse-router.workspace = true
