@@ -381,14 +381,13 @@ pub fn map_item(
                 flags.insert("overdue".to_owned());
             }
         }
-        "contract" => {
+        "contract"
             if open
                 && ends_at.is_some_and(|expiry| {
                     expiry > now && expiry - now < chrono::Duration::days(EXPIRING_WITHIN_DAYS)
-                })
-            {
-                flags.insert("expiring".to_owned());
-            }
+                }) =>
+        {
+            flags.insert("expiring".to_owned());
         }
         _ => {}
     }
