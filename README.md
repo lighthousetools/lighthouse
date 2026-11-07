@@ -37,6 +37,27 @@ watches your Claude Code sessions. Every run is logged with all tool calls, toke
 | [`lighthouse-web`](https://github.com/lighthousetools/lighthouse-web) | Web app, also installable as a PWA |
 | [`lighthouse-apple`](https://github.com/lighthousetools/lighthouse-apple) | Mac app with menu bar item, iOS app |
 
+## Try it locally
+
+The demo shows the whole product with fictional data: two companies, Acme Ltd and Globex Inc, with mail, calendar,
+issues, pull requests, deals, bank accounts, invoices, contracts, deal rooms and a portfolio. A demo MCP server serves
+that data, and a demo provider answers instead of a model, so agents, briefs, recaps, conversations and rewrites work
+without any account or API key.
+
+```sh
+docker compose -f demo/compose.yml up --build
+```
+
+Open http://localhost:8088 and sign in with the password `lighthouse-demo`. The web app is served from
+`../lighthouse-web/dist` if you built it next to this repository; set `LIGHTHOUSE_WEB_DIST` to use another directory.
+The API answers to the bearer token `demo-admin-token`. Run the agents `morning-brief`, `weekly-report` and `inbox`
+from the web app, or with `curl -X POST -H 'Authorization: Bearer demo-admin-token' localhost:8088/agents/morning-brief/run`;
+the inbox agent stops at an approval before it "sends" a reply. Afterwards `demo/verify.sh` checks that every list has
+data.
+
+Remove the demo and all its data with `docker compose -f demo/compose.yml down -v`. Everything in it is made up, and
+its keys protect nothing: never use `demo/lighthouse.toml` for a real instance.
+
 ## Quickstart
 
 You need Docker and a public HTTPS URL if you want to use OAuth connectors.

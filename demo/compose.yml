@@ -1,0 +1,61 @@
+# The local demo: Postgres, the demo data and the server with fictional data.
+#
+#   docker compose -f demo/compose.yml up --build
+#
+# Then open http://localhost:8088 and sign in with the password `lighthouse-demo`.
+# Remove everything, data included, with:
+#
+#   docker compose -f demo/compose.yml down -v
+#
+# The keys and passwords below protect nothing but this demo. Never reuse them.
+name: lighthouse-demo
+
+x-demo-environment: &demo-environment
+  LIGHTHOUSE_CONFIG: /etc/lighthouse/lighthouse.toml
+  LIGHTHOUSE_VAULT__MASTER_KEY: bGlnaHRob3VzZS1kZW1vLWtleS1ub3QtYS1zZWNyZXQ=
+  LIGHTHOUSE_SERVER__ADMIN_TOKEN: demo-admin-token
+
+services:
+  demo-postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: lighthouse
+      POSTGRES_PASSWORD: lighthouse-demo
+      POSTGRES_DB: lighthouse
+    volumes:
+      - demo-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lighthouse"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  demo-seed:
+    build:
+      context: ..
+    image: lighthouse:demo
+    depends_on:
+      demo-postgres:
+        condition: service_healthy
+    environment: *demo-environment
+    volumes:
+      - ./lighthouse.toml:/etc/lighthouse/lighthouse.toml:ro
+      - demo-data:/var/lib/lighthouse/data
+    command: ["lht", "demo", "seed"]
+
+  demo-server:
+    image: lighthouse:demo
+    depends_on:
+      demo-seed:
+        condition: service_completed_successfully
+    environment: *demo-environment
+    ports:
+      - "127.0.0.1:8088:8080"
+    volumes:
+      - ./lighthouse.toml:/etc/lighthouse/lighthouse.toml:ro
+      - demo-data:/var/lib/lighthouse/data
+      - ${LIGHTHOUSE_WEB_DIST:-../../lighthouse-web/dist}:/srv/web:ro
+
+volumes:
+  demo-postgres:
+  demo-data:
