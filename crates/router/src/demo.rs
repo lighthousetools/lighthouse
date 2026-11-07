@@ -55,6 +55,21 @@ const AUTOMATION: &str = "---\nname: Tell me about failed briefs\ntrigger:\n  ev
 
 const AGENT: &str = "---\nname: Inbox helper\nscope: org\ntrigger:\n  manual: true\ntools:\n  - demo.list_threads\n---\nSummarize the new mail and propose replies.\n";
 
+/// Fictional arguments for a tool call, so a write that waits for approval has
+/// something to review.
+pub fn arguments(tool: &str) -> serde_json::Value {
+    let tool = tool.to_lowercase();
+    if tool.ends_with("send_reply") || tool.ends_with("create_draft") {
+        return json!({
+            "thread_id": "t1",
+            "to": "John Roe <john.roe@globex.example>",
+            "subject": "Re: Updated offer for Globex?",
+            "body": "Hi John,\n\nthe updated offer is attached: 18,000 EUR for the renewal, with the pilot for one team included. I can walk you through it on Thursday.\n\nBest regards,\nAlex",
+        });
+    }
+    json!({})
+}
+
 /// Writes the final answer for a request.
 pub fn answer(request: &ChatRequest) -> String {
     let system = &request.system;
@@ -126,7 +141,7 @@ impl Provider for DemoProvider {
                 .map(|(index, name)| Block::ToolUse {
                     id: format!("demo-{index}"),
                     name: (*name).to_owned(),
-                    input: json!({}),
+                    input: arguments(name),
                 })
                 .collect();
             return Ok(ChatResponse {
@@ -192,6 +207,15 @@ mod tests {
             .unwrap()
             .text_content();
         assert!(report.contains("```lighthouse-document"));
+    }
+
+    #[test]
+    fn writes_get_fictional_arguments() {
+        let reply = arguments("demo__send_reply");
+        assert_eq!(reply["subject"], "Re: Updated offer for Globex?");
+        assert!(reply["to"].as_str().unwrap().contains("globex.example"));
+        assert!(reply["body"].as_str().unwrap().contains("18,000 EUR"));
+        assert_eq!(arguments("demo__list_threads"), json!({}));
     }
 
     #[test]
