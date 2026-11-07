@@ -1,11 +1,13 @@
 //! Agent loop with limits for steps, cost and time.
 
+mod actions;
 mod agents;
 mod automation_registry;
 mod automations;
 mod desk_tools;
 mod registry;
 
+pub use actions::{ACTION_PREFIX, ActionOutcome};
 pub use agents::{AgentFile, load_agents};
 pub use automation_registry::{AutomationRegistry, LoadedAutomation};
 pub use automations::{AgentOutcome, AgentSteps};

@@ -203,7 +203,8 @@ impl Outcomes {
         }
     }
 
-    async fn raise(&self, alert: NewAlert) -> anyhow::Result<()> {
+    /// Raises an alert, announces it and pushes it from the configured severity on.
+    pub async fn raise_alert(&self, alert: NewAlert) -> anyhow::Result<()> {
         let raised = self.desk.raise_alert(alert).await?;
         let alert = &raised.alert;
         self.events.emit(
@@ -222,7 +223,8 @@ impl Outcomes {
         Ok(())
     }
 
-    async fn resolve(&self, key: &str) -> anyhow::Result<()> {
+    /// Resolves the unresolved alert of a key and announces it.
+    pub async fn resolve_alerts(&self, key: &str) -> anyhow::Result<()> {
         for alert in self.desk.resolve_alert_key(key).await? {
             self.events.emit("alerts.changed", json!({"id": alert.id}));
         }
@@ -276,10 +278,11 @@ impl Outcomes {
                            "period": document.period}),
                 );
             }
-            self.resolve(&format!("run:{agent}")).await?;
-            self.resolve(&format!("cost:{agent}")).await?;
+            self.resolve_alerts(&format!("run:{agent}")).await?;
+            self.resolve_alerts(&format!("cost:{agent}")).await?;
             for connector in self.connectors_of(&agent) {
-                self.resolve(&format!("connector:{connector}")).await?;
+                self.resolve_alerts(&format!("connector:{connector}"))
+                    .await?;
             }
             if self.pushes.done {
                 self.push(
@@ -289,7 +292,7 @@ impl Outcomes {
                 .await;
             }
         } else if let Some(alert) = classify(&record) {
-            self.raise(alert).await?;
+            self.raise_alert(alert).await?;
         }
         Ok(Some(record))
     }
@@ -301,10 +304,10 @@ impl Outcomes {
         for node in self.sessions.nodes().await? {
             let key = format!("node:{}", node.id);
             if node.paused || node.last_seen_at > cutoff {
-                self.resolve(&key).await?;
+                self.resolve_alerts(&key).await?;
                 continue;
             }
-            self.raise(NewAlert {
+            self.raise_alert(NewAlert {
                 kind: "node_offline".to_owned(),
                 key,
                 severity: Severity::Warning,

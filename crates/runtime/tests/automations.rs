@@ -393,3 +393,96 @@ async fn a_denied_tool_stops_the_run_without_acting() {
         .unwrap();
     assert_eq!(detail.run.status, "failed");
 }
+
+#[tokio::test]
+async fn actions_run_at_once_or_wait_for_approval() {
+    use lighthouse_runtime::ActionOutcome;
+    let fixture = fixture().await;
+    let done = fixture
+        .runtime
+        .act(
+            "action:linear",
+            "linear.list_issues",
+            json!({"q": "x"}),
+            "Look up",
+        )
+        .await
+        .unwrap();
+    let ActionOutcome::Done { run, ok, output } = done else {
+        panic!("a read tool runs at once")
+    };
+    assert!(ok);
+    assert!(output.contains("URGENT"));
+    let detail = fixture.audit.run_detail(run).await.unwrap().unwrap();
+    assert_eq!(detail.run.status, "succeeded");
+
+    let failed = fixture
+        .runtime
+        .act(
+            "action:offline",
+            "offline.list_issues",
+            json!({}),
+            "Look up",
+        )
+        .await
+        .unwrap();
+    assert!(matches!(failed, ActionOutcome::Done { ok: false, .. }));
+
+    for approve in [true, false] {
+        let proposed = fixture
+            .runtime
+            .act(
+                "action:linear",
+                "linear.create_comment",
+                json!({"body": "Thanks"}),
+                "Comment on ENG-1",
+            )
+            .await
+            .unwrap();
+        let ActionOutcome::Proposed { run, approval } = proposed else {
+            panic!("a write tool waits")
+        };
+        let approvals = fixture.audit.run_approvals(run).await.unwrap();
+        assert_eq!(approvals[0].reason.as_deref(), Some("Comment on ENG-1"));
+        fixture
+            .audit
+            .decide_approval(approval, approve, None)
+            .await
+            .unwrap();
+        let checkpoint = fixture.audit.take_checkpoint(run).await.unwrap().unwrap();
+        assert_eq!(checkpoint.agent_id, "action:linear");
+        fixture
+            .runtime
+            .resume_action(RunId::from_uuid(run), checkpoint.state)
+            .await
+            .unwrap();
+        let detail = fixture.audit.run_detail(run).await.unwrap().unwrap();
+        assert_eq!(detail.run.status, "succeeded");
+        let comments = fixture
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(tool, _)| tool == "linear.create_comment")
+            .count();
+        assert_eq!(comments, 1, "only the approved comment was made");
+    }
+    let broken = RunId::new();
+    fixture
+        .audit
+        .start_run(broken, "action:linear", "owner")
+        .await
+        .unwrap();
+    fixture
+        .runtime
+        .resume_action(broken, json!("garbage"))
+        .await
+        .unwrap();
+    let detail = fixture
+        .audit
+        .run_detail(broken.as_uuid())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail.run.status, "failed");
+}

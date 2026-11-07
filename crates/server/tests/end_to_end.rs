@@ -108,6 +108,23 @@ provider = "mock"
 transport = "http"
 url = "{mcp}/mcp"
 read_tools = ["list_issues"]
+[sources.demo]
+connector = "demo"
+domain = "issues"
+[sources.demo.collections.issues]
+tool = "list_issues"
+kind = "issue"
+flags = ["assigned"]
+[sources.demo.collections.issues.fields]
+external_id = "id"
+title = "title"
+priority = "priority"
+[sources.demo.actions.comment]
+tool = "echo"
+kind = "issue"
+input = {{ issue = "{{{{item.external_id}}}}", body = "{{{{input.body}}}}" }}
+[sources.demo.actions.lookup]
+tool = "list_issues"
 [brain]
 path = "{brain}"
 "#,
@@ -496,4 +513,92 @@ async fn automations_are_created_switched_and_started_through_the_api() {
         .await
         .unwrap();
     assert_eq!(deleted.status(), 204);
+}
+
+#[tokio::test]
+async fn connected_issues_refresh_and_comments_wait_for_approval() {
+    let (base, _dir, _database) = start().await;
+    let client = reqwest::Client::new();
+    let sources = get(&base, "/connected/sources").await;
+    assert_eq!(sources[0]["name"], "demo");
+    let refreshed: Value = client
+        .post(format!("{base}/connected/sources/demo/refresh"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(refreshed["items"], 2, "{refreshed}");
+    let issues = get(&base, "/issues?q=login").await;
+    assert_eq!(issues["total"], 1, "{issues}");
+    let inbox = get(&base, "/inbox").await;
+    assert_eq!(inbox["total"], 2);
+    let id = issues["items"][0]["id"].as_str().unwrap().to_owned();
+
+    let response = client
+        .post(format!("{base}/connected/items/{id}/actions/comment"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"input": {"body": "On it"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 202);
+    let proposed: Value = response.json().await.unwrap();
+    let run = proposed["run_id"].as_str().unwrap().to_owned();
+    let ready = get(&base, "/ready").await;
+    let approval = &ready["items"][0]["detail"];
+    assert_eq!(approval["agent_id"], "action:demo", "{ready}");
+    assert_eq!(
+        approval["input"],
+        json!({"issue": "DEMO-1", "body": "On it"})
+    );
+    let response = client
+        .post(format!(
+            "{base}/approvals/{}/decision",
+            approval["id"].as_str().unwrap()
+        ))
+        .bearer_auth(TOKEN)
+        .json(&json!({"approve": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let detail = wait_for(&base, &format!("/runs/{run}"), |detail| {
+        detail["run"]["status"] == "succeeded"
+    })
+    .await;
+    assert!(detail["run"]["report"].as_str().unwrap().contains("On it"));
+
+    let lookup = client
+        .post(format!("{base}/connected/sources/demo/actions/lookup"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(lookup.status(), 200);
+    let lookup: Value = lookup.json().await.unwrap();
+    assert_eq!(lookup["status"], "done");
+    let status = get(&base, "/connected/sources").await;
+    assert!(
+        status[0]["status"]["last_success_at"].is_string(),
+        "{status}"
+    );
+}
+
+#[tokio::test]
+async fn a_source_that_would_write_does_not_start() {
+    let (_base, dir, _database) = start().await;
+    let path = dir.path().join("lighthouse.toml");
+    let toml = std::fs::read_to_string(&path).unwrap().replace(
+        "[sources.demo.collections.issues]\ntool = \"list_issues\"",
+        "[sources.demo.collections.issues]\ntool = \"delete_issue\"",
+    );
+    std::fs::write(&path, toml).unwrap();
+    let error = lighthouse_server::build(Config::load(&path).unwrap())
+        .await
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("read_tools"), "{error}");
 }

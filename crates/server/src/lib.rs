@@ -35,9 +35,11 @@ use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 pub mod automations;
+pub mod connected;
 pub mod outcomes;
 
 use automations::{AutomationEngine, ServerAutomations};
+use connected::ConnectedService;
 use lighthouse_core::automation::RUN_PREFIX;
 use outcomes::{OutcomeParts, Outcomes, Pushes};
 
@@ -71,6 +73,7 @@ pub struct AgentPool {
     agents: Arc<AgentRegistry>,
     outcomes: Arc<Outcomes>,
     engine: Arc<AutomationEngine>,
+    connected: Arc<ConnectedService>,
 }
 
 async fn after_run(outcomes: &Outcomes, engine: &Arc<AutomationEngine>, run: RunId) {
@@ -107,6 +110,24 @@ impl AgentPool {
             return Ok(());
         };
         let id = RunId::from_uuid(run);
+        if checkpoint
+            .agent_id
+            .starts_with(lighthouse_runtime::ACTION_PREFIX)
+        {
+            let runtime = self.runtime.clone();
+            let outcomes = self.outcomes.clone();
+            let connected = self.connected.clone();
+            tokio::spawn(async move {
+                if let Err(error) = runtime.resume_action(id, checkpoint.state).await {
+                    tracing::error!(%error, "resumed action failed");
+                }
+                if let Err(error) = outcomes.after_run(id.as_uuid()).await {
+                    tracing::error!(%error, "cannot handle the end of an action");
+                }
+                connected.refresh_after(&checkpoint.agent_id);
+            });
+            return Ok(());
+        }
         if checkpoint.agent_id.starts_with(RUN_PREFIX) {
             self.engine
                 .resume(id, &checkpoint.agent_id, checkpoint.state)
@@ -156,6 +177,7 @@ impl AgentPool {
 
     /// Runs the maintenance until the process ends.
     pub async fn run_maintenance(self: Arc<Self>) {
+        tokio::spawn(self.connected.clone().run());
         let mut ticker = tokio::time::interval(MAINTENANCE_INTERVAL);
         loop {
             ticker.tick().await;
@@ -603,6 +625,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
     });
     let mcp: Arc<dyn ToolHostFactory> =
         Arc::new(McpConnector::new(config.connectors.clone(), vault.clone()));
+    let sync_tools = mcp.clone();
     let runtime = Arc::new(Runtime {
         router: Arc::new(VaultRouterSource::new(config.clone(), vault.clone())),
         tools: Arc::new(BrainToolFactory::new(
@@ -650,11 +673,48 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         outcomes.clone(),
         desk.clone(),
     ));
+    let mut sources = Vec::new();
+    for (name, source) in &config.sources {
+        let mut accounts: Vec<String> = config
+            .owner
+            .accounts
+            .get(&source.connector)
+            .cloned()
+            .into_iter()
+            .collect();
+        accounts.push(config.owner.email.clone());
+        let resolved = lighthouse_sync::resolve(name, source, accounts)?;
+        for (collection, settings) in &resolved.collections {
+            let tool = resolved.tool(&settings.tool);
+            if runtime.policy.level(&tool) != ToolLevel::Read {
+                anyhow::bail!(
+                    "source `{name}`: collection `{collection}` calls `{tool}`, which is not in the \
+                     connector's read_tools. Refreshes only read."
+                );
+            }
+        }
+        sources.push(resolved);
+    }
+    tracing::info!(count = sources.len(), "connected sources loaded");
+    let sync_store = lighthouse_sync::SyncStore::new(store.clone(), tenant);
+    let syncer = Arc::new(lighthouse_sync::Syncer::new(
+        sync_store.clone(),
+        sync_tools,
+        sources,
+    ));
+    let connected = Arc::new(ConnectedService::new(
+        syncer,
+        runtime.clone(),
+        engine.clone(),
+        outcomes.clone(),
+        events.clone(),
+    ));
     let pool = Arc::new(AgentPool {
         runtime,
         agents: agents.clone(),
         outcomes,
         engine: engine.clone(),
+        connected: connected.clone(),
     });
     let scheduler = Scheduler::new(
         store,
@@ -697,6 +757,8 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         desk: desk.clone(),
         zone,
         automations,
+        sync: sync_store,
+        connected,
     });
     let router = match &config.paths.web {
         Some(directory) => lighthouse_api::with_web_app(router, directory),

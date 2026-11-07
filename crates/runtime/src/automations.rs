@@ -181,7 +181,7 @@ impl Runtime {
             .await
     }
 
-    async fn automation_tool(
+    pub(crate) async fn automation_tool(
         &self,
         run: RunId,
         tool: &str,

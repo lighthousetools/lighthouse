@@ -49,7 +49,8 @@ Lighthouse sends these events itself:
 | `run.succeeded` | The same, for successful runs |
 | `run.waiting` | The same, for runs that wait for a decision |
 
-Other events come from outside through `POST /automations/events` with `{"name": "mail.received", "payload": {...}}`,
+Connected sources send `mail.received`, `issue.assigned`, `review.requested` and `check.failed`, see
+[connected.md](connected.md#refresh). Other events come from outside through `POST /automations/events` with `{"name": "mail.received", "payload": {...}}`,
 for example from a connector or a mail filter that reports new mail. Names starting with `run.` are reserved. Runs that
 an automation started never send `run.*` events, so automations cannot trigger each other in a loop.
 

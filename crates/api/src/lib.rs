@@ -10,6 +10,7 @@ mod auth;
 mod automations;
 mod brain;
 mod catalog;
+mod connected;
 mod documents;
 mod memory;
 mod ready;
@@ -29,6 +30,10 @@ pub use brain::{AskAnswer, AskRequest, EntryDetail, ResolvedEntry};
 pub use catalog::{
     AgentChangeError, AgentDraftRequest, AgentInfo, AgentSource, AgentTool, Catalog, ConnectorInfo,
     SkillInfo,
+};
+pub use connected::{
+    ActionError, ActionRequest, ActionResult, BusyBlock, Connected, ItemDetail, RefreshResult,
+    SourceInfo,
 };
 pub use ready::{ReadyFeed, ReadyItem};
 pub use sessions::{NodeChange, PermissionDecision};
@@ -144,6 +149,10 @@ pub struct ApiState {
     pub zone: chrono_tz::Tz,
     /// Automations.
     pub automations: Arc<dyn Automations>,
+    /// Cache of mail, calendar, issues and pull requests.
+    pub sync: lighthouse_sync::SyncStore,
+    /// Refreshes sources and carries out actions.
+    pub connected: Arc<dyn Connected>,
 }
 
 /// Answer of the health check.
@@ -465,6 +474,10 @@ impl utoipa::Modify for SecurityAddon {
         automations::list, automations::get, automations::save, automations::switch,
         automations::delete, automations::runs, automations::run, automations::webhook,
         automations::emit,
+        connected::mail, connected::events, connected::issues, connected::projects,
+        connected::cycles, connected::pulls, connected::search, connected::inbox, connected::item,
+        connected::free_busy, connected::sources, connected::refresh_all, connected::refresh,
+        connected::act_on_item, connected::act_on_source,
     ),
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -484,6 +497,8 @@ impl utoipa::Modify for SecurityAddon {
         lighthouse_desk::ItemSource, lighthouse_desk::ItemNumber,
         AutomationInfo, AutomationTriggerInfo, AutomationStepInfo, AutomationSwitch,
         AutomationRuns, ExternalEvent,
+        lighthouse_sync::SyncedItem, lighthouse_sync::ItemPage, lighthouse_sync::SyncStatus,
+        SourceInfo, RefreshResult, ActionRequest, ActionResult, ItemDetail, BusyBlock,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -593,6 +608,30 @@ pub fn router(state: ApiState) -> Router {
         .route("/automations/{id}/runs", get(automations::runs))
         .route("/automations/{id}/run", post(automations::run))
         .route("/automations/{id}/webhook", post(automations::webhook))
+        .route("/inbox", get(connected::inbox))
+        .route("/mail/threads", get(connected::mail))
+        .route("/calendar/events", get(connected::events))
+        .route("/calendar/freebusy", get(connected::free_busy))
+        .route("/issues", get(connected::issues))
+        .route("/issues/projects", get(connected::projects))
+        .route("/issues/cycles", get(connected::cycles))
+        .route("/pulls", get(connected::pulls))
+        .route("/connected/search", get(connected::search))
+        .route("/connected/items/{id}", get(connected::item))
+        .route(
+            "/connected/items/{id}/actions/{action}",
+            post(connected::act_on_item),
+        )
+        .route("/connected/sources", get(connected::sources))
+        .route("/connected/refresh", post(connected::refresh_all))
+        .route(
+            "/connected/sources/{name}/refresh",
+            post(connected::refresh),
+        )
+        .route(
+            "/connected/sources/{name}/actions/{action}",
+            post(connected::act_on_source),
+        )
         .route("/ready", get(ready::feed))
         .route("/ready/drafts/{id}/dismiss", post(ready::dismiss_draft))
         .route("/alerts", get(alerts::list))
@@ -808,6 +847,55 @@ mod tests {
         }
     }
 
+    struct FakeConnected;
+
+    #[async_trait]
+    impl Connected for FakeConnected {
+        async fn sources(&self) -> Result<Vec<SourceInfo>, String> {
+            Ok(vec![SourceInfo {
+                name: "github".to_owned(),
+                connector: "github".to_owned(),
+                domain: "code".to_owned(),
+                interval_seconds: 600,
+                actions: vec!["approve".to_owned()],
+                status: None,
+                stale: true,
+            }])
+        }
+
+        async fn refresh(&self, source: Option<&str>) -> Result<Vec<RefreshResult>, String> {
+            Ok(match source {
+                Some("github") | None => vec![RefreshResult {
+                    source: "github".to_owned(),
+                    items: 1,
+                    events: 0,
+                    errors: Vec::new(),
+                }],
+                _ => Vec::new(),
+            })
+        }
+
+        async fn act(
+            &self,
+            source: &str,
+            action: &str,
+            _item: Option<&lighthouse_sync::SyncedItem>,
+            input: Value,
+        ) -> Result<ActionResult, ActionError> {
+            if action == "nope" {
+                return Err(ActionError::Rejected(format!("{source} has no {action}")));
+            }
+            let proposed = action != "draft";
+            Ok(ActionResult {
+                status: if proposed { "proposed" } else { "done" }.to_owned(),
+                run_id: Uuid::nil(),
+                approval_id: proposed.then(Uuid::nil),
+                tool: format!("{source}.{action}"),
+                output: (!proposed).then(|| input.to_string()),
+            })
+        }
+    }
+
     struct FakeTrigger(Uuid, Arc<Mutex<Vec<Uuid>>>);
 
     #[async_trait]
@@ -846,6 +934,7 @@ mod tests {
         pub(crate) audit: AuditLog,
         pub(crate) desk: Desk,
         pub(crate) sessions: Sessions,
+        pub(crate) sync: lighthouse_sync::SyncStore,
         pub(crate) events: EventBus,
         pub(crate) resumed: Arc<Mutex<Vec<Uuid>>>,
     }
@@ -863,6 +952,7 @@ mod tests {
         let desk = Desk::new(store.clone(), TenantId::SINGLE);
         let sessions = Sessions::new(store.clone(), TenantId::SINGLE);
         let events = EventBus::new();
+        let sync = lighthouse_sync::SyncStore::new(store.clone(), TenantId::SINGLE);
         let state = ApiState {
             audit: audit.clone(),
             trigger: Arc::new(FakeTrigger(Uuid::nil(), resumed.clone())),
@@ -883,12 +973,15 @@ mod tests {
             desk: desk.clone(),
             zone: chrono_tz::Europe::Berlin,
             automations: Arc::new(FakeAutomations),
+            sync: sync.clone(),
+            connected: Arc::new(FakeConnected),
         };
         Harness {
             app: router(state),
             audit,
             desk,
             sessions,
+            sync,
             events,
             resumed,
         }

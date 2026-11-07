@@ -20,6 +20,7 @@ never report texts, tool arguments or other private content.
 | `alerts.changed` | `{"id": <alert>}` | An alert was acknowledged or resolved |
 | `ready.changed` | `{"id": <item>}` | An item was cleared from the ready feed |
 | `automations.changed` | `{"id": <automation>}` | An automation was created, switched or deleted, see [automations.md](automations.md) |
+| `connected.changed` | `{"source"}` or `{"run_id"}` | A source refreshed or an action ran, see [connected.md](connected.md) |
 | `document.created` | `{"id", "run_id", "kind", "period"}` | A run stored a briefing document, see [documents.md](documents.md) |
 
 A client that falls behind gets a `changed` event instead of the events it missed.
@@ -123,6 +124,7 @@ or `critical`) and the times it was first and last seen.
 | `connector` | `connector:<name>` | `warning` | A run fails because a connector cannot be reached | Same as above |
 | `run_failed` | `run:<agent>` | `warning` | A run fails, stops at its step or time limit, or is rejected | The next run of that agent succeeds |
 | `cost_limit` | `cost:<agent>` | `warning` | A run stops at its cost limit | The next run of that agent succeeds |
+| `check_failed` | `check:<source>:<check>` | `warning` | A check of one of your pull requests starts failing | It passes again |
 | `node_offline` | `node:<id>` | `warning` | A desktop agent that is not paused sends no report for 15 minutes | It reports again |
 
 While an alert of a key is unresolved, a repeat counts up `count` and moves `last_seen_at` instead of adding an alert,

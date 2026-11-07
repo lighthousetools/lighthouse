@@ -78,6 +78,8 @@ A collection with `parent = "<kind>"` is called once per recently changed open p
 times, with `{{parent.external_id}}`, `{{parent.title}}` or `{{parent.data.<field>}}` in its input. Its items get the
 parent as `parent_id`, and their IDs are prefixed with the parent's ID.
 
+Collections only read: every collection tool must be in the connector's `read_tools`, or the server does not start.
+
 ### Flags
 
 | Flag | Set when |
@@ -105,6 +107,64 @@ so check them with `lht connectors tools <connector>` and override what differs:
 in your source replaces the preset's. There are no presets for mail and calendar, because there is no common public MCP
 server for them. Map your server with collections like the example above.
 
+## Actions
+
+Actions are tool calls you ask for in the apps, such as a reply, an archive, a comment or an approval:
+
+```toml
+[sources.mail.actions.reply]
+tool = "send_reply"
+kind = "thread"                               # the item it needs, if any
+input = { thread_id = "{{item.external_id}}", body = "{{input.body}}" }
+
+[sources.mail.actions.draft]
+tool = "create_draft"
+kind = "thread"
+input = { thread_id = "{{item.external_id}}", body = "{{input.body}}" }
+
+[sources.calendar.actions.move]
+tool = "update_event"
+kind = "event"
+input = { id = "{{item.external_id}}", start = "{{input.start}}", end = "{{input.end}}" }
+```
+
+`{{item.<field>}}` reads the item, such as `item.external_id` or `item.data.number`. `{{input.<field>}}` reads what the
+app sends. Empty arguments are left out. Use the names `reply`, `draft`, `archive`, `create`, `move`, `update`, `comment`
+and `approve` where they fit, so the apps find them.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /connected/items/{id}/actions/{action}` | An action on an item, with `{"input": {...}}` |
+| `POST /connected/sources/{name}/actions/{action}` | An action without an item, such as `create` |
+
+Every action is a run with the agent ID `action:<source>`. A tool in the connector's `read_tools` or `draft_tools` runs at
+once and the answer is `200` with its output, so a saved draft shows up under drafts in `GET /ready`. Every other tool
+waits for your approval: the answer is `202` with the approval, which appears in `GET /approvals` and `GET /ready`.
+Nothing is sent before you approve it. After an action ran, its source refreshes.
+
+## Reading
+
+All lists take `q` (full-text search), `source`, `state`, `flags` (comma-separated, all must be set), `open`, `from`,
+`to`, `limit` and `offset`, and return `items`, `total` and `next_offset`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /inbox` | Open items flagged `important`, `unread`, `mention`, `review_requested` or `assigned`, most important first |
+| `GET /mail/threads` | Mail threads, latest first |
+| `GET /calendar/events` | Events, earliest first. `from` and `to` select a window |
+| `GET /calendar/freebusy?from=&to=` | Merged busy blocks, without cancelled and declined events. Defaults to the next seven days |
+| `GET /issues`, `GET /issues/projects`, `GET /issues/cycles` | Issues and projects, open ones by default, and cycles |
+| `GET /pulls` | Pull requests, open ones by default |
+| `GET /connected/search?q=&domain=` | Every cached item |
+| `GET /connected/items/{id}` | An item with its children, such as messages, comments, checks or changed files, and the raw tool result |
+| `GET /connected/sources` | Sources with their freshness: last attempt, last success, last error and `stale` after two intervals |
+| `POST /connected/refresh`, `POST /connected/sources/{name}/refresh` | Refresh now |
+
+`importance` runs from 0 to 100: review requests 80, failed checks on your pull requests 75, assigned issues and
+important mail 70, mentions 60, unread mail 40, everything else 10, plus 10 for the last 24 hours.
+
+`GET /events` sends `connected.changed` with the source after every refresh and action.
+
 ## Refresh
 
 The server refreshes each source when its interval has passed, checking every minute. The first refresh reaches back 30
@@ -120,5 +180,15 @@ The first refresh of a source sends no events. After that, a refresh reports cha
 | `review.requested` | A pull request gains the `review_requested` flag |
 | `check.failed` | A check starts failing. `on_my_pull_request` tells whether the pull request is the owner's |
 
-The payload has `source`, `kind`, `id`, `external_id`, `parent_id`, `title`, `author` (also as `from`), `url` and
-`flags`, so automations can match on them.
+The events go to [automations](automations.md). The payload has `source`, `kind`, `id`, `external_id`, `parent_id`,
+`title`, `author` (also as `from`), `url` and `flags`, so automations can match on them:
+
+```yaml
+trigger:
+  event: mail.received
+  match:
+    from: client@example.com
+```
+
+A check that starts failing on one of your pull requests (flag `mine`) also raises a `check_failed` alert, which
+resolves when the check passes again.
