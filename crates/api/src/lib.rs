@@ -41,7 +41,7 @@ pub use connected::{
 };
 pub use decks::{NewDeck, render_html as render_deck};
 pub use posts::{CheckRequest, ImportRequest, ImportResult, Publisher};
-pub use ready::{ReadyFeed, ReadyItem};
+pub use ready::{ReadyFeed, ReadyItem, Snooze};
 pub use sessions::{
     NewSessionMessage, NodeChange, PermissionDecision, SessionDetail, SessionEvents,
 };
@@ -490,7 +490,7 @@ impl utoipa::Modify for SecurityAddon {
         rules::list, rules::create, rules::get, rules::update, rules::delete,
         memory::list, memory::create, memory::get, memory::update, memory::confirm, memory::delete,
         alerts::list, alerts::counts, alerts::get, alerts::acknowledge, alerts::resolve,
-        ready::feed, ready::dismiss_draft,
+        ready::feed, ready::dismiss_draft, ready::snooze, ready::unsnooze,
         documents::list, documents::latest_brief, documents::recaps, documents::recap,
         documents::of_run,
         automations::list, automations::get, automations::save, automations::switch,
@@ -523,7 +523,7 @@ impl utoipa::Modify for SecurityAddon {
         Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Delegation, Origin, SourceLink,
         Rule, NewRule, RulePatch, Fact, FactSource, NewFact, FactPatch,
         Alert, AlertCounts, AlertView, lighthouse_desk::Severity,
-        ReadyFeed, ReadyItem, lighthouse_audit::ToolCall,
+        ReadyFeed, ReadyItem, Snooze, lighthouse_audit::ToolCall,
         lighthouse_desk::BriefingDocument, lighthouse_desk::BriefingContent,
         lighthouse_desk::DocumentSection, lighthouse_desk::DocumentItem,
         lighthouse_desk::ItemSource, lighthouse_desk::ItemNumber,
@@ -717,6 +717,10 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/ready", get(ready::feed))
         .route("/ready/drafts/{id}/dismiss", post(ready::dismiss_draft))
+        .route(
+            "/ready/{kind}/{id}/snooze",
+            post(ready::snooze).delete(ready::unsnooze),
+        )
         .route("/alerts", get(alerts::list))
         .route("/alerts/counts", get(alerts::counts))
         .route("/alerts/{id}", get(alerts::get))

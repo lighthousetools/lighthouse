@@ -40,6 +40,9 @@ A client that falls behind gets a `changed` event instead of the events it misse
 | `task` | `suggestions` | A task an agent proposed | `POST /tasks/{id}/accept` or `DELETE /tasks/{id}` |
 | `fact` | `suggestions` | A fact about the owner an agent learned | `POST /memory/{id}/confirm` or `DELETE /memory/{id}` |
 
+`POST /ready/{kind}/{id}/snooze` with `{"until": "<time>"}` hides any item until then ("later"), and `DELETE` on the
+same path shows it again. A snoozed approval stays open and still expires after 72 hours.
+
 The answer has `total`, `counts` per kind, `groups` per group and the unresolved `alerts` per severity. Items come
 decisions first, then drafts, then suggestions, and oldest first within a group. Each item has a title, the agent and
 run behind it, and in `detail` the full object as its own endpoint returns it.

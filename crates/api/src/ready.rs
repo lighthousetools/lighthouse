@@ -208,6 +208,15 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
             detail: to_value(&fact),
         });
     }
+    let mut hidden = std::collections::HashMap::new();
+    for kind in ["approval", "permission", "task", "fact", "post"] {
+        hidden.insert(kind, state.desk.dismissed(kind).await.map_err(desk_error)?);
+    }
+    items.retain(|item| {
+        hidden
+            .get(item.kind.as_str())
+            .is_none_or(|hidden| !hidden.contains(&item.id))
+    });
     items.sort_by(|left, right| {
         (group_order(&left.group), left.created_at)
             .cmp(&(group_order(&right.group), right.created_at))
@@ -253,6 +262,70 @@ pub(crate) async fn dismiss_draft(
         .dismiss(DRAFT, &id.to_string())
         .await
         .map_err(desk_error)?;
+    state.events.emit("ready.changed", json!({"id": id}));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// When to show an item again.
+#[derive(Deserialize, ToSchema)]
+pub struct Snooze {
+    /// Hide it until this time.
+    pub until: DateTime<Utc>,
+}
+
+/// Hides an item of the feed until a time, such as a draft for "later". Its
+/// decision stays open; approvals still expire after 72 hours.
+#[utoipa::path(
+    post,
+    operation_id = "snooze_ready_item",
+    path = "/ready/{kind}/{id}/snooze",
+    params(
+        ("kind" = String, Path, description = "approval, permission, draft, task, fact or post"),
+        ("id" = String, Path, description = "Item ID")
+    ),
+    request_body = Snooze,
+    responses((status = 204, description = "Hidden until then"), (status = 400, description = "Unknown kind")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn snooze(
+    State(state): State<ApiState>,
+    Path((kind, id)): Path<(String, String)>,
+    Json(snooze): Json<Snooze>,
+) -> Result<StatusCode, ApiError> {
+    if !["approval", "permission", DRAFT, "task", "fact", "post"].contains(&kind.as_str()) {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            format!("unknown kind `{kind}`"),
+        ));
+    }
+    state
+        .desk
+        .snooze(&kind, &id, snooze.until)
+        .await
+        .map_err(desk_error)?;
+    state.events.emit("ready.changed", json!({"id": id}));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Shows a snoozed or cleared item again.
+#[utoipa::path(
+    delete,
+    operation_id = "unsnooze_ready_item",
+    path = "/ready/{kind}/{id}/snooze",
+    params(
+        ("kind" = String, Path, description = "Item kind"),
+        ("id" = String, Path, description = "Item ID")
+    ),
+    responses((status = 204, description = "Shown again"), (status = 404, description = "Not hidden")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn unsnooze(
+    State(state): State<ApiState>,
+    Path((kind, id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    if !state.desk.unsnooze(&kind, &id).await.map_err(desk_error)? {
+        return Err(crate::not_found("hidden item"));
+    }
     state.events.emit("ready.changed", json!({"id": id}));
     Ok(StatusCode::NO_CONTENT)
 }
@@ -373,5 +446,45 @@ mod tests {
         let feed: ReadyFeed = serde_json::from_str(&body).unwrap();
         assert_eq!(feed.total, 4);
         assert_eq!(feed.counts["draft"], 0);
+
+        let fact = feed
+            .items
+            .iter()
+            .find(|item| item.kind == "fact")
+            .unwrap()
+            .id
+            .clone();
+        let later = json!({"until": Utc::now() + Duration::hours(3)});
+        let uri = format!("/ready/fact/{fact}/snooze");
+        assert_eq!(
+            crate::tests::send(&harness.app, "POST", &uri, Some(TOKEN), Some(later.clone()))
+                .await
+                .0,
+            StatusCode::NO_CONTENT
+        );
+        let (_, body) = call(&harness.app, "GET", "/ready", Some(TOKEN)).await;
+        assert_eq!(serde_json::from_str::<ReadyFeed>(&body).unwrap().total, 3);
+        assert_eq!(
+            call(&harness.app, "DELETE", &uri, Some(TOKEN)).await.0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            call(&harness.app, "DELETE", &uri, Some(TOKEN)).await.0,
+            StatusCode::NOT_FOUND
+        );
+        let (_, body) = call(&harness.app, "GET", "/ready", Some(TOKEN)).await;
+        assert_eq!(serde_json::from_str::<ReadyFeed>(&body).unwrap().total, 4);
+        assert_eq!(
+            crate::tests::send(
+                &harness.app,
+                "POST",
+                "/ready/nope/x/snooze",
+                Some(TOKEN),
+                Some(later)
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
     }
 }
