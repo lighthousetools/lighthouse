@@ -20,6 +20,7 @@ lighthouse-core.workspace = true
 lighthouse-mcp.workspace = true
 lighthouse-runtime.workspace = true
 lighthouse-store.workspace = true
+lighthouse-sync.workspace = true
 lighthouse-vault.workspace = true
 reqwest.workspace = true
 rpassword.workspace = true

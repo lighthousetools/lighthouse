@@ -2013,6 +2013,7 @@ dependencies = [
  "lighthouse-mcp",
  "lighthouse-runtime",
  "lighthouse-store",
+ "lighthouse-sync",
  "lighthouse-vault",
  "reqwest",
  "rpassword",

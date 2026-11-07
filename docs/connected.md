@@ -103,7 +103,8 @@ Items that disappear from every collection keep their last state in the cache.
 | `linear` | `issues` | `assigned` issues, `projects`, `cycles`, `comments` of each issue | `create`, `update`, `comment` |
 
 Presets follow the public MCP servers of these services. Tool names and result shapes change between server versions,
-so check them with `lht connectors tools <connector>` and override what differs: a collection or action of the same name
+so check them with `lht connectors tools <connector>` and `lht sources check`, which resolves every source and shows
+whether its collections only read and which actions ask for approval. Override what differs: a collection or action of the same name
 in your source replaces the preset's. There are no presets for mail and calendar, because there is no common public MCP
 server for them. Map your server with collections like the example above.
 
@@ -192,3 +193,11 @@ trigger:
 
 A check that starts failing on one of your pull requests (flag `mine`) also raises a `check_failed` alert, which
 resolves when the check passes again.
+
+## Command line
+
+| Command | Does |
+|---|---|
+| `lht sources check` | Resolves every source with its preset, checks that collections only read and lists the actions |
+| `lht sources refresh [name]` | Refreshes one source, or all, on the running server |
+| `lht inbox` | Prints the unified inbox |

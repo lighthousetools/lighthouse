@@ -52,13 +52,16 @@ fallback = "openai"
 transport = "http"
 url = "https://mcp.linear.app/mcp"
 auth = "oauth"
-read_tools = ["list_issues", "get_issue", "list_cycles"]
+read_tools = ["list_issues", "get_issue", "list_cycles", "list_projects", "list_comments"]
 
 [connectors.github]
 transport = "http"
 url = "https://api.githubcopilot.com/mcp/"
 auth = "oauth"
-read_tools = ["list_pull_requests", "list_releases", "search_issues"]
+read_tools = [
+  "list_pull_requests", "list_releases", "search_issues", "search_pull_requests",
+  "get_pull_request_status", "get_pull_request_files",
+]
 
 [connectors.grafana]
 transport = "stdio"

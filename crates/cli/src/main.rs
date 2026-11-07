@@ -57,6 +57,26 @@ enum Command {
     /// Inspects connectors.
     #[command(subcommand)]
     Connectors(ConnectorsCommand),
+    /// Checks and refreshes connected sources.
+    #[command(subcommand)]
+    Sources(SourcesCommand),
+    /// Shows the unified inbox of the running server.
+    Inbox {
+        /// Maximum number of items.
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+    },
+}
+
+#[derive(Subcommand)]
+enum SourcesCommand {
+    /// Resolves every source with its preset and checks that its collections only read.
+    Check,
+    /// Refreshes one source, or all, on the running server.
+    Refresh {
+        /// Source name. Leave out for all.
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -231,6 +251,77 @@ async fn connector_tools(config: &Config, connector: &str) -> anyhow::Result<()>
     Ok(())
 }
 
+fn check_sources(config: &Config) -> anyhow::Result<()> {
+    let policy = ToolPolicy::new(&config.connectors);
+    let mut problems = 0;
+    for (name, source) in &config.sources {
+        let mut accounts: Vec<String> = config
+            .owner
+            .accounts
+            .get(&source.connector)
+            .cloned()
+            .into_iter()
+            .collect();
+        accounts.push(config.owner.email.clone());
+        let resolved = match lighthouse_sync::resolve(name, source, accounts) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                println!("{error}");
+                problems += 1;
+                continue;
+            }
+        };
+        println!("{name}: {} via {}", resolved.domain, resolved.connector);
+        for (collection, settings) in &resolved.collections {
+            let tool = resolved.tool(&settings.tool);
+            let level = policy.level(&tool);
+            let ok = level == lighthouse_core::agent::ToolLevel::Read;
+            println!(
+                "  collection {collection:<16} {tool:<40} {}",
+                if ok { "ok" } else { "not in read_tools" }
+            );
+            problems += usize::from(!ok);
+        }
+        for (action, settings) in &resolved.actions {
+            let tool = resolved.tool(&settings.tool);
+            let level = format!("{:?}", policy.level(&tool)).to_lowercase();
+            let note = if level == "write" {
+                "asks for approval"
+            } else {
+                "runs at once"
+            };
+            println!("  action     {action:<16} {tool:<40} {note}");
+        }
+    }
+    if problems > 0 {
+        bail!("{problems} problem(s) found");
+    }
+    Ok(())
+}
+
+async fn get(config: &Config, server: Option<String>, path: &str) -> anyhow::Result<Value> {
+    let token = config
+        .server
+        .admin_token
+        .as_ref()
+        .context("set LIGHTHOUSE_SERVER__ADMIN_TOKEN")?;
+    let response = reqwest::Client::new()
+        .get(format!("{}{path}", server_url(config, server)))
+        .bearer_auth(token.expose_secret())
+        .send()
+        .await
+        .context("cannot reach the server")?;
+    let status = response.status();
+    let body: Value = response.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        bail!(
+            "server answered {status}: {}",
+            body["error"].as_str().unwrap_or("unknown error")
+        );
+    }
+    Ok(body)
+}
+
 fn server_url(config: &Config, flag: Option<String>) -> String {
     flag.unwrap_or_else(|| {
         format!(
@@ -337,6 +428,44 @@ async fn main() -> anyhow::Result<()> {
         Command::Runs(command) => runs(&config, command).await,
         Command::Connectors(ConnectorsCommand::Tools { connector }) => {
             connector_tools(&config, &connector).await
+        }
+        Command::Sources(SourcesCommand::Check) => check_sources(&config),
+        Command::Sources(SourcesCommand::Refresh { name }) => {
+            let path = match &name {
+                Some(name) => format!("/connected/sources/{name}/refresh"),
+                None => "/connected/refresh".to_owned(),
+            };
+            let body = post(&config, cli.server, &path).await?;
+            let results = if body.is_array() {
+                body
+            } else {
+                Value::Array(vec![body])
+            };
+            for result in results.as_array().into_iter().flatten() {
+                println!(
+                    "{}: {} items, {} events",
+                    result["source"].as_str().unwrap_or("?"),
+                    result["items"],
+                    result["events"]
+                );
+                for error in result["errors"].as_array().into_iter().flatten() {
+                    println!("  error: {}", error.as_str().unwrap_or_default());
+                }
+            }
+            Ok(())
+        }
+        Command::Inbox { limit } => {
+            let body = get(&config, cli.server, &format!("/inbox?limit={limit}")).await?;
+            for item in body["items"].as_array().into_iter().flatten() {
+                println!(
+                    "{:>3}  {:<8} {:<12} {}",
+                    item["importance"],
+                    item["source"].as_str().unwrap_or("?"),
+                    item["kind"].as_str().unwrap_or("?"),
+                    item["title"].as_str().unwrap_or("(no title)")
+                );
+            }
+            Ok(())
         }
         Command::Connect { connector } => {
             let body = post(

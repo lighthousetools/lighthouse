@@ -396,3 +396,23 @@ state = "status"
         .collect();
     assert_eq!(titles, ["Lunch"]);
 }
+
+#[test]
+fn the_example_configuration_has_read_only_sources() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lighthouse.example.toml");
+    let config = lighthouse_config::Config::load(&path).unwrap();
+    let policy = lighthouse_mcp::ToolPolicy::new(&config.connectors);
+    assert!(!config.sources.is_empty());
+    for (name, source) in &config.sources {
+        let resolved = resolve(name, source, Vec::new()).unwrap();
+        for (collection, settings) in &resolved.collections {
+            let tool = resolved.tool(&settings.tool);
+            assert_eq!(
+                policy.level(&tool),
+                lighthouse_core::agent::ToolLevel::Read,
+                "{name}.{collection} calls {tool}"
+            );
+        }
+    }
+}
