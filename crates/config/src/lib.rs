@@ -51,6 +51,9 @@ pub struct Config {
     /// Second Brain.
     #[serde(default)]
     pub brain: BrainConfig,
+    /// Pushes to the owner about decisions, finished runs and alerts.
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
 }
 
 /// HTTP server settings.
@@ -308,6 +311,45 @@ pub struct DeliveryConfig {
     pub slack_channels: Vec<String>,
 }
 
+/// Pushes to the owner. The apps always get live events; these settings only
+/// decide what is also sent through the delivery channels.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationsConfig {
+    /// Targets like in agent files: `owner`, `mail:<address>` or `slack:<alias>`.
+    /// Without targets, nothing is sent.
+    #[serde(default)]
+    pub deliver: Vec<String>,
+    /// Push when a run waits for a decision.
+    #[serde(default = "enabled")]
+    pub decisions: bool,
+    /// Push when a run finished.
+    #[serde(default)]
+    pub done: bool,
+    /// Lowest severity of new alerts to push: `info`, `warning` or `critical`.
+    #[serde(default = "default_alert_severity")]
+    pub alerts: String,
+}
+
+fn enabled() -> bool {
+    true
+}
+
+fn default_alert_severity() -> String {
+    "critical".to_owned()
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            deliver: Vec::new(),
+            decisions: true,
+            done: false,
+            alerts: default_alert_severity(),
+        }
+    }
+}
+
 /// SMTP settings.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -358,6 +400,12 @@ impl Config {
                 }
             }
         }
+        if !["info", "warning", "critical"].contains(&self.notifications.alerts.as_str()) {
+            return Err(ConfigError::Inconsistent(format!(
+                "notifications.alerts is `{}`, not info, warning or critical",
+                self.notifications.alerts
+            )));
+        }
         Ok(())
     }
 }
@@ -385,6 +433,24 @@ mod tests {
             assert_eq!(config.paths.agents, PathBuf::from("agents"));
             assert!(config.routing.contains_key("text"));
             assert!(config.connectors.contains_key("linear"));
+            assert_eq!(config.notifications.deliver, ["owner"]);
+            assert!(config.notifications.decisions);
+        });
+    }
+
+    #[test]
+    fn notifications_default_to_silence_and_need_a_known_severity() {
+        let without = EXAMPLE.replace("[notifications]", "[unused]");
+        let without = without.split("[unused]").next().unwrap().to_owned();
+        with_config(&without, |config| {
+            let notifications = config.unwrap().notifications;
+            assert!(notifications.deliver.is_empty());
+            assert!(!notifications.done);
+            assert_eq!(notifications.alerts, "critical");
+        });
+        let wrong = format!("{without}\n[notifications]\nalerts = \"loud\"\n");
+        with_config(&wrong, |config| {
+            assert!(matches!(config, Err(ConfigError::Inconsistent(_))));
         });
     }
 

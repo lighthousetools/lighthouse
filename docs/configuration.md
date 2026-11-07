@@ -26,6 +26,12 @@ read without it.
 Model names and prices live in the configuration, never in code. A provider lists its models per task, and `routing`
 selects the default provider and fallback of a task. Prices are in EUR per million tokens.
 
+## Notifications
+
+`[notifications]` decides what is pushed to the owner through the delivery channels: runs that wait for a decision,
+finished runs and new alerts from a severity on. Without `deliver` targets, only the apps hear about it through live
+events. See [api.md](api.md#pushes).
+
 ## Connectors
 
 | Key | Meaning |

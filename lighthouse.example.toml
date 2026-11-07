@@ -76,6 +76,13 @@ port = 587
 username = "lighthouse"
 from = "lighthouse@example.com"
 
+# Pushes through the delivery channels. The apps always get live events.
+[notifications]
+deliver = ["owner"]
+decisions = true      # a run waits for your decision
+done = false          # a run finished
+alerts = "critical"   # lowest severity of new alerts to push
+
 # Second Brain, see docs/brain.md. Without a provider, search is lexical and
 # images and audio are refused.
 [brain]

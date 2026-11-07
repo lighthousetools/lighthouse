@@ -297,7 +297,10 @@ impl AuditLog {
              (SELECT count(*) || max(updated_at)::text FROM brain_entries WHERE tenant_id = $1), \
              (SELECT count(*) || max(updated_at)::text FROM tasks WHERE tenant_id = $1), \
              (SELECT count(*) || max(updated_at)::text FROM rules WHERE tenant_id = $1), \
-             (SELECT count(*) || max(updated_at)::text FROM facts WHERE tenant_id = $1))",
+             (SELECT count(*) || max(updated_at)::text FROM facts WHERE tenant_id = $1), \
+             (SELECT count(*)::text || sum(count)::text || \
+              max(greatest(last_seen_at, acknowledged_at, resolved_at))::text \
+              FROM alerts WHERE tenant_id = $1))",
         )
         .bind(self.tenant.as_uuid())
         .fetch_one(self.store.pool())
@@ -456,6 +459,27 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("append-only"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_revision_follows_the_desk() {
+        let (log, store) = log().await;
+        let mut seen = vec![log.revision().await.unwrap()];
+        for statement in [
+            "INSERT INTO tasks (id, tenant_id, title, status, position, origin) \
+             VALUES (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'Task', 'open', 0, 'owner')",
+            "INSERT INTO rules (id, tenant_id, text) VALUES (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'Rule')",
+            "INSERT INTO facts (id, tenant_id, text, status, confidence, source_kind) \
+             VALUES (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'Fact', 'confirmed', 1, 'owner')",
+            "INSERT INTO alerts (id, tenant_id, kind, key, severity, title, status) \
+             VALUES (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'run_failed', 'k', 'warning', 'T', 'open')",
+            "UPDATE alerts SET status = 'resolved', resolved_at = now() + interval '1 second'",
+        ] {
+            sqlx::query(statement).execute(store.pool()).await.unwrap();
+            let revision = log.revision().await.unwrap();
+            assert!(!seen.contains(&revision), "{statement}");
+            seen.push(revision);
         }
     }
 

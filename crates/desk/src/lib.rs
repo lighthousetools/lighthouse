@@ -4,10 +4,12 @@
 //! only propose tasks and facts. A proposal changes nothing until the owner
 //! accepts it.
 
+pub mod alerts;
 pub mod facts;
 pub mod rules;
 pub mod tasks;
 
+pub use alerts::{Alert, AlertCounts, AlertView, NewAlert, Raised, Severity};
 pub use facts::{Fact, FactFilter, FactPatch, FactSource, NewFact, ProposedFact};
 pub use rules::{NewRule, Rule, RulePatch};
 pub use tasks::{NewTask, Proposer, Task, TaskPatch, TaskStatus, TaskView};

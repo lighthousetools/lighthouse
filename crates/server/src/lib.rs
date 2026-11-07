@@ -33,6 +33,10 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
+pub mod outcomes;
+
+use outcomes::{OutcomeParts, Outcomes, Pushes};
+
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Reads the master key from the configuration.
@@ -61,6 +65,13 @@ fn owner_context(owner: &OwnerConfig) -> String {
 pub struct AgentPool {
     runtime: Arc<Runtime>,
     agents: Arc<AgentRegistry>,
+    outcomes: Arc<Outcomes>,
+}
+
+async fn after_run(outcomes: &Outcomes, run: RunId) {
+    if let Err(error) = outcomes.after_run(run.as_uuid()).await {
+        tracing::error!(run = %run.as_uuid(), %error, "cannot handle the end of a run");
+    }
 }
 
 impl AgentPool {
@@ -68,10 +79,12 @@ impl AgentPool {
         let run = RunId::new();
         self.runtime.register(run, &agent, trigger).await?;
         let runtime = self.runtime.clone();
+        let outcomes = self.outcomes.clone();
         tokio::spawn(async move {
             if let Err(error) = runtime.execute(run, &agent).await {
                 tracing::error!(agent = %agent.id, %error, "run failed");
             }
+            after_run(&outcomes, run).await;
         });
         Ok(run)
     }
@@ -96,13 +109,16 @@ impl AgentPool {
                 report: None,
             };
             audit.finish_run(id, end).await?;
+            after_run(&self.outcomes, id).await;
             return Ok(());
         };
         let runtime = self.runtime.clone();
+        let outcomes = self.outcomes.clone();
         tokio::spawn(async move {
             if let Err(error) = runtime.resume(id, &agent, checkpoint.state).await {
                 tracing::error!(agent = %agent.id, %error, "resumed run failed");
             }
+            after_run(&outcomes, id).await;
         });
         Ok(())
     }
@@ -117,6 +133,7 @@ impl AgentPool {
         for run in audit.resumable_runs().await? {
             self.resume_run(run).await?;
         }
+        self.outcomes.check_nodes().await?;
         Ok(())
     }
 
@@ -590,9 +607,20 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         .map(|known| (*known.agent).clone())
         .collect();
     tracing::info!(count = definitions.len(), "agents loaded");
+    let notifier = runtime.notifier.clone();
+    let outcomes = Arc::new(Outcomes::new(OutcomeParts {
+        audit: audit.clone(),
+        desk: desk.clone(),
+        sessions: Sessions::new(store.clone(), tenant),
+        events: events.clone(),
+        notifier,
+        pushes: Pushes::from_config(&config.notifications)?,
+        agents: agents.clone(),
+    }));
     let pool = Arc::new(AgentPool {
         runtime,
         agents: agents.clone(),
+        outcomes,
     });
     let scheduler = Scheduler::new(
         store,

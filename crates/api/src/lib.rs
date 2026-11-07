@@ -4,6 +4,7 @@
 //! Everything else needs a device token or the admin token, because runs and
 //! reports contain private data. Setting the password needs the admin token.
 
+mod alerts;
 mod approvals;
 mod auth;
 mod brain;
@@ -39,8 +40,8 @@ use lighthouse_audit::{Approval, AuditLog, DailyCost, RunDetail, RunRecord, Step
 use lighthouse_auth::{Auth, Device, DeviceKind};
 use lighthouse_brain::{Brain, Entry, EntryPatch, EntrySummary, NewEntry, SearchHit, Source};
 use lighthouse_desk::{
-    Desk, DeskError, Fact, FactPatch, FactSource, NewFact, NewRule, NewTask, Origin, Rule,
-    RulePatch, SourceLink, Task, TaskPatch, TaskStatus, TaskView,
+    Alert, AlertCounts, AlertView, Desk, DeskError, Fact, FactPatch, FactSource, NewFact, NewRule,
+    NewTask, Origin, Rule, RulePatch, SourceLink, Task, TaskPatch, TaskStatus, TaskView,
 };
 use lighthouse_mcp::{McpError, OAuthFlows};
 use lighthouse_notify::EventBus;
@@ -443,6 +444,7 @@ impl utoipa::Modify for SecurityAddon {
         tasks::reopen, tasks::accept, tasks::reorder,
         rules::list, rules::create, rules::get, rules::update, rules::delete,
         memory::list, memory::create, memory::get, memory::update, memory::confirm, memory::delete,
+        alerts::list, alerts::counts, alerts::get, alerts::acknowledge, alerts::resolve,
     ),
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -455,6 +457,7 @@ impl utoipa::Modify for SecurityAddon {
         Session, SessionReport,
         Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Origin, SourceLink,
         Rule, NewRule, RulePatch, Fact, FactSource, NewFact, FactPatch,
+        Alert, AlertCounts, AlertView, lighthouse_desk::Severity,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -545,6 +548,11 @@ pub fn router(state: ApiState) -> Router {
                 .delete(memory::delete),
         )
         .route("/memory/{id}/confirm", post(memory::confirm))
+        .route("/alerts", get(alerts::list))
+        .route("/alerts/counts", get(alerts::counts))
+        .route("/alerts/{id}", get(alerts::get))
+        .route("/alerts/{id}/acknowledge", post(alerts::acknowledge))
+        .route("/alerts/{id}/resolve", post(alerts::resolve))
         .route("/credentials", get(auth::list_credentials))
         .route(
             "/credentials/{name}",

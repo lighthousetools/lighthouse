@@ -14,6 +14,10 @@ never report texts, tool arguments or other private content.
 | `tasks.changed` | `{"id": <task or null>}` | A task was created, changed, reordered or deleted |
 | `rules.changed` | `{"id": <rule>}` | A rule was created, changed or deleted |
 | `memory.changed` | `{"id": <fact>}` | A fact was stated, changed, confirmed or forgotten |
+| `run.waiting` | `{"run_id", "agent_id", "proposals"}` | A run paused and waits for a decision |
+| `run.finished` | `{"run_id", "agent_id", "status"}` | A run ended, successfully or not |
+| `alert.raised` | `{"id", "kind", "severity", "new"}` | A problem appeared or happened again |
+| `alerts.changed` | `{"id": <alert>}` | An alert was acknowledged or resolved |
 
 A client that falls behind gets a `changed` event instead of the events it missed.
 
@@ -88,3 +92,43 @@ never reach a prompt, because an agent may have learned them from untrusted cont
 
 Facts live in Postgres, not in the Second Brain. Brain entries are knowledge about the world in files you edit, while
 facts need a confidence, a confirmation and a place in every prompt.
+
+## Alerts
+
+Alerts collect what broke. Every alert has a `kind`, a `key` that names the problem, a `severity` (`info`, `warning`
+or `critical`) and the times it was first and last seen.
+
+| Kind | Key | Severity | Raised when | Resolved when |
+|---|---|---|---|---|
+| `connector` | `connector:<name>` | `critical` | A run fails because a connector is not authorized, for example after its token expired | A run of an agent with tools of that connector succeeds |
+| `connector` | `connector:<name>` | `warning` | A run fails because a connector cannot be reached | Same as above |
+| `run_failed` | `run:<agent>` | `warning` | A run fails, stops at its step or time limit, or is rejected | The next run of that agent succeeds |
+| `cost_limit` | `cost:<agent>` | `warning` | A run stops at its cost limit | The next run of that agent succeeds |
+| `node_offline` | `node:<id>` | `warning` | A desktop agent that is not paused sends no report for 15 minutes | It reports again |
+
+While an alert of a key is unresolved, a repeat counts up `count` and moves `last_seen_at` instead of adding an alert,
+and the severity can only go up. After it is resolved, the next occurrence opens a new alert.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /alerts?view=` | `active` (default: open and acknowledged), `open`, `acknowledged`, `resolved` or `all`, worst first |
+| `GET /alerts/counts` | Unresolved alerts per severity |
+| `GET /alerts/{id}` | One alert |
+| `POST /alerts/{id}/acknowledge` | Mark an open alert as seen. It stays until it is resolved |
+| `POST /alerts/{id}/resolve` | Resolve it by hand |
+
+## Pushes
+
+Besides the live events, Lighthouse can push to the owner through the delivery channels of agents. `[notifications]`
+in the configuration decides what is sent:
+
+```toml
+[notifications]
+deliver = ["owner"]   # owner, mail:<address> or slack:<alias>; empty sends nothing
+decisions = true      # a run waits for a decision ("ask before")
+done = false          # a run finished ("done")
+alerts = "critical"   # lowest severity of new or escalated alerts to push
+```
+
+A push names the agent and the tools it proposes, never their arguments. Failed pushes are logged and do not affect
+the run.
