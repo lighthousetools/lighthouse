@@ -63,6 +63,10 @@ Approvals, drafts and posts also read like messages, so the owner can review the
 | `quote` | That item's `author`, `title`, `text`, `occurred_at` and `url`, to quote the original |
 | `preview` | The arguments, readable: `fields` with `label` and `value`, and the `text` to review with its `text_key`. Labels come from the source action's `{{input.<field>}}` names; references to the item are left out |
 | `actions` | What the owner can do, such as `approve`, `edit`, `rewrite`, `snooze`, `deny`, `dismiss` and `context` |
+| `basis` | What the run read before, for the source chips: `tool`, a `label` such as `Mail · 3 threads` or `Posts`, `service` and `count` of the collection's cached items |
+
+Drafts show only the newest per tool and target, and a newer proposal supersedes an equivalent open approval, see
+[agents.md](agents.md#tools). `GET /runs/{id}/basis` returns the same labels for any run.
 
 `POST /ready/{kind}/{id}/rewrite` with `{"tone": "shorter"}` returns a variant of the text of an approval, draft or
 post in the owner's voice, as `{tone, text, run_id}`. The tone is `shorter`, `warmer`, `formal` or an instruction of

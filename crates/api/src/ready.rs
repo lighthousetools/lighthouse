@@ -100,6 +100,41 @@ pub(crate) async fn reviewer(state: &ApiState) -> Reviewer<'_> {
     Reviewer::new(&state.sync, sources, orgs, state.publisher.service())
 }
 
+/// The tools a run used successfully before `except`, in order.
+pub(crate) async fn run_tools(state: &ApiState, run: Uuid, except: Option<&str>) -> Vec<String> {
+    match state.audit.run_detail(run).await {
+        Ok(Some(detail)) => detail
+            .steps
+            .into_iter()
+            .filter(|step| step.kind == "tool" && step.status == "ok")
+            .map(|step| step.name)
+            .filter(|name| Some(name.as_str()) != except)
+            .collect(),
+        Ok(None) => Vec::new(),
+        Err(error) => {
+            tracing::warn!(%error, "cannot read the steps of a run");
+            Vec::new()
+        }
+    }
+}
+
+/// What a run read, readable, such as `Mail · 3 threads`.
+#[utoipa::path(
+    get,
+    operation_id = "run_basis",
+    path = "/runs/{id}/basis",
+    params(("id" = Uuid, Path, description = "Run ID")),
+    responses((status = 200, body = Vec<crate::ready_view::Basis>)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn run_basis(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<crate::ready_view::Basis>>, ApiError> {
+    let tools = run_tools(&state, id, None).await;
+    Ok(Json(reviewer(&state).await.basis(&tools).await))
+}
+
 /// The arguments of a prepared draft, from its logged step.
 fn draft_input(detail: Option<&str>) -> Value {
     detail
@@ -150,9 +185,10 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
         .await
         .map_err(internal)?
     {
-        let review = reviewer
+        let mut review = reviewer
             .call(&approval.tool, &approval.input, approval.reason.as_deref())
             .await;
+        review.basis = reviewer.basis(&approval.consulted).await;
         items.push(ReadyItem {
             kind: "approval".to_owned(),
             group: "decisions".to_owned(),
@@ -201,16 +237,28 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
     if !tools.is_empty() {
         let dismissed = state.desk.dismissed(DRAFT).await.map_err(desk_error)?;
         let since = Utc::now() - Duration::days(DRAFT_DAYS);
-        for call in state
+        let mut calls = state
             .audit
             .tool_calls(&tools, since, LIMIT)
             .await
-            .map_err(internal)?
+            .map_err(internal)?;
+        // Only the newest draft per tool and target: a newer one replaces it.
+        calls.sort_by_key(|call| std::cmp::Reverse(call.created_at));
+        let mut targets = std::collections::HashSet::new();
+        for call in calls
             .into_iter()
             .filter(|call| !dismissed.contains(&call.id.to_string()))
         {
             let input = draft_input(call.detail.as_deref());
-            let review = reviewer.call(&call.tool, &input, None).await;
+            if let Some(target) = lighthouse_core::proposal::target(&input)
+                && !targets.insert((call.tool.clone(), target))
+            {
+                continue;
+            }
+            let mut review = reviewer.call(&call.tool, &input, None).await;
+            review.basis = reviewer
+                .basis(&run_tools(&state, call.run_id, Some(&call.tool)).await)
+                .await;
             items.push(ReadyItem {
                 kind: DRAFT.to_owned(),
                 group: "drafts".to_owned(),
@@ -665,7 +713,12 @@ mod tests {
             input: json!({"thread_id": "t1", "body": "Hi John,\nhere it is.", "_reason": "John asked by Friday."}),
             quotes_external: true,
             reason: Some("John asked by Friday.".to_owned()),
-            consulted: Vec::new(),
+            consulted: vec![
+                "mail.list_threads".to_owned(),
+                "posts.propose".to_owned(),
+                "mail.archive".to_owned(),
+                "other.lookup_thing".to_owned(),
+            ],
         };
         harness
             .audit
@@ -690,6 +743,21 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .contains(&json!("context"))
+        );
+        let labels: Vec<&str> = item["basis"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|basis| basis["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Gmail · 1 thread",
+                "Posts",
+                "Gmail · archive",
+                "Lookup thing"
+            ]
         );
 
         let uri = format!("/ready/approval/{id}/rewrite");
@@ -756,6 +824,43 @@ mod tests {
         let approval: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(approval["input"]["body"], "Hi John, attached.");
         assert_eq!(approval["input"]["thread_id"], "t1");
+    }
+
+    #[tokio::test]
+    async fn only_the_newest_draft_per_target_is_shown_with_what_its_run_read() {
+        let harness = harness(Some(TOKEN)).await;
+        let audit = &harness.audit;
+        let run = RunId::new();
+        audit.start_run(run, "inbox", "manual").await.unwrap();
+        let tool_step = |name: &str, detail: &str| NewStep {
+            kind: "tool".to_owned(),
+            name: name.to_owned(),
+            status: "ok".to_owned(),
+            detail: Some(detail.to_owned()),
+            ..NewStep::default()
+        };
+        audit
+            .record_step(run, &tool_step("mail.list_threads", "{}"))
+            .await
+            .unwrap();
+        for body in ["First", "Second"] {
+            let detail = json!({"thread_id": "t1", "title": body}).to_string();
+            audit
+                .record_step(run, &tool_step("linear.save_draft", &detail))
+                .await
+                .unwrap();
+        }
+        let (_, body) = call(&harness.app, "GET", "/ready", Some(TOKEN)).await;
+        let feed: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(feed["counts"]["draft"], 1, "{body}");
+        let draft = &feed["items"][0];
+        assert_eq!(draft["title"], "Second");
+        assert_eq!(draft["basis"][0]["label"], "Gmail · 0 threads");
+        let uri = format!("/runs/{}/basis", run.as_uuid());
+        let (status, body) = call(&harness.app, "GET", &uri, Some(TOKEN)).await;
+        assert_eq!(status, StatusCode::OK);
+        let basis: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(basis.as_array().unwrap().len(), 2, "each tool once: {body}");
     }
 
     #[tokio::test]

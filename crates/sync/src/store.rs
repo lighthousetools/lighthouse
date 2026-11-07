@@ -511,6 +511,19 @@ impl SyncStore {
             .await
     }
 
+    /// Counts the cached items of a kind in a source.
+    pub async fn count(&self, source: &str, kind: &str) -> Result<i64, sqlx::Error> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM synced_items WHERE tenant_id = $1 AND source = $2 AND kind = $3",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(source)
+        .bind(kind)
+        .fetch_one(self.pool())
+        .await?;
+        Ok(row.0)
+    }
+
     /// Finds an item by its external ID, within one source or in any, the
     /// latest first.
     pub async fn find_external(

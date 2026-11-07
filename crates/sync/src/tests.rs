@@ -128,6 +128,8 @@ async fn pull_requests_checks_and_files_sync_with_events_after_the_first_run() {
     );
     let children = store.children(&pr).await.unwrap();
     assert_eq!(children.len(), 2);
+    assert_eq!(store.count("github", "pull_request").await.unwrap(), 2);
+    assert_eq!(store.count("github", "nothing").await.unwrap(), 0);
     let found = store
         .find_external("acme/app/pull/1", None)
         .await

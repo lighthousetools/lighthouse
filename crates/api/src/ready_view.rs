@@ -77,6 +77,51 @@ pub struct Quote {
     pub url: Option<String>,
 }
 
+/// Something a run read or used, readable, such as `Mail · 3 threads`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Basis {
+    /// Qualified tool name.
+    pub tool: String,
+    /// What it was, for a chip: the source and what it holds.
+    pub label: String,
+    /// The service, for the logo.
+    pub service: Option<String>,
+    /// The items of that collection in the cache, if the tool fills one.
+    pub count: Option<i64>,
+}
+
+/// Built-in tools and their names.
+const BUILT_IN: [(&str, &str); 5] = [
+    ("posts.", "Posts"),
+    ("tasks.", "Tasks"),
+    ("memory.", "Memory"),
+    ("brain.", "Second Brain"),
+    ("load_skill", "Skill"),
+];
+
+/// A service name for people, such as `GitHub` for `github`.
+pub fn service_name(service: &str) -> String {
+    match service {
+        "github" => "GitHub".to_owned(),
+        "linkedin" => "LinkedIn".to_owned(),
+        "gmail" => "Gmail".to_owned(),
+        "crm" => "CRM".to_owned(),
+        other => label(other),
+    }
+}
+
+/// `3 threads`, `1 pull request`.
+pub fn amount(count: i64, kind: &str) -> String {
+    let noun = label(kind).to_lowercase();
+    if count == 1 {
+        format!("1 {noun}")
+    } else if noun.ends_with('s') {
+        format!("{count} {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
 /// What the owner sees of a proposed call.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct Review {
@@ -94,6 +139,9 @@ pub struct Review {
     pub quote: Option<Quote>,
     /// The arguments, readable.
     pub preview: Option<Preview>,
+    /// What the run read before, readable.
+    #[serde(default)]
+    pub basis: Vec<Basis>,
 }
 
 /// Turns a key such as `pull_number` or `issueId` into `Pull number` or `Issue id`.
@@ -371,6 +419,74 @@ impl<'a> Reviewer<'a> {
                 url: item.url,
             }),
             preview: Some(preview),
+            basis: Vec::new(),
+        }
+    }
+
+    /// Labels the tools a run used, each once, in their order.
+    pub async fn basis(&self, tools: &[String]) -> Vec<Basis> {
+        let mut seen = std::collections::HashSet::new();
+        let mut basis = Vec::new();
+        for tool in tools {
+            if !seen.insert(tool.as_str()) {
+                continue;
+            }
+            basis.push(self.basis_of(tool).await);
+        }
+        basis
+    }
+
+    async fn basis_of(&self, tool: &str) -> Basis {
+        let collection = self.sources.iter().find_map(|source| {
+            source
+                .collection_tools
+                .iter()
+                .find(|collection| collection.tool == tool)
+                .map(|collection| (source, collection))
+        });
+        if let Some((source, collection)) = collection {
+            let count = match self.sync.count(&source.name, &collection.kind).await {
+                Ok(count) => Some(count),
+                Err(error) => {
+                    tracing::warn!(%error, "cannot count the items of a source");
+                    None
+                }
+            };
+            let name = service_name(&source.service);
+            return Basis {
+                tool: tool.to_owned(),
+                label: match count {
+                    Some(count) => format!("{name} · {}", amount(count, &collection.kind)),
+                    None => name,
+                },
+                service: Some(source.service.clone()),
+                count,
+            };
+        }
+        if let Some((_, name)) = BUILT_IN.iter().find(|(prefix, _)| tool.starts_with(prefix)) {
+            return Basis {
+                tool: tool.to_owned(),
+                label: (*name).to_owned(),
+                service: None,
+                count: None,
+            };
+        }
+        let (connector, name) = tool.split_once('.').unwrap_or(("", tool));
+        let service = self
+            .sources
+            .iter()
+            .find(|source| source.connector == connector)
+            .map(|source| source.service.clone());
+        Basis {
+            tool: tool.to_owned(),
+            label: match &service {
+                Some(service) => {
+                    format!("{} · {}", service_name(service), label(name).to_lowercase())
+                }
+                None => label(name),
+            },
+            service,
+            count: None,
         }
     }
 
@@ -431,6 +547,18 @@ mod tests {
         assert_eq!(person("  "), None);
         assert_eq!(org_of("john@globex.example").as_deref(), Some("Globex"));
         assert_eq!(org_of("nobody"), None);
+    }
+
+    #[test]
+    fn amounts_and_services_read_naturally() {
+        assert_eq!(amount(3, "thread"), "3 threads");
+        assert_eq!(amount(1, "pull_request"), "1 pull request");
+        assert_eq!(amount(2, "news"), "2 news");
+        assert_eq!(service_name("github"), "GitHub");
+        assert_eq!(service_name("linkedin"), "LinkedIn");
+        assert_eq!(service_name("gmail"), "Gmail");
+        assert_eq!(service_name("crm"), "CRM");
+        assert_eq!(service_name("mail"), "Mail");
     }
 
     #[test]

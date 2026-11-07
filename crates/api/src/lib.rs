@@ -41,8 +41,8 @@ pub use catalog::{
     SkillInfo,
 };
 pub use connected::{
-    ActionError, ActionRequest, ActionResult, ActionTool, BusyBlock, Connected, ItemDetail,
-    RefreshResult, SourceInfo,
+    ActionError, ActionRequest, ActionResult, ActionTool, BusyBlock, CollectionTool, Connected,
+    ItemDetail, RefreshResult, SourceInfo,
 };
 pub use contracts::{ComposeRequest, Composed, NewTemplate, fill as fill_template};
 pub use decks::{DeckAttachment, DeckBrief, NewDeck, render_html as render_deck};
@@ -52,7 +52,7 @@ pub use posts::{
     CheckRequest, ImportRequest, ImportResult, Publisher, RewriteRequest, Writer, Written,
 };
 pub use ready::{ReadyFeed, ReadyItem, Rewritten, Snooze, TextEdit, ToneRequest};
-pub use ready_view::{Counterpart, Preview, PreviewField, Quote, Review};
+pub use ready_view::{Basis, Counterpart, Preview, PreviewField, Quote, Review};
 pub use sessions::{
     NewSessionMessage, NodeChange, PermissionDecision, SessionDetail, SessionEvents,
 };
@@ -509,7 +509,7 @@ impl utoipa::Modify for SecurityAddon {
         memory::list, memory::create, memory::get, memory::update, memory::confirm, memory::delete,
         alerts::list, alerts::counts, alerts::get, alerts::acknowledge, alerts::resolve, alerts::series,
         ready::feed, ready::dismiss_draft, ready::snooze, ready::unsnooze, ready::rewrite,
-        ready::edit_text,
+        ready::edit_text, ready::run_basis,
         documents::list, documents::latest_brief, documents::recaps, documents::recap,
         documents::of_run,
         automations::list, automations::get, automations::save, automations::switch,
@@ -551,7 +551,7 @@ impl utoipa::Modify for SecurityAddon {
         Alert, AlertCounts, AlertView, lighthouse_desk::Severity, alerts::AlertSeries,
         alerts::SeriesPoint,
         ReadyFeed, ReadyItem, Snooze, ToneRequest, Rewritten, TextEdit, Review, Counterpart,
-        Preview, PreviewField, Quote, lighthouse_audit::ToolCall,
+        Preview, PreviewField, Quote, crate::ready_view::Basis, lighthouse_audit::ToolCall,
         lighthouse_desk::BriefingDocument, lighthouse_desk::BriefingContent,
         lighthouse_desk::DocumentSection, lighthouse_desk::DocumentItem,
         lighthouse_desk::ItemSource, lighthouse_desk::ItemNumber,
@@ -559,7 +559,7 @@ impl utoipa::Modify for SecurityAddon {
         AutomationRuns, ExternalEvent, AutomationDryRun, PlannedStep, DryRunRequest,
         AutomationDraftRequest,
         lighthouse_sync::SyncedItem, lighthouse_sync::ItemPage, lighthouse_sync::SyncStatus,
-        SourceInfo, ActionTool, RefreshResult, ActionRequest, ActionResult, ItemDetail, BusyBlock,
+        SourceInfo, ActionTool, CollectionTool, RefreshResult, ActionRequest, ActionResult, ItemDetail, BusyBlock,
         lighthouse_sync::Organization, lighthouse_sync::OrganizationInput,
         lighthouse_sync::Numbers, lighthouse_sync::CurrencyNumbers, lighthouse_sync::StageTotal,
         lighthouse_sync::PeriodAmount, lighthouse_sync::Split, lighthouse_sync::SplitInput,
@@ -601,6 +601,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/events", get(events))
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
+        .route("/runs/{id}/basis", get(ready::run_basis))
         .route("/agents", get(catalog::agents).post(catalog::save_agent))
         .route("/agents/draft", post(catalog::draft_agent))
         .route(
@@ -1072,6 +1073,7 @@ mod tests {
                     interval_seconds: 600,
                     actions: vec!["approve".to_owned()],
                     action_tools: Vec::new(),
+                    collection_tools: Vec::new(),
                     status: None,
                     stale: true,
                 },
@@ -1090,6 +1092,11 @@ mod tests {
                             "thread_id": "{{item.external_id}}",
                             "body": "{{input.body}}",
                         })),
+                    }],
+                    collection_tools: vec![crate::connected::CollectionTool {
+                        collection: "inbox".to_owned(),
+                        tool: "mail.list_threads".to_owned(),
+                        kind: "thread".to_owned(),
                     }],
                     status: None,
                     stale: true,

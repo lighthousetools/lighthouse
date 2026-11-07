@@ -41,6 +41,9 @@ pub struct SourceInfo {
     /// The tools behind the actions and how their arguments are filled.
     #[serde(default)]
     pub action_tools: Vec<ActionTool>,
+    /// The tools that fill the collections, and the kind of item each brings.
+    #[serde(default)]
+    pub collection_tools: Vec<CollectionTool>,
     /// Last refreshes, if there were any.
     pub status: Option<SyncStatus>,
     /// Whether the last success is older than two intervals, or missing.
@@ -58,6 +61,17 @@ pub struct ActionTool {
     pub kind: Option<String>,
     /// The argument template, with `{{item.<field>}}` and `{{input.<field>}}` placeholders.
     pub input: Option<Value>,
+}
+
+/// The tool behind a collection of a source.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct CollectionTool {
+    /// Collection name, such as `inbox`.
+    pub collection: String,
+    /// Qualified tool name.
+    pub tool: String,
+    /// Kind of the items, such as `thread`.
+    pub kind: String,
 }
 
 /// What a refresh did.
