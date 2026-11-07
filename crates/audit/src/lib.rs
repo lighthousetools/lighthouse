@@ -158,6 +158,23 @@ pub struct RunDetail {
     pub steps: Vec<StepRecord>,
 }
 
+/// A successful tool call, as listed for review.
+#[derive(Clone, Debug, FromRow, Serialize, ToSchema)]
+pub struct ToolCall {
+    /// Step ID.
+    pub id: Uuid,
+    /// The run.
+    pub run_id: Uuid,
+    /// The agent of the run.
+    pub agent_id: String,
+    /// Qualified tool name.
+    pub tool: String,
+    /// Tool arguments as JSON text.
+    pub detail: Option<String>,
+    /// When it ran.
+    pub created_at: DateTime<Utc>,
+}
+
 /// How a run ended.
 #[derive(Clone, Debug)]
 pub struct RunEnd<'a> {
@@ -285,6 +302,27 @@ impl AuditLog {
         .await?)
     }
 
+    /// Lists successful calls of the given tools since a time, newest first.
+    pub async fn tool_calls(
+        &self,
+        tools: &[String],
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<ToolCall>, AuditError> {
+        Ok(sqlx::query_as(
+            "SELECT s.id, s.run_id, r.agent_id, s.name AS tool, s.detail, s.created_at \
+             FROM run_steps s JOIN runs r ON r.id = s.run_id \
+             WHERE s.tenant_id = $1 AND s.kind = 'tool' AND s.status = 'ok' \
+             AND s.name = ANY($2) AND s.created_at >= $3 ORDER BY s.created_at DESC LIMIT $4",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(tools)
+        .bind(since)
+        .bind(limit)
+        .fetch_all(self.store.pool())
+        .await?)
+    }
+
     /// Returns a value that changes whenever anything the apps show changes.
     pub async fn revision(&self) -> Result<String, AuditError> {
         let (revision,): (String,) = sqlx::query_as(
@@ -300,7 +338,8 @@ impl AuditLog {
              (SELECT count(*) || max(updated_at)::text FROM facts WHERE tenant_id = $1), \
              (SELECT count(*)::text || sum(count)::text || \
               max(greatest(last_seen_at, acknowledged_at, resolved_at))::text \
-              FROM alerts WHERE tenant_id = $1))",
+              FROM alerts WHERE tenant_id = $1), \
+             (SELECT count(*) FROM ready_dismissals WHERE tenant_id = $1))",
         )
         .bind(self.tenant.as_uuid())
         .fetch_one(self.store.pool())
@@ -460,6 +499,28 @@ mod tests {
                 .to_string();
             assert!(error.contains("append-only"), "{error}");
         }
+    }
+
+    #[tokio::test]
+    async fn tool_calls_are_listed_by_name_status_and_time() {
+        let (log, _) = log().await;
+        let run = RunId::new();
+        log.start_run(run, "inbox", "manual").await.unwrap();
+        let mut saved = step("tool", 0, 0.0);
+        saved.name = "mail.save_draft".to_owned();
+        saved.detail = Some("{}".to_owned());
+        log.record_step(run, &saved).await.unwrap();
+        let mut failed = saved.clone();
+        failed.status = "error".to_owned();
+        log.record_step(run, &failed).await.unwrap();
+        log.record_step(run, &step("tool", 0, 0.0)).await.unwrap();
+        let tools = ["mail.save_draft".to_owned()];
+        let since = chrono::Utc::now() - chrono::Duration::hours(1);
+        let calls = log.tool_calls(&tools, since, 10).await.unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].agent_id, "inbox");
+        let later = chrono::Utc::now() + chrono::Duration::hours(1);
+        assert!(log.tool_calls(&tools, later, 10).await.unwrap().is_empty());
     }
 
     #[tokio::test]

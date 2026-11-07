@@ -6,6 +6,7 @@
 
 pub mod alerts;
 pub mod facts;
+pub mod ready;
 pub mod rules;
 pub mod tasks;
 

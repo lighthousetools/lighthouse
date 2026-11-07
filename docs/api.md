@@ -18,8 +18,25 @@ never report texts, tool arguments or other private content.
 | `run.finished` | `{"run_id", "agent_id", "status"}` | A run ended, successfully or not |
 | `alert.raised` | `{"id", "kind", "severity", "new"}` | A problem appeared or happened again |
 | `alerts.changed` | `{"id": <alert>}` | An alert was acknowledged or resolved |
+| `ready.changed` | `{"id": <item>}` | An item was cleared from the ready feed |
 
 A client that falls behind gets a `changed` event instead of the events it missed.
+
+## Ready for you
+
+`GET /ready` returns everything that waits for the owner in one call, so the home page needs no other request:
+
+| Kind | Group | What it is | How it leaves the feed |
+|---|---|---|---|
+| `approval` | `decisions` | A proposed action with external effect, such as sending a mail | `POST /approvals/{id}/decision` |
+| `permission` | `decisions` | A permission request of a Claude Code session | `POST /permissions/{id}/decision` |
+| `draft` | `drafts` | A draft an agent saved in an external tool with a `draft_tools` tool, in the last seven days | `POST /ready/drafts/{id}/dismiss` |
+| `task` | `suggestions` | A task an agent proposed | `POST /tasks/{id}/accept` or `DELETE /tasks/{id}` |
+| `fact` | `suggestions` | A fact about the owner an agent learned | `POST /memory/{id}/confirm` or `DELETE /memory/{id}` |
+
+The answer has `total`, `counts` per kind, `groups` per group and the unresolved `alerts` per severity. Items come
+decisions first, then drafts, then suggestions, and oldest first within a group. Each item has a title, the agent and
+run behind it, and in `detail` the full object as its own endpoint returns it.
 
 ## Tasks
 

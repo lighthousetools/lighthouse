@@ -10,6 +10,7 @@ mod auth;
 mod brain;
 mod catalog;
 mod memory;
+mod ready;
 mod rules;
 mod sessions;
 mod tasks;
@@ -23,6 +24,7 @@ pub use catalog::{
     AgentChangeError, AgentDraftRequest, AgentInfo, AgentSource, AgentTool, Catalog, ConnectorInfo,
     SkillInfo,
 };
+pub use ready::{ReadyFeed, ReadyItem};
 pub use sessions::{NodeChange, PermissionDecision};
 pub use tasks::{TaskOrder, TaskOrderResult};
 
@@ -445,6 +447,7 @@ impl utoipa::Modify for SecurityAddon {
         rules::list, rules::create, rules::get, rules::update, rules::delete,
         memory::list, memory::create, memory::get, memory::update, memory::confirm, memory::delete,
         alerts::list, alerts::counts, alerts::get, alerts::acknowledge, alerts::resolve,
+        ready::feed, ready::dismiss_draft,
     ),
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -458,6 +461,7 @@ impl utoipa::Modify for SecurityAddon {
         Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Origin, SourceLink,
         Rule, NewRule, RulePatch, Fact, FactSource, NewFact, FactPatch,
         Alert, AlertCounts, AlertView, lighthouse_desk::Severity,
+        ReadyFeed, ReadyItem, lighthouse_audit::ToolCall,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -548,6 +552,8 @@ pub fn router(state: ApiState) -> Router {
                 .delete(memory::delete),
         )
         .route("/memory/{id}/confirm", post(memory::confirm))
+        .route("/ready", get(ready::feed))
+        .route("/ready/drafts/{id}/dismiss", post(ready::dismiss_draft))
         .route("/alerts", get(alerts::list))
         .route("/alerts/counts", get(alerts::counts))
         .route("/alerts/{id}", get(alerts::get))
@@ -676,7 +682,7 @@ mod tests {
                 auth: "oauth".to_owned(),
                 connected: false,
                 read_tools: Vec::new(),
-                draft_tools: Vec::new(),
+                draft_tools: vec!["save_draft".to_owned()],
             }])
         }
 
@@ -725,6 +731,7 @@ mod tests {
         pub(crate) app: Router,
         pub(crate) audit: AuditLog,
         pub(crate) desk: Desk,
+        pub(crate) sessions: Sessions,
         pub(crate) events: EventBus,
         pub(crate) resumed: Arc<Mutex<Vec<Uuid>>>,
     }
@@ -766,6 +773,7 @@ mod tests {
             app: router(state),
             audit,
             desk,
+            sessions,
             events,
             resumed,
         }
