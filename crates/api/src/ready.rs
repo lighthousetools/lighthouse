@@ -717,6 +717,7 @@ mod tests {
                 "mail.list_threads".to_owned(),
                 "posts.propose".to_owned(),
                 "mail.archive".to_owned(),
+                "mail.send_reply".to_owned(),
                 "other.lookup_thing".to_owned(),
             ],
         };
@@ -750,15 +751,7 @@ mod tests {
             .iter()
             .map(|basis| basis["label"].as_str().unwrap())
             .collect();
-        assert_eq!(
-            labels,
-            [
-                "Gmail · 1 thread",
-                "Posts",
-                "Gmail · archive",
-                "Lookup thing"
-            ]
-        );
+        assert_eq!(labels, ["Gmail · 1 thread", "Archive", "Lookup thing"]);
 
         let uri = format!("/ready/approval/{id}/rewrite");
         let (status, body) = send(

@@ -90,14 +90,10 @@ pub struct Basis {
     pub count: Option<i64>,
 }
 
-/// Built-in tools and their names.
-const BUILT_IN: [(&str, &str); 5] = [
-    ("posts.", "Posts"),
-    ("tasks.", "Tasks"),
-    ("memory.", "Memory"),
-    ("brain.", "Second Brain"),
-    ("load_skill", "Skill"),
-];
+/// Built-in tools that read, and their names.
+const BUILT_IN: [(&str, &str); 2] = [("brain.", "Second Brain"), ("load_skill", "Skill")];
+/// Built-in tools that propose rather than read.
+const PROPOSING: [&str; 3] = ["posts.", "tasks.", "memory."];
 
 /// A service name for people, such as `GitHub` for `github`.
 pub fn service_name(service: &str) -> String {
@@ -423,12 +419,15 @@ impl<'a> Reviewer<'a> {
         }
     }
 
-    /// Labels the tools a run used, each once, in their order.
+    /// Labels what a run read, each tool once, in their order. Proposals and
+    /// the tools behind source actions are left out: they act, they do not read.
     pub async fn basis(&self, tools: &[String]) -> Vec<Basis> {
         let mut seen = std::collections::HashSet::new();
         let mut basis = Vec::new();
         for tool in tools {
-            if !seen.insert(tool.as_str()) {
+            let acts = PROPOSING.iter().any(|prefix| tool.starts_with(prefix))
+                || self.action(tool).is_some();
+            if acts || !seen.insert(tool.as_str()) {
                 continue;
             }
             basis.push(self.basis_of(tool).await);
@@ -471,21 +470,12 @@ impl<'a> Reviewer<'a> {
                 count: None,
             };
         }
-        let (connector, name) = tool.split_once('.').unwrap_or(("", tool));
-        let service = self
-            .sources
-            .iter()
-            .find(|source| source.connector == connector)
-            .map(|source| source.service.clone());
+        // A connector can serve several services, so the service stays unknown.
+        let name = tool.split_once('.').map_or(tool, |(_, name)| name);
         Basis {
             tool: tool.to_owned(),
-            label: match &service {
-                Some(service) => {
-                    format!("{} · {}", service_name(service), label(name).to_lowercase())
-                }
-                None => label(name),
-            },
-            service,
+            label: label(name),
+            service: None,
             count: None,
         }
     }
