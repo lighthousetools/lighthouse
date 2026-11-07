@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 const COLUMNS: &str = "id, source, domain, kind, external_id, parent_id, title, summary, author, assignee, \
                        state, url, flags, importance, occurred_at, starts_at, ends_at, amount, currency, \
-                       data, synced_at, \
+                       data, synced_at, snoozed_until, \
                        (SELECT o.id FROM organizations o WHERE o.tenant_id = synced_items.tenant_id \
                         AND synced_items.source = ANY(o.sources) ORDER BY o.id LIMIT 1) AS org";
 
@@ -62,6 +62,8 @@ pub struct SyncedItem {
     pub data: Value,
     /// When it was fetched.
     pub synced_at: DateTime<Utc>,
+    /// Hidden until this time.
+    pub snoozed_until: Option<DateTime<Utc>>,
     /// The organization whose sources include this item's source.
     pub org: Option<String>,
 }
@@ -96,6 +98,8 @@ pub struct ItemFilter {
     pub source: Option<String>,
     /// Only sources of this organization.
     pub org: Option<String>,
+    /// Also items snoozed until later.
+    pub include_snoozed: bool,
     /// Full-text search.
     pub q: Option<String>,
     /// Items must have all of these flags.
@@ -275,6 +279,90 @@ impl SyncStore {
         Ok(stored)
     }
 
+    /// Notes that a collection returned these items.
+    pub async fn mark_seen(
+        &self,
+        source: &str,
+        kind: &str,
+        collection: &str,
+        ids: &[String],
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE synced_items SET seen_by = array_append(seen_by, $4) WHERE tenant_id = $1 \
+             AND source = $2 AND kind = $3 AND external_id = ANY($5) AND NOT ($4 = ANY(seen_by))",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(source)
+        .bind(kind)
+        .bind(collection)
+        .bind(ids)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// After a full refresh of a collection, forgets it on items it did not
+    /// return and removes items no collection returns anymore, with their
+    /// children. Returns the IDs of removed items.
+    pub async fn prune_vanished(
+        &self,
+        source: &str,
+        kind: &str,
+        collection: &str,
+        seen: &[String],
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let mut transaction = self.pool().begin().await?;
+        sqlx::query(
+            "UPDATE synced_items SET seen_by = array_remove(seen_by, $4) WHERE tenant_id = $1 \
+             AND source = $2 AND kind = $3 AND NOT (external_id = ANY($5)) AND $4 = ANY(seen_by)",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(source)
+        .bind(kind)
+        .bind(collection)
+        .bind(seen)
+        .execute(&mut *transaction)
+        .await?;
+        let removed: Vec<(String,)> = sqlx::query_as(
+            "DELETE FROM synced_items WHERE tenant_id = $1 AND source = $2 AND kind = $3 \
+             AND cardinality(seen_by) = 0 AND NOT (external_id = ANY($4)) RETURNING external_id",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(source)
+        .bind(kind)
+        .bind(seen)
+        .fetch_all(&mut *transaction)
+        .await?;
+        let removed: Vec<String> = removed.into_iter().map(|(id,)| id).collect();
+        sqlx::query(
+            "DELETE FROM synced_items WHERE tenant_id = $1 AND source = $2 AND parent_id = ANY($3)",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(source)
+        .bind(&removed)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(removed)
+    }
+
+    /// Hides an item until a time, or shows it again with `None`. Returns whether it exists.
+    pub async fn snooze(
+        &self,
+        id: Uuid,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE synced_items SET snoozed_until = $3 WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(id)
+        .bind(until)
+        .execute(self.pool())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Removes flags from items of a kind that a full refresh did not return.
     pub async fn prune_flags(
         &self,
@@ -338,7 +426,8 @@ impl SyncStore {
              AND ($12::timestamptz IS NULL OR coalesce(ends_at, starts_at, occurred_at) >= $12) \
              AND ($13::timestamptz IS NULL OR coalesce(starts_at, occurred_at) < $13) \
              AND ($16::text IS NULL OR source IN (SELECT unnest(o.sources) FROM organizations o \
-                  WHERE o.tenant_id = $1 AND o.id = $16))";
+                  WHERE o.tenant_id = $1 AND o.id = $16)) \
+             AND ($17 OR snoozed_until IS NULL OR snoozed_until <= now())";
         let order = match filter.order {
             Order::Recent => "occurred_at DESC NULLS LAST, synced_at DESC, id",
             Order::Importance => "importance DESC, occurred_at DESC NULLS LAST, id",
@@ -375,6 +464,7 @@ impl SyncStore {
                     .bind(filter.limit)
                     .bind(filter.offset)
                     .bind(&filter.org)
+                    .bind(filter.include_snoozed)
             };
         }
         let items: Vec<SyncedItem> = bind_page!(sqlx::query_as(sqlx::AssertSqlSafe(select)))

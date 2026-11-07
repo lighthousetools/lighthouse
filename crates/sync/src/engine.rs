@@ -215,6 +215,7 @@ impl Syncer {
             let result = self
                 .collection(
                     source,
+                    collection_name,
                     collection,
                     host.as_ref(),
                     &context,
@@ -265,6 +266,7 @@ impl Syncer {
     async fn collection(
         &self,
         source: &Source,
+        name: &str,
         collection: &CollectionConfig,
         host: &dyn ToolHost,
         context: &Value,
@@ -327,10 +329,18 @@ impl Syncer {
             .input
             .as_ref()
             .is_some_and(|input| uses(input, "since"));
+        let seen: Vec<String> = mapped.iter().map(|item| item.external_id.clone()).collect();
+        self.store
+            .mark_seen(&source.name, &collection.kind, name, &seen)
+            .await
+            .map_err(|error| error.to_string())?;
         if collection.parent.is_none() && !incremental {
-            let seen: Vec<String> = mapped.iter().map(|item| item.external_id.clone()).collect();
             self.store
                 .prune_flags(&source.name, &collection.kind, &seen, &collection.flags)
+                .await
+                .map_err(|error| error.to_string())?;
+            self.store
+                .prune_vanished(&source.name, &collection.kind, name, &seen)
                 .await
                 .map_err(|error| error.to_string())?;
         }

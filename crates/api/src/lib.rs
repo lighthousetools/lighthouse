@@ -503,7 +503,9 @@ impl utoipa::Modify for SecurityAddon {
         organizations::list, organizations::save, organizations::delete,
         connected::deals, connected::accounts, connected::transactions, connected::invoices,
         connected::contracts, connected::rooms, connected::holdings, connected::quotes,
-        connected::numbers,
+        connected::numbers, connected::snooze, connected::unsnooze, connected::splits,
+        connected::save_split, connected::delete_split, connected::split_items, connected::bulk,
+        connected::suggestions, connected::focus,
         posts::list, posts::create, posts::get, posts::update, posts::delete, posts::check,
         posts::publish, posts::import, posts::calendar, posts::slots, posts::set_slots,
         posts::pillars, posts::save_pillar, posts::delete_pillar, posts::branding,
@@ -534,7 +536,9 @@ impl utoipa::Modify for SecurityAddon {
         SourceInfo, RefreshResult, ActionRequest, ActionResult, ItemDetail, BusyBlock,
         lighthouse_sync::Organization, lighthouse_sync::OrganizationInput,
         lighthouse_sync::Numbers, lighthouse_sync::CurrencyNumbers, lighthouse_sync::StageTotal,
-        lighthouse_sync::PeriodAmount,
+        lighthouse_sync::PeriodAmount, lighthouse_sync::Split, lighthouse_sync::SplitInput,
+        lighthouse_sync::SplitFilter, connected::ItemSnooze, connected::BulkAction,
+        connected::BulkOutcome, connected::FocusBlock,
         lighthouse_desk::Post, lighthouse_desk::NewPost, lighthouse_desk::PostPatch,
         lighthouse_desk::PostCheck, lighthouse_desk::CheckIssue, lighthouse_desk::PostSlot,
         lighthouse_desk::CalendarSlot, lighthouse_desk::Pillar, lighthouse_desk::PillarInput,
@@ -705,6 +709,19 @@ pub fn router(state: ApiState) -> Router {
             "/connected/items/{id}/actions/{action}",
             post(connected::act_on_item),
         )
+        .route(
+            "/connected/items/{id}/snooze",
+            post(connected::snooze).delete(connected::unsnooze),
+        )
+        .route("/connected/splits", get(connected::splits))
+        .route(
+            "/connected/splits/{id}",
+            put(connected::save_split).delete(connected::delete_split),
+        )
+        .route("/connected/splits/{id}/items", get(connected::split_items))
+        .route("/connected/actions/bulk", post(connected::bulk))
+        .route("/calendar/suggestions", get(connected::suggestions))
+        .route("/calendar/focus", post(connected::focus))
         .route("/connected/sources", get(connected::sources))
         .route("/connected/refresh", post(connected::refresh_all))
         .route(

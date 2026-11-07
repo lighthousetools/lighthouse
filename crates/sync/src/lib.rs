@@ -9,7 +9,9 @@ pub mod engine;
 pub mod mapping;
 pub mod numbers;
 pub mod orgs;
+pub mod scheduling;
 pub mod sources;
+pub mod splits;
 pub mod store;
 
 pub use engine::{
@@ -19,6 +21,7 @@ pub use mapping::{MappedItem, MappingError, Owner};
 pub use numbers::{CurrencyNumbers, Numbers, PeriodAmount, StageTotal};
 pub use orgs::{Organization, OrganizationError, OrganizationInput};
 pub use sources::{DOMAINS, PRESETS, Source, SourceError, preset, resolve};
+pub use splits::{Split, SplitFilter, SplitInput};
 pub use store::{ItemFilter, ItemPage, Order, SyncStatus, SyncStore, SyncedItem};
 
 #[cfg(test)]

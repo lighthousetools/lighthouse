@@ -81,3 +81,7 @@ input = { owner = "{{item.data.owner}}", repo = "{{item.data.repo}}", pullNumber
 tool = "add_issue_comment"
 kind = "pull_request"
 input = { owner = "{{item.data.owner}}", repo = "{{item.data.repo}}", issue_number = "{{item.data.number}}", body = "{{input.body}}" }
+
+[actions.create_issue]
+tool = "create_issue"
+input = { owner = "{{input.owner}}", repo = "{{input.repo}}", title = "{{input.title}}", body = "{{input.body}}" }

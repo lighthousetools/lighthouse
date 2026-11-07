@@ -142,6 +142,8 @@ pub(crate) struct ListQuery {
     from: Option<DateTime<Utc>>,
     to: Option<DateTime<Utc>>,
     domain: Option<String>,
+    /// Also items snoozed until later.
+    snoozed: Option<bool>,
 }
 
 impl ListQuery {
@@ -151,6 +153,7 @@ impl ListQuery {
             kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
             source: self.source.clone(),
             org: self.org.clone(),
+            include_snoozed: self.snoozed.unwrap_or(false),
             q: self.q.clone(),
             flags: self
                 .flags
@@ -195,6 +198,7 @@ macro_rules! list_endpoint {
                 ("open" = Option<bool>, Query, description = "Leave out closed and done items"),
                 ("from" = Option<DateTime<Utc>>, Query, description = "Items ending or happening at or after this time"),
                 ("to" = Option<DateTime<Utc>>, Query, description = "Items starting or happening before this time"),
+                ("snoozed" = Option<bool>, Query, description = "Also items snoozed until later"),
                 ("limit" = Option<i64>, Query, description = "Page size"),
                 ("offset" = Option<i64>, Query, description = "Items to skip")
             ),
@@ -844,5 +848,568 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("done"));
+    }
+}
+
+/// When to show an item again.
+#[derive(Deserialize, ToSchema)]
+pub struct ItemSnooze {
+    /// Hide it until this time.
+    pub until: DateTime<Utc>,
+}
+
+/// Hides an item from lists and the inbox until a time ("later"). Nothing
+/// changes in the service.
+#[utoipa::path(
+    post,
+    operation_id = "snooze_item",
+    path = "/connected/items/{id}/snooze",
+    params(("id" = Uuid, Path, description = "Item ID")),
+    request_body = ItemSnooze,
+    responses((status = 204, description = "Hidden until then"), (status = 404, description = "Unknown item")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn snooze(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+    Json(snooze): Json<ItemSnooze>,
+) -> Result<StatusCode, ApiError> {
+    if !state
+        .sync
+        .snooze(id, Some(snooze.until))
+        .await
+        .map_err(internal)?
+    {
+        return Err(not_found("item"));
+    }
+    state
+        .events
+        .emit("connected.changed", serde_json::json!({"id": id}));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Shows a snoozed item again.
+#[utoipa::path(
+    delete,
+    operation_id = "unsnooze_item",
+    path = "/connected/items/{id}/snooze",
+    params(("id" = Uuid, Path, description = "Item ID")),
+    responses((status = 204, description = "Shown again"), (status = 404, description = "Unknown item")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn unsnooze(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    if !state.sync.snooze(id, None).await.map_err(internal)? {
+        return Err(not_found("item"));
+    }
+    state
+        .events
+        .emit("connected.changed", serde_json::json!({"id": id}));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Lists the splits, the saved filters of the lists.
+#[utoipa::path(
+    get,
+    operation_id = "list_splits",
+    path = "/connected/splits",
+    responses((status = 200, body = Vec<lighthouse_sync::Split>)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn splits(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<lighthouse_sync::Split>>, ApiError> {
+    Ok(Json(state.sync.splits().await.map_err(internal)?))
+}
+
+/// Creates or replaces a split.
+#[utoipa::path(
+    put,
+    operation_id = "save_split",
+    path = "/connected/splits/{id}",
+    params(("id" = String, Path, description = "Split ID")),
+    request_body = lighthouse_sync::SplitInput,
+    responses((status = 200, body = lighthouse_sync::Split), (status = 400, description = "Invalid ID or name")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn save_split(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(input): Json<lighthouse_sync::SplitInput>,
+) -> Result<Json<lighthouse_sync::Split>, ApiError> {
+    let split = state
+        .sync
+        .save_split(&id, input)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::BAD_REQUEST,
+                "a split needs an ID of lowercase letters, digits and dashes, and a name"
+                    .to_owned(),
+            )
+        })?;
+    Ok(Json(split))
+}
+
+/// Deletes a split.
+#[utoipa::path(
+    delete,
+    operation_id = "delete_split",
+    path = "/connected/splits/{id}",
+    params(("id" = String, Path, description = "Split ID")),
+    responses((status = 204, description = "Deleted"), (status = 404, description = "Unknown split")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn delete_split(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    if !state.sync.delete_split(&id).await.map_err(internal)? {
+        return Err(not_found("split"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Lists the items of a split.
+#[utoipa::path(
+    get,
+    operation_id = "split_items",
+    path = "/connected/splits/{id}/items",
+    params(
+        ("id" = String, Path, description = "Split ID"),
+        ("limit" = Option<i64>, Query, description = "Page size"),
+        ("offset" = Option<i64>, Query, description = "Items to skip")
+    ),
+    responses((status = 200, body = ItemPage), (status = 404, description = "Unknown split")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn split_items(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<ItemPage>, ApiError> {
+    let split = state
+        .sync
+        .split(&id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| not_found("split"))?;
+    let filter = split.item_filter(
+        query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 500),
+        query.offset.unwrap_or(0).max(0),
+    );
+    page(&state, filter).await
+}
+
+/// The same action on many items.
+#[derive(Deserialize, ToSchema)]
+pub struct BulkAction {
+    /// Item IDs.
+    pub ids: Vec<Uuid>,
+    /// Action name, such as `archive`.
+    pub action: String,
+    /// Values for `{{input.<field>}}`.
+    #[serde(default)]
+    pub input: Value,
+}
+
+/// What became of one item of a bulk action.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct BulkOutcome {
+    /// Item ID.
+    pub id: Uuid,
+    /// The result, if the action could be asked for.
+    pub result: Option<ActionResult>,
+    /// Why not.
+    pub error: Option<String>,
+}
+
+/// Asks for the same action on many items, such as archiving a batch of mail.
+/// Every item gets its own approval when the tool writes; decide them together
+/// with `POST /approvals/decisions`.
+#[utoipa::path(
+    post,
+    operation_id = "bulk_action",
+    path = "/connected/actions/bulk",
+    request_body = BulkAction,
+    responses((status = 200, body = Vec<BulkOutcome>)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn bulk(
+    State(state): State<ApiState>,
+    Json(bulk): Json<BulkAction>,
+) -> Result<Json<Vec<BulkOutcome>>, ApiError> {
+    let mut outcomes = Vec::new();
+    for id in bulk.ids.into_iter().take(200) {
+        let outcome = match state.sync.item(id).await.map_err(internal)? {
+            None => BulkOutcome {
+                id,
+                result: None,
+                error: Some("unknown item".to_owned()),
+            },
+            Some(item) => match state
+                .connected
+                .act(&item.source, &bulk.action, Some(&item), bulk.input.clone())
+                .await
+            {
+                Ok(result) => BulkOutcome {
+                    id,
+                    result: Some(result),
+                    error: None,
+                },
+                Err(error) => BulkOutcome {
+                    id,
+                    result: None,
+                    error: Some(error.to_string()),
+                },
+            },
+        };
+        outcomes.push(outcome);
+    }
+    state.events.emit(
+        "connected.changed",
+        serde_json::json!({"bulk": outcomes.len()}),
+    );
+    Ok(Json(outcomes))
+}
+
+/// Parameters of scheduling suggestions.
+#[derive(Deserialize)]
+pub(crate) struct SuggestionQuery {
+    minutes: Option<i64>,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+    day_start: Option<String>,
+    day_end: Option<String>,
+    weekends: Option<bool>,
+    limit: Option<usize>,
+}
+
+fn working_hours(
+    query: &SuggestionQuery,
+) -> Result<lighthouse_sync::scheduling::WorkingHours, ApiError> {
+    let time = |text: Option<&str>, default: &str| {
+        chrono::NaiveTime::parse_from_str(text.unwrap_or(default), "%H:%M")
+            .map_err(|_| ApiError(StatusCode::BAD_REQUEST, "times look like 09:00".to_owned()))
+    };
+    Ok(lighthouse_sync::scheduling::WorkingHours {
+        start: time(query.day_start.as_deref(), "09:00")?,
+        end: time(query.day_end.as_deref(), "18:00")?,
+        weekends: query.weekends.unwrap_or(false),
+    })
+}
+
+async fn suggest(state: &ApiState, query: &SuggestionQuery) -> Result<Vec<BusyBlock>, ApiError> {
+    let from = query.from.unwrap_or_else(Utc::now);
+    let to = query.to.unwrap_or(from + Duration::days(7));
+    let minutes = query.minutes.unwrap_or(60).clamp(15, 8 * 60);
+    let busy = state.sync.busy(from, to).await.map_err(internal)?;
+    let slots = lighthouse_sync::scheduling::free_slots(
+        &busy,
+        from,
+        to,
+        Duration::minutes(minutes),
+        working_hours(query)?,
+        &state.zone,
+        query.limit.unwrap_or(5).clamp(1, 50),
+    );
+    Ok(slots
+        .into_iter()
+        .map(|(starts_at, ends_at)| BusyBlock { starts_at, ends_at })
+        .collect())
+}
+
+/// Suggests free slots from the calendar, within working hours in the owner's time zone.
+#[utoipa::path(
+    get,
+    operation_id = "suggest_times",
+    path = "/calendar/suggestions",
+    params(
+        ("minutes" = Option<i64>, Query, description = "Length, default 60"),
+        ("from" = Option<DateTime<Utc>>, Query, description = "Start, defaults to now"),
+        ("to" = Option<DateTime<Utc>>, Query, description = "End, defaults to seven days later"),
+        ("day_start" = Option<String>, Query, description = "Start of working hours, default 09:00"),
+        ("day_end" = Option<String>, Query, description = "End of working hours, default 18:00"),
+        ("weekends" = Option<bool>, Query, description = "Also Saturday and Sunday"),
+        ("limit" = Option<usize>, Query, description = "Most suggestions, default 5")
+    ),
+    responses((status = 200, body = Vec<BusyBlock>)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn suggestions(
+    State(state): State<ApiState>,
+    Query(query): Query<SuggestionQuery>,
+) -> Result<Json<Vec<BusyBlock>>, ApiError> {
+    Ok(Json(suggest(&state, &query).await?))
+}
+
+/// A focus block to put into the calendar.
+#[derive(Deserialize, ToSchema)]
+pub struct FocusBlock {
+    /// Calendar source with a `create` action.
+    pub source: String,
+    /// Title. Defaults to "Focus".
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Start. Without it, the first free slot is taken.
+    #[serde(default)]
+    pub starts_at: Option<DateTime<Utc>>,
+    /// Length in minutes, default 90.
+    #[serde(default)]
+    pub minutes: Option<i64>,
+}
+
+/// Blocks focus time through the source's `create` action. The input has
+/// `title`, `start`, `end` and `focus: true`; a writing tool waits for approval.
+#[utoipa::path(
+    post,
+    operation_id = "block_focus",
+    path = "/calendar/focus",
+    request_body = FocusBlock,
+    responses(
+        (status = 202, body = ActionResult),
+        (status = 200, body = ActionResult),
+        (status = 409, description = "No free slot in the next seven days"),
+        (status = 422, description = "The source has no create action")
+    ),
+    security(("bearer" = []))
+)]
+pub(crate) async fn focus(
+    State(state): State<ApiState>,
+    Json(block): Json<FocusBlock>,
+) -> Result<(StatusCode, Json<ActionResult>), ApiError> {
+    let minutes = block.minutes.unwrap_or(90).clamp(15, 8 * 60);
+    let starts_at = match block.starts_at {
+        Some(start) => start,
+        None => {
+            let query = SuggestionQuery {
+                minutes: Some(minutes),
+                from: None,
+                to: None,
+                day_start: None,
+                day_end: None,
+                weekends: None,
+                limit: Some(1),
+            };
+            suggest(&state, &query)
+                .await?
+                .first()
+                .map(|slot| slot.starts_at)
+                .ok_or_else(|| {
+                    ApiError(
+                        StatusCode::CONFLICT,
+                        "no free slot in the next seven days".to_owned(),
+                    )
+                })?
+        }
+    };
+    let input = serde_json::json!({
+        "title": block.title.unwrap_or_else(|| "Focus".to_owned()),
+        "start": starts_at,
+        "end": starts_at + Duration::minutes(minutes),
+        "focus": true,
+    });
+    let result = state
+        .connected
+        .act(&block.source, "create", None, input)
+        .await
+        .map_err(action_error)?;
+    Ok(acted(&state, result))
+}
+
+#[cfg(test)]
+mod workflow_tests {
+    use super::*;
+    use crate::tests::{TOKEN, call, harness, send};
+    use lighthouse_sync::MappedItem;
+    use serde_json::json;
+
+    fn item(id: &str, title: &str, flags: &[&str], state: &str) -> MappedItem {
+        MappedItem {
+            external_id: id.to_owned(),
+            title: Some(title.to_owned()),
+            state: Some(state.to_owned()),
+            flags: flags.iter().map(|flag| (*flag).to_owned()).collect(),
+            occurred_at: Some(Utc::now()),
+            data: json!({}),
+            ..MappedItem::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn items_snooze_splits_bulk_and_scheduling() {
+        let harness = harness(Some(TOKEN)).await;
+        let app = &harness.app;
+        harness
+            .sync
+            .upsert(
+                "mail",
+                "mail",
+                "thread",
+                &[
+                    item("t1", "Weekly newsletter", &["unread"], "inbox"),
+                    item("t2", "Offer", &["important"], "inbox"),
+                ],
+                &[],
+            )
+            .await
+            .unwrap();
+        let (_, body) = call(app, "GET", "/mail/threads", Some(TOKEN)).await;
+        let page: ItemPage = serde_json::from_str(&body).unwrap();
+        let id = page
+            .items
+            .iter()
+            .find(|item| item.external_id == "t1")
+            .unwrap()
+            .id;
+        let uri = format!("/connected/items/{id}/snooze");
+        let until = json!({"until": Utc::now() + Duration::hours(4)});
+        assert_eq!(
+            send(app, "POST", &uri, Some(TOKEN), Some(until.clone()))
+                .await
+                .0,
+            StatusCode::NO_CONTENT
+        );
+        let (_, body) = call(app, "GET", "/mail/threads", Some(TOKEN)).await;
+        assert_eq!(serde_json::from_str::<ItemPage>(&body).unwrap().total, 1);
+        let (_, body) = call(app, "GET", "/mail/threads?snoozed=true", Some(TOKEN)).await;
+        assert_eq!(serde_json::from_str::<ItemPage>(&body).unwrap().total, 2);
+        assert_eq!(
+            call(app, "DELETE", &uri, Some(TOKEN)).await.0,
+            StatusCode::NO_CONTENT
+        );
+        let missing = format!("/connected/items/{}/snooze", Uuid::nil());
+        assert_eq!(
+            send(app, "POST", &missing, Some(TOKEN), Some(until))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call(app, "DELETE", &missing, Some(TOKEN)).await.0,
+            StatusCode::NOT_FOUND
+        );
+
+        let split = json!({"name": "Newsletters", "domain": "mail", "filter": {"q": "newsletter"}});
+        assert_eq!(
+            send(
+                app,
+                "PUT",
+                "/connected/splits/newsletters",
+                Some(TOKEN),
+                Some(split)
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(
+                app,
+                "PUT",
+                "/connected/splits/Bad",
+                Some(TOKEN),
+                Some(json!({"name": "x"}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (_, body) = call(
+            app,
+            "GET",
+            "/connected/splits/newsletters/items",
+            Some(TOKEN),
+        )
+        .await;
+        assert_eq!(serde_json::from_str::<ItemPage>(&body).unwrap().total, 1);
+        assert!(
+            call(app, "GET", "/connected/splits", Some(TOKEN))
+                .await
+                .1
+                .contains("Newsletters")
+        );
+        assert_eq!(
+            call(app, "GET", "/connected/splits/nope/items", Some(TOKEN))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call(app, "DELETE", "/connected/splits/newsletters", Some(TOKEN))
+                .await
+                .0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            call(app, "DELETE", "/connected/splits/newsletters", Some(TOKEN))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+
+        let ids: Vec<Uuid> = page
+            .items
+            .iter()
+            .map(|item| item.id)
+            .chain([Uuid::nil()])
+            .collect();
+        let bulk = json!({"ids": ids, "action": "archive"});
+        let (status, body) = send(
+            app,
+            "POST",
+            "/connected/actions/bulk",
+            Some(TOKEN),
+            Some(bulk),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let outcomes: Vec<Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(outcomes.len(), 3);
+        assert_eq!(outcomes[0]["result"]["status"], "proposed");
+        assert_eq!(outcomes[2]["error"], "unknown item");
+        let failing = json!({"ids": [page.items[0].id], "action": "nope"});
+        let (_, body) = send(
+            app,
+            "POST",
+            "/connected/actions/bulk",
+            Some(TOKEN),
+            Some(failing),
+        )
+        .await;
+        assert!(body.contains("has no nope"));
+
+        let (status, body) = call(
+            app,
+            "GET",
+            "/calendar/suggestions?minutes=30&weekends=true&limit=2",
+            Some(TOKEN),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_str::<Vec<BusyBlock>>(&body).unwrap().len(),
+            2
+        );
+        assert_eq!(
+            call(
+                app,
+                "GET",
+                "/calendar/suggestions?day_start=nine",
+                Some(TOKEN)
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let focus = json!({"source": "cal", "starts_at": Utc::now(), "minutes": 60});
+        let (status, body) = send(app, "POST", "/calendar/focus", Some(TOKEN), Some(focus)).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let auto = json!({"source": "cal"});
+        let (status, _) = send(app, "POST", "/calendar/focus?x=1", Some(TOKEN), Some(auto)).await;
+        assert!(status == StatusCode::ACCEPTED || status == StatusCode::CONFLICT);
     }
 }

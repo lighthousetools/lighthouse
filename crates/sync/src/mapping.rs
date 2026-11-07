@@ -344,6 +344,17 @@ pub fn map_item(
     if owner.mentioned(&words) {
         flags.insert("mention".to_owned());
     }
+    if collection.kind == "check" {
+        let name = format!(
+            "{} {}",
+            text("title").unwrap_or_default(),
+            text("url").unwrap_or_default()
+        )
+        .to_lowercase();
+        if ["deploy", "preview"].iter().any(|word| name.contains(word)) {
+            flags.insert("deployment".to_owned());
+        }
+    }
     if collection.kind == "check"
         && state
             .as_deref()

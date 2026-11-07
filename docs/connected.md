@@ -124,17 +124,19 @@ Collections only read: every collection tool must be in the connector's `read_to
 | `receivable`, `payable` | An `invoice` you issued, or one you received |
 | `overdue` | An open `invoice` past its due date |
 | `expiring` | An open `contract` that expires within 30 days |
+| `deployment` | A `check` whose name or address mentions a deployment or preview, such as a preview link on a pull request |
 | `failed` | A `check` has the state `failure`, `failed`, `error`, `timed_out` or `action_required` |
 
 A collection whose input has no `{{since}}` placeholder returns the full list. After such a refresh, items it did not
-return lose that collection's `flags`, so a pull request whose review is done leaves the list of review requests.
-Items that disappear from every collection keep their last state in the cache.
+return lose that collection's `flags`, so a pull request whose review is done leaves the list of review requests. An
+item that no collection returns anymore is removed from the cache, with its children such as checks and files. Items
+that only incremental collections returned stay.
 
 ## Presets
 
 | Preset | Domain | Collections | Actions |
 |---|---|---|---|
-| `github` | `code` | `review_requests` and `mine` (open pull requests), `checks` and `files` of each | `approve`, `comment` |
+| `github` | `code` | `review_requests` and `mine` (open pull requests), `checks` (with deployments) and `files` of each | `approve`, `comment`, `create_issue` |
 | `linear` | `issues` | `assigned` issues, `projects`, `cycles`, `comments` of each issue | `create`, `update`, `comment` |
 
 Presets follow the public MCP servers of these services. Tool names and result shapes change between server versions,
@@ -311,6 +313,23 @@ All lists take `q` (full-text search), `source`, `org`, `state`, `flags` (comma-
 | `GET /connected/items/{id}` | An item with its children, such as messages, comments, checks or changed files, and the raw tool result |
 | `GET /connected/sources` | Sources with their freshness: last attempt, last success, last error and `stale` after two intervals |
 | `POST /connected/refresh`, `POST /connected/sources/{name}/refresh` | Refresh now |
+
+### Later, splits and bulk actions
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /connected/items/{id}/snooze` | `{"until": "<time>"}` hides an item from lists and the inbox until then. Nothing changes in the service, and refreshes keep the snooze |
+| `DELETE /connected/items/{id}/snooze` | Shows it again. Lists take `snoozed=true` to include snoozed items |
+| `GET /connected/splits`, `PUT`, `DELETE /connected/splits/{id}` | Saved filters with `name`, `domain` and a `filter` of `q`, `kinds`, `source`, `org`, `flags`, `any_flags`, `state` and `open` |
+| `GET /connected/splits/{id}/items` | The items of a split |
+| `POST /connected/actions/bulk` | `{"ids", "action", "input"}` asks for the same action on up to 200 items. Each writing call gets its own approval; decide them together with `POST /approvals/decisions` |
+
+### Scheduling
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /calendar/suggestions?minutes=60&from=&to=&day_start=09:00&day_end=18:00&weekends=false&limit=5` | Free slots between busy blocks, within working hours in `server.timezone`, on the hour or half hour |
+| `POST /calendar/focus` | `{"source", "title", "starts_at", "minutes"}` blocks focus time through the source's `create` action, with `title`, `start`, `end` and `focus: true` as input. Without `starts_at`, the first free slot is taken. A writing tool waits for approval |
 
 `importance` runs from 0 to 100: review requests 80, failed checks on your pull requests 75, assigned issues and
 important mail 70, mentions 60, unread mail 40, everything else 10, plus 10 for the last 24 hours.

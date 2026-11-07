@@ -157,7 +157,10 @@ async fn pull_requests_checks_and_files_sync_with_events_after_the_first_run() {
         .unwrap();
     assert!(failed.failed && failed.on_my_pull_request);
 
-    script.set("github.search_pull_requests", json!({"items": []}));
+    script.set(
+        "github.search_pull_requests",
+        json!({"items": [pull(1, "alex")]}),
+    );
     script.set(
         "github.get_pull_request_status",
         json!({"statuses": [{"context": "ci", "state": "success"}]}),
@@ -170,14 +173,13 @@ async fn pull_requests_checks_and_files_sync_with_events_after_the_first_run() {
         third.checks.iter().any(|check| !check.failed),
         "a recovered check is reported"
     );
-    let pr = store
+    let gone = store
         .item_by_external("github", "pull_request", "acme/app/pull/2")
         .await
-        .unwrap()
         .unwrap();
     assert!(
-        pr.flags.is_empty(),
-        "flags of a full collection go when it no longer returns the item"
+        gone.is_none(),
+        "an item no full collection returns is removed"
     );
 
     let statuses = store.statuses().await.unwrap();
@@ -600,4 +602,121 @@ async fn numbers_sum_pipeline_cash_burn_invoices_and_revenue() {
     assert_eq!(acme.currencies[0].cash, 0.0);
     assert_eq!(acme.currencies[0].pipeline_open, 15_000.0);
     assert_eq!(acme.currencies[0].runway_months, None);
+}
+
+#[tokio::test]
+async fn items_that_vanish_from_every_full_collection_are_removed_with_their_children() {
+    let (syncer, script) = github().await;
+    script.set(
+        "github.search_pull_requests",
+        json!({"items": [pull(1, "alex"), pull(2, "sam")]}),
+    );
+    script.set(
+        "github.get_pull_request_status",
+        json!({"statuses": [{"context": "ci", "state": "success"}]}),
+    );
+    script.set("github.get_pull_request_files", json!([]));
+    let now = Utc::now();
+    syncer.sync("github", now).await.unwrap();
+    let store = syncer.store();
+    let count = |kind: &'static str| async move {
+        store
+            .items(&ItemFilter {
+                kinds: vec![kind.to_owned()],
+                limit: 50,
+                ..ItemFilter::default()
+            })
+            .await
+            .unwrap()
+            .total
+    };
+    assert_eq!(count("pull_request").await, 2);
+    assert_eq!(count("check").await, 2);
+    script.set(
+        "github.search_pull_requests",
+        json!({"items": [pull(1, "alex")]}),
+    );
+    syncer
+        .sync("github", now + Duration::minutes(20))
+        .await
+        .unwrap();
+    assert_eq!(
+        count("pull_request").await,
+        1,
+        "the merged pull request is gone"
+    );
+    assert_eq!(count("check").await, 1, "with its checks");
+
+    let pr = store
+        .item_by_external("github", "pull_request", "acme/app/pull/1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .snooze(pr.id, Some(now + Duration::hours(3)))
+            .await
+            .unwrap()
+    );
+    assert_eq!(count("pull_request").await, 0, "snoozed items are hidden");
+    let all = ItemFilter {
+        kinds: vec!["pull_request".to_owned()],
+        include_snoozed: true,
+        limit: 5,
+        ..ItemFilter::default()
+    };
+    assert_eq!(store.items(&all).await.unwrap().total, 1);
+    syncer
+        .sync("github", now + Duration::minutes(40))
+        .await
+        .unwrap();
+    let kept = store.item(pr.id).await.unwrap().unwrap();
+    assert!(kept.snoozed_until.is_some(), "a refresh keeps the snooze");
+    assert!(store.snooze(pr.id, None).await.unwrap());
+    assert!(!store.snooze(uuid::Uuid::nil(), None).await.unwrap());
+}
+
+#[tokio::test]
+async fn splits_save_filters_and_list_their_items() {
+    let store = SyncStore::new(fresh_store().await, TenantId::SINGLE);
+    let mail = |id: &str, title: &str| MappedItem {
+        external_id: id.to_owned(),
+        title: Some(title.to_owned()),
+        data: json!({}),
+        ..MappedItem::default()
+    };
+    store
+        .upsert(
+            "mail",
+            "mail",
+            "thread",
+            &[mail("a", "Weekly newsletter"), mail("b", "Offer")],
+            &[],
+        )
+        .await
+        .unwrap();
+    let input = SplitInput {
+        name: "Newsletters".to_owned(),
+        domain: Some("mail".to_owned()),
+        filter: SplitFilter {
+            q: Some("newsletter".to_owned()),
+            ..SplitFilter::default()
+        },
+        position: 1,
+    };
+    let split = store
+        .save_split("newsletters", input.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(store.save_split("Bad Id", input).await.unwrap().is_none());
+    let page = store.items(&split.item_filter(10, 0)).await.unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(store.splits().await.unwrap().len(), 1);
+    assert_eq!(
+        store.split("newsletters").await.unwrap().unwrap().name,
+        "Newsletters"
+    );
+    assert!(store.delete_split("newsletters").await.unwrap());
+    assert!(!store.delete_split("newsletters").await.unwrap());
 }
