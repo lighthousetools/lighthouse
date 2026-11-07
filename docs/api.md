@@ -63,8 +63,13 @@ notes and an optional `source` that links to what the task came from:
 | `POST /tasks/{id}/complete`, `/reopen` | Mark as done or put back on the list |
 | `POST /tasks/{id}/accept` | Accept a task an agent proposed |
 | `POST /tasks/order` | `{"ids": [...]}` puts these tasks first, in this order |
+| `POST /tasks/{id}/delegate` | `{"agent_id": "..."}` hands the task to an agent, see below |
 
 "Today" uses the time zone in `server.timezone`.
+
+A delegated task starts a run of the agent with the task's title, notes and due date as context. The task shows
+`delegated_agent` and `delegated_run`, and when the run ends, its report lands in `result` with `result_status`. The task
+stays open: you decide whether it is done. Anything the agent wants to send still waits for your approval.
 
 Agents cannot create tasks directly. A proposal from an agent has the status `proposed` and the origin `agent`, and stays
 off the list until the owner accepts it. Deleting a proposal rejects it.

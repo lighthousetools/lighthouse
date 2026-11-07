@@ -16,7 +16,8 @@ const MAX_NOTES: usize = 20_000;
 const MAX_PRIORITY: i16 = 3;
 
 const COLUMNS: &str = "id, title, notes, due_on, priority, status, position, source_kind, source_ref, \
-                       source_label, source_url, origin, agent_id, run_id, created_at, updated_at, done_at";
+                       source_label, source_url, origin, agent_id, run_id, created_at, updated_at, done_at, \
+                       delegated_agent, delegated_run, result, result_status";
 
 /// State of a task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -83,6 +84,14 @@ pub struct Task {
     pub updated_at: DateTime<Utc>,
     /// When it was done.
     pub done_at: Option<DateTime<Utc>>,
+    /// The agent the task was handed to.
+    pub delegated_agent: Option<String>,
+    /// The run that works on it.
+    pub delegated_run: Option<Uuid>,
+    /// The report of that run, once it ended.
+    pub result: Option<String>,
+    /// How that run ended, such as `succeeded` or `failed`.
+    pub result_status: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -104,6 +113,10 @@ struct TaskRow {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     done_at: Option<DateTime<Utc>>,
+    delegated_agent: Option<String>,
+    delegated_run: Option<Uuid>,
+    result: Option<String>,
+    result_status: Option<String>,
 }
 
 impl From<TaskRow> for Task {
@@ -132,6 +145,10 @@ impl From<TaskRow> for Task {
             created_at: row.created_at,
             updated_at: row.updated_at,
             done_at: row.done_at,
+            delegated_agent: row.delegated_agent,
+            delegated_run: row.delegated_run,
+            result: row.result,
+            result_status: row.result_status,
         }
     }
 }
@@ -401,6 +418,48 @@ impl Desk {
             .await
     }
 
+    /// Notes that an agent run works on a task.
+    pub async fn delegate_task(
+        &self,
+        id: Uuid,
+        agent: &str,
+        run: Uuid,
+    ) -> Result<Option<Task>, DeskError> {
+        let query = format!(
+            "UPDATE tasks SET delegated_agent = $3, delegated_run = $4, result = NULL, \
+             result_status = NULL, updated_at = now() WHERE tenant_id = $1 AND id = $2 RETURNING {COLUMNS}"
+        );
+        let row: Option<TaskRow> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant())
+            .bind(id)
+            .bind(agent)
+            .bind(run)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.map(Into::into))
+    }
+
+    /// Records the end of a run on the task it works on, if any.
+    pub async fn finish_delegation(
+        &self,
+        run: Uuid,
+        status: &str,
+        result: Option<&str>,
+    ) -> Result<Option<Task>, DeskError> {
+        let query = format!(
+            "UPDATE tasks SET result = $3, result_status = $4, updated_at = now() \
+             WHERE tenant_id = $1 AND delegated_run = $2 RETURNING {COLUMNS}"
+        );
+        let row: Option<TaskRow> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant())
+            .bind(run)
+            .bind(result)
+            .bind(status)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.map(Into::into))
+    }
+
     /// Deletes a task. Returns whether it existed.
     pub async fn delete_task(&self, id: Uuid) -> Result<bool, DeskError> {
         let result = sqlx::query("DELETE FROM tasks WHERE tenant_id = $1 AND id = $2")
@@ -574,6 +633,45 @@ mod tests {
         );
         assert!(desk.delete_task(task.id).await.unwrap());
         assert!(!desk.delete_task(task.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_delegated_task_gets_the_result_of_its_run() {
+        let desk = desk().await;
+        let task = desk
+            .create_task(new("Draft the offer", None), None)
+            .await
+            .unwrap();
+        let run = Uuid::now_v7();
+        let delegated = desk
+            .delegate_task(task.id, "writer", run)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delegated.delegated_agent.as_deref(), Some("writer"));
+        assert!(
+            desk.finish_delegation(Uuid::now_v7(), "succeeded", None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let done = desk
+            .finish_delegation(run, "succeeded", Some("Here is the draft"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(done.result.as_deref(), Some("Here is the draft"));
+        assert_eq!(
+            done.status,
+            TaskStatus::Open,
+            "the owner decides when it is done"
+        );
+        assert!(
+            desk.delegate_task(Uuid::nil(), "writer", run)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

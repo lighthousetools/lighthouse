@@ -270,6 +270,14 @@ impl Outcomes {
             "run.finished",
             json!({"run_id": run, "agent_id": agent, "status": record.status}),
         );
+        let result = record.report.as_deref().or(record.reason.as_deref());
+        if let Some(task) = self
+            .desk
+            .finish_delegation(run, &record.status, result)
+            .await?
+        {
+            self.events.emit("tasks.changed", json!({"id": task.id}));
+        }
         if record.status == "succeeded" {
             if let Some(document) = self.desk.run_document(run).await? {
                 self.events.emit(
@@ -589,6 +597,42 @@ mod tests {
         let pushed = fixture.pushed.0.lock().unwrap().clone();
         assert_eq!(pushed[0].0, "Lighthouse: Brief needs a decision");
         assert!(pushed[0].1.contains("mail.send"));
+    }
+
+    #[tokio::test]
+    async fn the_result_of_a_delegated_run_lands_on_its_task() {
+        let fixture = fixture(NotificationsConfig::default()).await;
+        let task = fixture
+            .desk
+            .create_task(
+                lighthouse_desk::NewTask {
+                    title: "Draft the offer".to_owned(),
+                    ..lighthouse_desk::NewTask::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let run = RunId::new();
+        fixture.audit.start_run(run, "brief", "task").await.unwrap();
+        fixture
+            .desk
+            .delegate_task(task.id, "brief", run.as_uuid())
+            .await
+            .unwrap();
+        let end = RunEnd {
+            status: RunStatus::Succeeded,
+            reason: None,
+            report: Some("The draft is ready"),
+        };
+        fixture.audit.finish_run(run, end).await.unwrap();
+        let mut events = fixture.events.subscribe();
+        fixture.outcomes.after_run(run.as_uuid()).await.unwrap();
+        assert_eq!(events.recv().await.unwrap().name, "run.finished");
+        assert_eq!(events.recv().await.unwrap().name, "tasks.changed");
+        let task = fixture.desk.task(task.id).await.unwrap().unwrap();
+        assert_eq!(task.result.as_deref(), Some("The draft is ready"));
+        assert_eq!(task.result_status.as_deref(), Some("succeeded"));
     }
 
     #[tokio::test]

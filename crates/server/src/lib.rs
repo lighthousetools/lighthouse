@@ -90,13 +90,25 @@ async fn after_run(outcomes: &Outcomes, engine: &Arc<AutomationEngine>, run: Run
 
 impl AgentPool {
     async fn spawn(&self, agent: Arc<AgentDefinition>, trigger: &str) -> Result<RunId, AuditError> {
+        self.spawn_with(agent, trigger, None).await
+    }
+
+    async fn spawn_with(
+        &self,
+        agent: Arc<AgentDefinition>,
+        trigger: &str,
+        context: Option<String>,
+    ) -> Result<RunId, AuditError> {
         let run = RunId::new();
         self.runtime.register(run, &agent, trigger).await?;
         let runtime = self.runtime.clone();
         let outcomes = self.outcomes.clone();
         let engine = self.engine.clone();
         tokio::spawn(async move {
-            if let Err(error) = runtime.execute(run, &agent).await {
+            if let Err(error) = runtime
+                .execute_with_context(run, &agent, context.as_deref())
+                .await
+            {
                 tracing::error!(agent = %agent.id, %error, "run failed");
             }
             after_run(&outcomes, &engine, run).await;
@@ -211,6 +223,22 @@ impl RunTrigger for AgentPool {
             .ok_or_else(|| TriggerError::UnknownAgent(agent_id.to_owned()))?;
         let run = self
             .spawn(known.agent, "manual")
+            .await
+            .map_err(|error| TriggerError::Failed(error.to_string()))?;
+        Ok(run.as_uuid())
+    }
+
+    async fn trigger_with_context(
+        &self,
+        agent_id: &str,
+        context: &str,
+    ) -> Result<Uuid, TriggerError> {
+        let known = self
+            .agents
+            .get(agent_id)
+            .ok_or_else(|| TriggerError::UnknownAgent(agent_id.to_owned()))?;
+        let run = self
+            .spawn_with(known.agent, "task", Some(context.to_owned()))
             .await
             .map_err(|error| TriggerError::Failed(error.to_string()))?;
         Ok(run.as_uuid())

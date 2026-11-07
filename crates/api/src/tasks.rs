@@ -213,6 +213,68 @@ pub(crate) async fn accept(
     Ok(Json(task))
 }
 
+/// Who a task goes to.
+#[derive(Deserialize, ToSchema)]
+pub struct Delegation {
+    /// The agent that works on it.
+    pub agent_id: String,
+}
+
+/// Hands a task to an agent. Its run gets the task as context, and its report
+/// lands on the task as `result`. The task stays open until the owner closes it.
+#[utoipa::path(
+    post,
+    operation_id = "delegate_task",
+    path = "/tasks/{id}/delegate",
+    params(("id" = Uuid, Path, description = "Task ID")),
+    request_body = Delegation,
+    responses(
+        (status = 202, body = Task),
+        (status = 404, description = "Unknown task or agent"),
+        (status = 409, description = "Done already")
+    ),
+    security(("bearer" = []))
+)]
+pub(crate) async fn delegate(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+    Json(delegation): Json<Delegation>,
+) -> Result<(StatusCode, Json<Task>), ApiError> {
+    let task = state
+        .desk
+        .task(id)
+        .await
+        .map_err(desk_error)?
+        .ok_or_else(|| not_found("task"))?;
+    if task.status == lighthouse_desk::TaskStatus::Done {
+        return Err(conflict("done already"));
+    }
+    let mut context = format!("The owner handed you this task: {}", task.title);
+    if let Some(notes) = &task.notes {
+        context.push_str(&format!("\nNotes: {notes}"));
+    }
+    if let Some(due) = task.due_on {
+        context.push_str(&format!("\nDue: {due}"));
+    }
+    context.push_str("\nPrepare what you can and report what is left for the owner.");
+    let run = state
+        .trigger
+        .trigger_with_context(&delegation.agent_id, &context)
+        .await
+        .map_err(|error| match error {
+            crate::TriggerError::UnknownAgent(_) => not_found("agent"),
+            other => crate::internal(other),
+        })?;
+    let task = state
+        .desk
+        .delegate_task(id, &delegation.agent_id, run)
+        .await
+        .map_err(desk_error)?
+        .ok_or_else(|| not_found("task"))?;
+    changed(&state, Some(id));
+    Ok((StatusCode::ACCEPTED, Json(task)))
+}
+
 /// Changes the order of tasks.
 #[utoipa::path(
     post,

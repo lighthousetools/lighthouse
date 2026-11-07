@@ -736,3 +736,34 @@ async fn a_dry_run_shows_the_steps_and_a_draft_needs_a_valid_file() {
         .unwrap();
     assert_eq!(draft.status(), 502, "the mock model writes no file");
 }
+
+#[tokio::test]
+async fn a_delegated_task_gets_the_report_of_its_run() {
+    let (base, _dir, _database) = start().await;
+    let client = reqwest::Client::new();
+    let task: Value = client
+        .post(format!("{base}/tasks"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"title": "Collect the open issues"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = task["id"].as_str().unwrap().to_owned();
+    let response = client
+        .post(format!("{base}/tasks/{id}/delegate"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"agent_id": "reader"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 202);
+    let task = wait_for(&base, &format!("/tasks/{id}"), |task| {
+        task["result"].is_string()
+    })
+    .await;
+    assert_eq!(task["result"], "mock answer");
+    assert_eq!(task["result_status"], "succeeded");
+}

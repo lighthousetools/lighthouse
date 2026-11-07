@@ -45,7 +45,7 @@ pub use ready::{ReadyFeed, ReadyItem};
 pub use sessions::{
     NewSessionMessage, NodeChange, PermissionDecision, SessionDetail, SessionEvents,
 };
-pub use tasks::{TaskOrder, TaskOrderResult};
+pub use tasks::{Delegation, TaskOrder, TaskOrderResult};
 
 use async_trait::async_trait;
 use axum::Json;
@@ -108,6 +108,17 @@ pub trait RunTrigger: Send + Sync {
 
     /// Continues a paused run in the background if no decision is open.
     async fn resume(&self, run: Uuid) -> Result<(), TriggerError>;
+
+    /// Starts a run with extra context, which the model sees as untrusted
+    /// content. Without an override, the context is left out.
+    async fn trigger_with_context(
+        &self,
+        agent_id: &str,
+        context: &str,
+    ) -> Result<Uuid, TriggerError> {
+        let _ = context;
+        self.trigger(agent_id).await
+    }
 }
 
 /// Answers questions from the Second Brain.
@@ -475,7 +486,7 @@ impl utoipa::Modify for SecurityAddon {
         sessions::update_node, sessions::sessions, sessions::permissions, sessions::decide,
         sessions::record_events, sessions::take_messages, sessions::session, sessions::send_message,
         tasks::list, tasks::create, tasks::get, tasks::update, tasks::delete, tasks::complete,
-        tasks::reopen, tasks::accept, tasks::reorder,
+        tasks::reopen, tasks::accept, tasks::reorder, tasks::delegate,
         rules::list, rules::create, rules::get, rules::update, rules::delete,
         memory::list, memory::create, memory::get, memory::update, memory::confirm, memory::delete,
         alerts::list, alerts::counts, alerts::get, alerts::acknowledge, alerts::resolve,
@@ -509,7 +520,7 @@ impl utoipa::Modify for SecurityAddon {
         Session, SessionReport, SessionEvents, NewSessionMessage, SessionDetail,
         lighthouse_sessions::NewSessionEvent, lighthouse_sessions::SessionEvent,
         lighthouse_sessions::SessionMessage, lighthouse_sessions::ChangedFile,
-        Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Origin, SourceLink,
+        Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Delegation, Origin, SourceLink,
         Rule, NewRule, RulePatch, Fact, FactSource, NewFact, FactPatch,
         Alert, AlertCounts, AlertView, lighthouse_desk::Severity,
         ReadyFeed, ReadyItem, lighthouse_audit::ToolCall,
@@ -613,6 +624,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/tasks/{id}/complete", post(tasks::complete))
         .route("/tasks/{id}/reopen", post(tasks::reopen))
         .route("/tasks/{id}/accept", post(tasks::accept))
+        .route("/tasks/{id}/delegate", post(tasks::delegate))
         .route("/rules", get(rules::list).post(rules::create))
         .route(
             "/rules/{id}",
