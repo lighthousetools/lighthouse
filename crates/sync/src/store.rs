@@ -511,6 +511,25 @@ impl SyncStore {
             .await
     }
 
+    /// Finds an item by its external ID, within one source or in any, the
+    /// latest first.
+    pub async fn find_external(
+        &self,
+        external_id: &str,
+        source: Option<&str>,
+    ) -> Result<Option<SyncedItem>, sqlx::Error> {
+        let query = format!(
+            "SELECT {COLUMNS} FROM synced_items WHERE tenant_id = $1 AND external_id = $2 \
+             AND ($3::text IS NULL OR source = $3) ORDER BY occurred_at DESC NULLS LAST LIMIT 1"
+        );
+        sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant.as_uuid())
+            .bind(external_id)
+            .bind(source)
+            .fetch_optional(self.pool())
+            .await
+    }
+
     /// Returns won deals like this one, latest first: of the same source, and of
     /// the same `pipeline` or `category` field when the deal has one.
     pub async fn similar_won_deals(

@@ -30,6 +30,7 @@ show one company only. The apps use this for their company selector. `GET /event
 [sources.github]
 connector = "github"      # a connector from [connectors]
 preset = "github"         # optional, a bundled preset to start from
+service = "github"        # optional, the service for logos; defaults to the preset, then the domain
 account = "alex-example"  # optional, defaults to owner.accounts.<connector>
 interval = "10m"          # optional, defaults to 15m
 ```

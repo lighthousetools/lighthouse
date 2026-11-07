@@ -20,6 +20,7 @@ mod organizations;
 mod pipeline;
 mod posts;
 mod ready;
+mod ready_view;
 mod rules;
 mod sessions;
 mod talk;
@@ -40,8 +41,8 @@ pub use catalog::{
     SkillInfo,
 };
 pub use connected::{
-    ActionError, ActionRequest, ActionResult, BusyBlock, Connected, ItemDetail, RefreshResult,
-    SourceInfo,
+    ActionError, ActionRequest, ActionResult, ActionTool, BusyBlock, Connected, ItemDetail,
+    RefreshResult, SourceInfo,
 };
 pub use contracts::{ComposeRequest, Composed, NewTemplate, fill as fill_template};
 pub use decks::{DeckAttachment, DeckBrief, NewDeck, render_html as render_deck};
@@ -50,7 +51,8 @@ pub use pipeline::{DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult,
 pub use posts::{
     CheckRequest, ImportRequest, ImportResult, Publisher, RewriteRequest, Writer, Written,
 };
-pub use ready::{ReadyFeed, ReadyItem, Snooze};
+pub use ready::{ReadyFeed, ReadyItem, Rewritten, Snooze, TextEdit, ToneRequest};
+pub use ready_view::{Counterpart, Preview, PreviewField, Quote, Review};
 pub use sessions::{
     NewSessionMessage, NodeChange, PermissionDecision, SessionDetail, SessionEvents,
 };
@@ -506,7 +508,8 @@ impl utoipa::Modify for SecurityAddon {
         rules::list, rules::create, rules::get, rules::update, rules::delete,
         memory::list, memory::create, memory::get, memory::update, memory::confirm, memory::delete,
         alerts::list, alerts::counts, alerts::get, alerts::acknowledge, alerts::resolve, alerts::series,
-        ready::feed, ready::dismiss_draft, ready::snooze, ready::unsnooze,
+        ready::feed, ready::dismiss_draft, ready::snooze, ready::unsnooze, ready::rewrite,
+        ready::edit_text,
         documents::list, documents::latest_brief, documents::recaps, documents::recap,
         documents::of_run,
         automations::list, automations::get, automations::save, automations::switch,
@@ -547,7 +550,8 @@ impl utoipa::Modify for SecurityAddon {
         Rule, NewRule, RulePatch, Fact, FactSource, NewFact, FactPatch,
         Alert, AlertCounts, AlertView, lighthouse_desk::Severity, alerts::AlertSeries,
         alerts::SeriesPoint,
-        ReadyFeed, ReadyItem, Snooze, lighthouse_audit::ToolCall,
+        ReadyFeed, ReadyItem, Snooze, ToneRequest, Rewritten, TextEdit, Review, Counterpart,
+        Preview, PreviewField, Quote, lighthouse_audit::ToolCall,
         lighthouse_desk::BriefingDocument, lighthouse_desk::BriefingContent,
         lighthouse_desk::DocumentSection, lighthouse_desk::DocumentItem,
         lighthouse_desk::ItemSource, lighthouse_desk::ItemNumber,
@@ -555,7 +559,7 @@ impl utoipa::Modify for SecurityAddon {
         AutomationRuns, ExternalEvent, AutomationDryRun, PlannedStep, DryRunRequest,
         AutomationDraftRequest,
         lighthouse_sync::SyncedItem, lighthouse_sync::ItemPage, lighthouse_sync::SyncStatus,
-        SourceInfo, RefreshResult, ActionRequest, ActionResult, ItemDetail, BusyBlock,
+        SourceInfo, ActionTool, RefreshResult, ActionRequest, ActionResult, ItemDetail, BusyBlock,
         lighthouse_sync::Organization, lighthouse_sync::OrganizationInput,
         lighthouse_sync::Numbers, lighthouse_sync::CurrencyNumbers, lighthouse_sync::StageTotal,
         lighthouse_sync::PeriodAmount, lighthouse_sync::Split, lighthouse_sync::SplitInput,
@@ -783,6 +787,8 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/ready", get(ready::feed))
         .route("/ready/drafts/{id}/dismiss", post(ready::dismiss_draft))
+        .route("/ready/{kind}/{id}/rewrite", post(ready::rewrite))
+        .route("/ready/approval/{id}/text", put(ready::edit_text))
         .route(
             "/ready/{kind}/{id}/snooze",
             post(ready::snooze).delete(ready::unsnooze),
@@ -1057,15 +1063,38 @@ mod tests {
     #[async_trait]
     impl Connected for FakeConnected {
         async fn sources(&self) -> Result<Vec<SourceInfo>, String> {
-            Ok(vec![SourceInfo {
-                name: "github".to_owned(),
-                connector: "github".to_owned(),
-                domain: "code".to_owned(),
-                interval_seconds: 600,
-                actions: vec!["approve".to_owned()],
-                status: None,
-                stale: true,
-            }])
+            Ok(vec![
+                SourceInfo {
+                    name: "github".to_owned(),
+                    connector: "github".to_owned(),
+                    domain: "code".to_owned(),
+                    service: "github".to_owned(),
+                    interval_seconds: 600,
+                    actions: vec!["approve".to_owned()],
+                    action_tools: Vec::new(),
+                    status: None,
+                    stale: true,
+                },
+                SourceInfo {
+                    name: "mail".to_owned(),
+                    connector: "mail".to_owned(),
+                    domain: "mail".to_owned(),
+                    service: "gmail".to_owned(),
+                    interval_seconds: 600,
+                    actions: vec!["reply".to_owned()],
+                    action_tools: vec![crate::connected::ActionTool {
+                        action: "reply".to_owned(),
+                        tool: "mail.send_reply".to_owned(),
+                        kind: Some("thread".to_owned()),
+                        input: Some(json!({
+                            "thread_id": "{{item.external_id}}",
+                            "body": "{{input.body}}",
+                        })),
+                    }],
+                    status: None,
+                    stale: true,
+                },
+            ])
         }
 
         async fn refresh(&self, source: Option<&str>) -> Result<Vec<RefreshResult>, String> {

@@ -39,7 +39,7 @@ events. See [api.md](api.md#pushes).
 ## Publishing
 
 `[publishing]` names the connector tool that publishes posts. It must be a `write` tool, so every post waits for your
-approval. See [publishing.md](publishing.md#publishing).
+approval. `service`, such as `linkedin`, names the network for logos in the apps. See [publishing.md](publishing.md#publishing).
 
 ## Talk
 

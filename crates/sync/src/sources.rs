@@ -60,6 +60,8 @@ pub struct Source {
     pub connector: String,
     /// Domain.
     pub domain: String,
+    /// The service behind the source, such as `gmail` or `github`.
+    pub service: String,
     /// The owner's accounts in this service.
     pub accounts: Vec<String>,
     /// Refresh interval.
@@ -156,9 +158,15 @@ pub fn resolve(
     accounts.dedup();
     let mut ordered: Vec<(String, CollectionConfig)> = collections.into_iter().collect();
     ordered.sort_by_key(|(_, collection)| collection.parent.is_some());
+    let service = config
+        .service
+        .clone()
+        .or_else(|| config.preset.clone())
+        .unwrap_or_else(|| domain.clone());
     Ok(Source {
         name: name.to_owned(),
         connector: config.connector.clone(),
+        service,
         domain,
         accounts,
         interval,

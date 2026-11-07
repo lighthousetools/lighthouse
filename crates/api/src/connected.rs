@@ -32,14 +32,32 @@ pub struct SourceInfo {
     pub connector: String,
     /// `mail`, `calendar`, `issues` or `code`.
     pub domain: String,
+    /// The service behind it, such as `gmail` or `github`, for its logo.
+    pub service: String,
     /// Refresh interval in seconds.
     pub interval_seconds: u64,
     /// Actions the owner can ask for.
     pub actions: Vec<String>,
+    /// The tools behind the actions and how their arguments are filled.
+    #[serde(default)]
+    pub action_tools: Vec<ActionTool>,
     /// Last refreshes, if there were any.
     pub status: Option<SyncStatus>,
     /// Whether the last success is older than two intervals, or missing.
     pub stale: bool,
+}
+
+/// The tool behind an action of a source.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct ActionTool {
+    /// Action name, such as `reply`.
+    pub action: String,
+    /// Qualified tool name.
+    pub tool: String,
+    /// Kind of item it acts on, if any.
+    pub kind: Option<String>,
+    /// The argument template, with `{{item.<field>}}` and `{{input.<field>}}` placeholders.
+    pub input: Option<Value>,
 }
 
 /// What a refresh did.

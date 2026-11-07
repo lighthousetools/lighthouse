@@ -4,7 +4,7 @@ use crate::automations::AutomationEngine;
 use crate::outcomes::Outcomes;
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
-use lighthouse_api::{ActionError, ActionResult, Connected, RefreshResult, SourceInfo};
+use lighthouse_api::{ActionError, ActionResult, ActionTool, Connected, RefreshResult, SourceInfo};
 use lighthouse_desk::{NewAlert, Severity, SourceLink};
 use lighthouse_notify::EventBus;
 use lighthouse_runtime::{ACTION_PREFIX, ActionOutcome, Runtime};
@@ -159,8 +159,19 @@ impl Connected for ConnectedService {
                     name: source.name.clone(),
                     connector: source.connector.clone(),
                     domain: source.domain.clone(),
+                    service: source.service.clone(),
                     interval_seconds: source.interval.as_secs(),
                     actions: source.actions.keys().cloned().collect(),
+                    action_tools: source
+                        .actions
+                        .iter()
+                        .map(|(action, config)| ActionTool {
+                            action: action.clone(),
+                            tool: source.tool(&config.tool),
+                            kind: config.kind.clone(),
+                            input: config.input.clone(),
+                        })
+                        .collect(),
                     status,
                     stale,
                 }

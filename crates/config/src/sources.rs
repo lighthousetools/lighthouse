@@ -19,6 +19,10 @@ pub struct SourceConfig {
     /// Bundled preset to start from, such as `github` or `linear`.
     #[serde(default)]
     pub preset: Option<String>,
+    /// The service behind the source, such as `gmail`, `linear` or `github`, so
+    /// apps can show its logo. Defaults to the preset, then the domain.
+    #[serde(default)]
+    pub service: Option<String>,
     /// The owner's account in this service. Defaults to `owner.accounts.<connector>`.
     #[serde(default)]
     pub account: Option<String>,
@@ -120,6 +124,9 @@ pub struct PublishingConfig {
     /// Arguments, with `{{post.<field>}}` placeholders such as `{{post.body}}`.
     #[serde(default)]
     pub input: Option<Value>,
+    /// The network posts go to, such as `linkedin`, so apps can show its logo.
+    #[serde(default)]
+    pub service: Option<String>,
 }
 
 /// The conversations of the apps.

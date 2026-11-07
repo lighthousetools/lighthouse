@@ -1,5 +1,6 @@
 //! "Ready for you": everything that waits for the owner, in one call.
 
+use crate::ready_view::{Preview, Review, Reviewer};
 use crate::{ApiError, ApiState, desk_error, internal};
 use axum::Json;
 use axum::extract::{Path, State};
@@ -30,8 +31,12 @@ pub struct ReadyItem {
     pub id: String,
     /// One line for the list.
     pub title: String,
-    /// What the agent said about it, if anything.
-    pub summary: Option<String>,
+    /// Who it is for, the service, why, the text and the item it answers.
+    #[serde(flatten)]
+    pub review: Review,
+    /// What the owner can do: `approve`, `edit`, `rewrite`, `snooze`, `deny`,
+    /// `dismiss`, `accept`, `confirm` and `context`.
+    pub actions: Vec<String>,
     /// The agent behind it.
     pub agent_id: Option<String>,
     /// The run behind it.
@@ -65,6 +70,41 @@ fn group_order(group: &str) -> u8 {
         "drafts" => 1,
         _ => 2,
     }
+}
+
+fn actions(names: &[&str], review: &Review) -> Vec<String> {
+    let mut actions: Vec<String> = names.iter().map(|name| (*name).to_owned()).collect();
+    if review.context_item_id.is_some() {
+        actions.push("context".to_owned());
+    }
+    actions
+}
+
+/// Builds a reviewer with the sources and organizations of this moment.
+pub(crate) async fn reviewer(state: &ApiState) -> Reviewer<'_> {
+    let sources = state.connected.sources().await.unwrap_or_else(|error| {
+        tracing::warn!(%error, "cannot list the sources for the feed");
+        Vec::new()
+    });
+    let mut orgs = std::collections::HashMap::new();
+    match state.sync.organizations().await {
+        Ok(organizations) => {
+            for org in organizations {
+                for source in org.sources {
+                    orgs.insert(source, org.name.clone());
+                }
+            }
+        }
+        Err(error) => tracing::warn!(%error, "cannot list the organizations for the feed"),
+    }
+    Reviewer::new(&state.sync, sources, orgs, state.publisher.service())
+}
+
+/// The arguments of a prepared draft, from its logged step.
+fn draft_input(detail: Option<&str>) -> Value {
+    detail
+        .and_then(|text| serde_json::from_str(text).ok())
+        .unwrap_or(Value::Null)
 }
 
 fn to_value(value: impl Serialize) -> Value {
@@ -102,6 +142,7 @@ async fn draft_tools(state: &ApiState) -> Vec<String> {
     security(("bearer" = []))
 )]
 pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed>, ApiError> {
+    let reviewer = reviewer(&state).await;
     let mut items = Vec::new();
     for approval in state
         .audit
@@ -109,12 +150,19 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
         .await
         .map_err(internal)?
     {
+        let review = reviewer
+            .call(&approval.tool, &approval.input, approval.reason.as_deref())
+            .await;
         items.push(ReadyItem {
             kind: "approval".to_owned(),
             group: "decisions".to_owned(),
             id: approval.id.to_string(),
-            title: format!("{} proposes {}", approval.agent_id, approval.tool),
-            summary: approval.reason.clone(),
+            title: review
+                .summary
+                .clone()
+                .unwrap_or_else(|| format!("{} proposes {}", approval.agent_id, approval.tool)),
+            actions: actions(&["approve", "edit", "rewrite", "snooze", "deny"], &review),
+            review,
             agent_id: Some(approval.agent_id.clone()),
             run_id: Some(approval.run_id),
             created_at: approval.created_at,
@@ -136,7 +184,12 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
                 "Claude Code asks to use {} in {}",
                 request.tool, request.project
             ),
-            summary: None,
+            review: Review {
+                summary: Some(format!("{} in {}", request.tool, request.project)),
+                service: Some("claude-code".to_owned()),
+                ..Review::default()
+            },
+            actions: actions(&["approve", "deny"], &Review::default()),
             agent_id: None,
             run_id: None,
             created_at: request.created_at,
@@ -156,12 +209,18 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
             .into_iter()
             .filter(|call| !dismissed.contains(&call.id.to_string()))
         {
+            let input = draft_input(call.detail.as_deref());
+            let review = reviewer.call(&call.tool, &input, None).await;
             items.push(ReadyItem {
                 kind: DRAFT.to_owned(),
                 group: "drafts".to_owned(),
                 id: call.id.to_string(),
-                title: format!("{} prepared {}", call.agent_id, call.tool),
-                summary: None,
+                title: review
+                    .summary
+                    .clone()
+                    .unwrap_or_else(|| format!("{} prepared {}", call.agent_id, call.tool)),
+                actions: actions(&["rewrite", "snooze", "dismiss"], &review),
+                review,
                 agent_id: Some(call.agent_id.clone()),
                 run_id: Some(call.run_id),
                 created_at: call.created_at,
@@ -182,7 +241,13 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
             group: "suggestions".to_owned(),
             id: task.id.to_string(),
             title: task.title.clone(),
-            summary: task.notes.clone(),
+            review: Review {
+                summary: task.notes.clone(),
+                reason: task.notes.clone(),
+                service: task.source.as_ref().map(|source| source.kind.clone()),
+                ..Review::default()
+            },
+            actions: actions(&["accept", "snooze", "dismiss"], &Review::default()),
             agent_id: task.agent_id.clone(),
             run_id: task.run_id,
             created_at: task.created_at,
@@ -200,7 +265,12 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
             group: "suggestions".to_owned(),
             id: fact.id.to_string(),
             title: fact.text.clone(),
-            summary: fact.source.label.clone(),
+            review: Review {
+                summary: fact.source.label.clone(),
+                reason: fact.source.label.clone(),
+                ..Review::default()
+            },
+            actions: actions(&["confirm", "snooze", "dismiss"], &Review::default()),
             agent_id: fact.agent_id.clone(),
             run_id: fact.run_id,
             created_at: fact.created_at,
@@ -209,15 +279,30 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
         });
     }
     for post in state.desk.proposed_posts().await.map_err(desk_error)? {
+        let title = post
+            .title
+            .clone()
+            .unwrap_or_else(|| post.body.lines().next().unwrap_or_default().to_owned());
         items.push(ReadyItem {
             kind: "post".to_owned(),
             group: "suggestions".to_owned(),
             id: post.id.to_string(),
-            title: post
-                .title
-                .clone()
-                .unwrap_or_else(|| post.body.lines().next().unwrap_or_default().to_owned()),
-            summary: None,
+            review: Review {
+                summary: Some(title.clone()),
+                reason: post.reason.clone(),
+                service: reviewer.post_service(&post.channel),
+                preview: Some(Preview {
+                    fields: Vec::new(),
+                    text: Some(post.body.clone()),
+                    text_key: Some("body".to_owned()),
+                }),
+                ..Review::default()
+            },
+            actions: actions(
+                &["accept", "edit", "rewrite", "snooze", "dismiss"],
+                &Review::default(),
+            ),
+            title,
             agent_id: None,
             run_id: None,
             created_at: post.created_at,
@@ -347,14 +432,376 @@ pub(crate) async fn unsnooze(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// How to rewrite a draft.
+#[derive(Deserialize, ToSchema)]
+pub struct ToneRequest {
+    /// `shorter`, `warmer`, `formal`, or an instruction of your own.
+    pub tone: String,
+}
+
+/// A rewritten draft. Nothing is saved; edit the item to keep it.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct Rewritten {
+    /// The tone asked for.
+    pub tone: String,
+    /// The new text.
+    pub text: String,
+    /// The run that wrote it.
+    pub run_id: Uuid,
+}
+
+/// The owner's version of a draft text.
+#[derive(Deserialize, ToSchema)]
+pub struct TextEdit {
+    /// The new text.
+    pub text: String,
+}
+
+fn tone_instruction(tone: &str) -> String {
+    match tone.trim() {
+        "shorter" => "Make it shorter: keep the point and the facts, cut the rest.".to_owned(),
+        "warmer" => "Make it warmer and more personal, without exaggerating.".to_owned(),
+        "formal" => "Make it more formal and precise.".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+async fn pending_approval(
+    state: &ApiState,
+    id: Uuid,
+) -> Result<lighthouse_audit::Approval, ApiError> {
+    state
+        .audit
+        .list_approvals(Some("pending"), 500)
+        .await
+        .map_err(internal)?
+        .into_iter()
+        .find(|approval| approval.id == id)
+        .ok_or_else(|| crate::not_found("open approval"))
+}
+
+/// The text of an item of the feed that has one.
+async fn draft_text(state: &ApiState, kind: &str, id: &str) -> Result<String, ApiError> {
+    let parsed = Uuid::parse_str(id).map_err(|_| crate::not_found("item"))?;
+    let reviewer = reviewer(state).await;
+    let text = match kind {
+        "approval" => {
+            let approval = pending_approval(state, parsed).await?;
+            reviewer
+                .call(&approval.tool, &approval.input, None)
+                .await
+                .preview
+                .and_then(|preview| preview.text)
+        }
+        DRAFT => {
+            let tools = draft_tools(state).await;
+            let since = Utc::now() - Duration::days(DRAFT_DAYS);
+            let call = state
+                .audit
+                .tool_calls(&tools, since, LIMIT)
+                .await
+                .map_err(internal)?
+                .into_iter()
+                .find(|call| call.id == parsed)
+                .ok_or_else(|| crate::not_found("draft"))?;
+            let input = draft_input(call.detail.as_deref());
+            reviewer
+                .call(&call.tool, &input, None)
+                .await
+                .preview
+                .and_then(|preview| preview.text)
+        }
+        "post" => state
+            .desk
+            .post(parsed)
+            .await
+            .map_err(desk_error)?
+            .map(|post| post.body),
+        other => {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                format!("`{other}` items have no text to rewrite"),
+            ));
+        }
+    };
+    text.ok_or_else(|| {
+        ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "this item has no text to rewrite".to_owned(),
+        )
+    })
+}
+
+/// Writes a variant of a draft's text in the owner's voice, such as a shorter
+/// or warmer one. Works for approvals, drafts and proposed posts.
+#[utoipa::path(
+    post,
+    operation_id = "rewrite_ready_item",
+    path = "/ready/{kind}/{id}/rewrite",
+    params(
+        ("kind" = String, Path, description = "approval, draft or post"),
+        ("id" = String, Path, description = "Item ID")
+    ),
+    request_body = ToneRequest,
+    responses(
+        (status = 200, body = Rewritten),
+        (status = 400, description = "A kind without text"),
+        (status = 404, description = "Unknown or decided item"),
+        (status = 422, description = "The item has no text"),
+        (status = 502, description = "The writer failed")
+    ),
+    security(("bearer" = []))
+)]
+pub(crate) async fn rewrite(
+    State(state): State<ApiState>,
+    Path((kind, id)): Path<(String, String)>,
+    Json(request): Json<ToneRequest>,
+) -> Result<Json<Rewritten>, ApiError> {
+    if request.tone.trim().is_empty() {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "`tone` must not be empty".to_owned(),
+        ));
+    }
+    let text = draft_text(&state, &kind, &id).await?;
+    let instructions = format!(
+        "Rewrite this draft for the owner, in their voice. {} Keep its meaning, facts and language. \
+         Answer with the new text only.",
+        tone_instruction(&request.tone)
+    );
+    let written = state
+        .writer
+        .write(&instructions, &text)
+        .await
+        .map_err(|error| ApiError(StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(Rewritten {
+        tone: request.tone,
+        text: written.text,
+        run_id: written.run_id,
+    }))
+}
+
+/// Replaces the text of an open approval with the owner's version, so the
+/// approved call sends that. The other arguments stay as proposed.
+#[utoipa::path(
+    put,
+    operation_id = "edit_ready_approval_text",
+    path = "/ready/approval/{id}/text",
+    params(("id" = Uuid, Path, description = "Approval ID")),
+    request_body = TextEdit,
+    responses(
+        (status = 200, body = lighthouse_audit::Approval),
+        (status = 404, description = "Unknown or decided approval"),
+        (status = 422, description = "The call has no text")
+    ),
+    security(("bearer" = []))
+)]
+pub(crate) async fn edit_text(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+    Json(edit): Json<TextEdit>,
+) -> Result<Json<lighthouse_audit::Approval>, ApiError> {
+    let approval = pending_approval(&state, id).await?;
+    let key = reviewer(&state)
+        .await
+        .call(&approval.tool, &approval.input, None)
+        .await
+        .preview
+        .and_then(|preview| preview.text_key)
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "this call has no text to edit".to_owned(),
+            )
+        })?;
+    let mut input = approval.input;
+    input[key.as_str()] = Value::String(edit.text);
+    let edited = state
+        .audit
+        .edit_approval(id, &input)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| crate::not_found("open approval"))?;
+    state.events.emit("ready.changed", json!({"id": id}));
+    Ok(Json(edited))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{TOKEN, call, harness};
+    use crate::tests::{TOKEN, call, harness, send};
     use lighthouse_audit::{NewApproval, NewStep};
     use lighthouse_core::RunId;
     use lighthouse_desk::{NewTask, ProposedFact, Proposer};
     use lighthouse_sessions::NewPermission;
+
+    #[tokio::test]
+    async fn approvals_read_like_messages_and_can_be_rewritten_and_edited() {
+        let harness = harness(Some(TOKEN)).await;
+        let original = lighthouse_sync::MappedItem {
+            external_id: "t1".to_owned(),
+            title: Some("Updated offer?".to_owned()),
+            author: Some("John Roe <john@globex.example>".to_owned()),
+            summary: Some("Could you send the offer by Friday?".to_owned()),
+            occurred_at: Some(Utc::now()),
+            data: json!({}),
+            ..lighthouse_sync::MappedItem::default()
+        };
+        harness
+            .sync
+            .upsert("mail", "mail", "thread", &[original], &[])
+            .await
+            .unwrap();
+        let run = RunId::new();
+        harness
+            .audit
+            .start_run(run, "inbox", "manual")
+            .await
+            .unwrap();
+        let id = Uuid::now_v7();
+        let proposal = NewApproval {
+            id,
+            tool: "mail.send_reply".to_owned(),
+            input: json!({"thread_id": "t1", "body": "Hi John,\nhere it is.", "_reason": "John asked by Friday."}),
+            quotes_external: true,
+            reason: Some("John asked by Friday.".to_owned()),
+            consulted: Vec::new(),
+        };
+        harness
+            .audit
+            .pause_run(run, "inbox", &json!({}), &[proposal])
+            .await
+            .unwrap();
+
+        let (_, body) = call(&harness.app, "GET", "/ready", Some(TOKEN)).await;
+        let feed: Value = serde_json::from_str(&body).unwrap();
+        let item = &feed["items"][0];
+        assert_eq!(item["title"], "Re: Updated offer?", "{body}");
+        assert_eq!(item["reason"], "John asked by Friday.");
+        assert_eq!(item["service"], "gmail");
+        assert_eq!(item["counterpart"]["name"], "John Roe");
+        assert_eq!(item["counterpart"]["org"], "Globex");
+        assert_eq!(item["quote"]["text"], "Could you send the offer by Friday?");
+        assert!(item["context_item_id"].is_string());
+        assert_eq!(item["preview"]["text"], "Hi John,\nhere it is.");
+        assert_eq!(item["preview"]["fields"], json!([]));
+        assert!(
+            item["actions"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("context"))
+        );
+
+        let uri = format!("/ready/approval/{id}/rewrite");
+        let (status, body) = send(
+            &harness.app,
+            "POST",
+            &uri,
+            Some(TOKEN),
+            Some(json!({"tone": "shorter"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let rewritten: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(rewritten["text"], "rewritten: Hi John,\nhere it is.");
+        assert_eq!(
+            tone_instruction("warmer"),
+            "Make it warmer and more personal, without exaggerating."
+        );
+        assert_eq!(
+            tone_instruction("formal"),
+            "Make it more formal and precise."
+        );
+        assert_eq!(tone_instruction("In German"), "In German");
+        let (status, _) = send(
+            &harness.app,
+            "POST",
+            &uri,
+            Some(TOKEN),
+            Some(json!({"tone": " "})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let task_uri = format!("/ready/task/{id}/rewrite");
+        let (status, _) = send(
+            &harness.app,
+            "POST",
+            &task_uri,
+            Some(TOKEN),
+            Some(json!({"tone": "shorter"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let unknown = format!("/ready/approval/{}/rewrite", Uuid::now_v7());
+        let (status, _) = send(
+            &harness.app,
+            "POST",
+            &unknown,
+            Some(TOKEN),
+            Some(json!({"tone": "shorter"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let uri = format!("/ready/approval/{id}/text");
+        let (status, body) = send(
+            &harness.app,
+            "PUT",
+            &uri,
+            Some(TOKEN),
+            Some(json!({"text": "Hi John, attached."})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let approval: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(approval["input"]["body"], "Hi John, attached.");
+        assert_eq!(approval["input"]["thread_id"], "t1");
+    }
+
+    #[tokio::test]
+    async fn posts_and_drafts_show_their_text_and_service() {
+        let harness = harness(Some(TOKEN)).await;
+        let post = harness
+            .desk
+            .propose_post(lighthouse_desk::NewPost {
+                body: "Late invoices have one boring cause.".to_owned(),
+                reason: Some("Your last post on invoices did well.".to_owned()),
+                ..lighthouse_desk::NewPost::default()
+            })
+            .await
+            .unwrap();
+        let (_, body) = call(&harness.app, "GET", "/ready", Some(TOKEN)).await;
+        let feed: Value = serde_json::from_str(&body).unwrap();
+        let item = &feed["items"][0];
+        assert_eq!(item["service"], "linkedin", "{body}");
+        assert_eq!(item["reason"], "Your last post on invoices did well.");
+        assert_eq!(
+            item["preview"]["text"],
+            "Late invoices have one boring cause."
+        );
+        let uri = format!("/ready/post/{}/rewrite", post.id);
+        let (status, body) = send(
+            &harness.app,
+            "POST",
+            &uri,
+            Some(TOKEN),
+            Some(json!({"tone": "warmer"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("rewritten: Late invoices"));
+        let draft = format!("/ready/draft/{}/rewrite", Uuid::now_v7());
+        let (status, _) = send(
+            &harness.app,
+            "POST",
+            &draft,
+            Some(TOKEN),
+            Some(json!({"tone": "warmer"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(draft_input(Some("not json")), Value::Null);
+    }
 
     #[tokio::test]
     async fn the_feed_gathers_decisions_drafts_and_suggestions() {
@@ -446,7 +893,7 @@ mod tests {
         assert_eq!(feed.groups["decisions"], 2);
         assert_eq!(feed.counts["draft"], 1);
         assert_eq!(
-            feed.items[0].summary.as_deref(),
+            feed.items[0].review.reason.as_deref(),
             Some("The customer asked for a date")
         );
 

@@ -23,6 +23,11 @@ const MAX_CALENDAR_DAYS: i64 = 92;
 pub trait Publisher: Send + Sync {
     /// Asks to publish a post.
     async fn publish(&self, post: &Post) -> Result<ActionResult, ActionError>;
+
+    /// The network posts go to, such as `linkedin`, if it is configured.
+    fn service(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Writes texts for the owner, such as rewrites of posts and decks.

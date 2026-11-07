@@ -51,6 +51,24 @@ The answer has `total`, `counts` per kind, `groups` per group and the unresolved
 decisions first, then drafts, then suggestions, and oldest first within a group. Each item has a title, the agent and
 run behind it, and in `detail` the full object as its own endpoint returns it.
 
+Approvals, drafts and posts also read like messages, so the owner can review them without knowing the tool:
+
+| Field | Meaning |
+|---|---|
+| `summary` | One line, such as the subject, the title, `Re: <item>` or the first line of the text; the `title` uses it too |
+| `reason` | Why the agent proposes it: the call's `_reason` (see [agents.md](agents.md#reasons-and-context)), else what the agent said |
+| `service` | Where it goes, for the logo: the `service` of the source whose action uses the tool, or `[publishing].service` for posts |
+| `counterpart` | `name`, `address` and `org` of the person it is for, from the item it answers or a `to` argument |
+| `context_item_id` | The connected item it answers, see `GET /connected/items/{id}` |
+| `quote` | That item's `author`, `title`, `text`, `occurred_at` and `url`, to quote the original |
+| `preview` | The arguments, readable: `fields` with `label` and `value`, and the `text` to review with its `text_key`. Labels come from the source action's `{{input.<field>}}` names; references to the item are left out |
+| `actions` | What the owner can do, such as `approve`, `edit`, `rewrite`, `snooze`, `deny`, `dismiss` and `context` |
+
+`POST /ready/{kind}/{id}/rewrite` with `{"tone": "shorter"}` returns a variant of the text of an approval, draft or
+post in the owner's voice, as `{tone, text, run_id}`. The tone is `shorter`, `warmer`, `formal` or an instruction of
+your own, such as "in German". Nothing is saved: `PUT /ready/approval/{id}/text` with `{"text": ...}` puts the owner's
+version into the open approval's arguments, so approving sends that text.
+
 ## Tasks
 
 Tasks are the owner's own to-do list. They are short, have an optional due date, a priority from 0 (none) to 3 (high),

@@ -128,6 +128,19 @@ async fn pull_requests_checks_and_files_sync_with_events_after_the_first_run() {
     );
     let children = store.children(&pr).await.unwrap();
     assert_eq!(children.len(), 2);
+    let found = store
+        .find_external("acme/app/pull/1", None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.id, pr.id);
+    assert!(
+        store
+            .find_external("acme/app/pull/1", Some("mail"))
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(children[0].kind, "check");
     assert_eq!(children[1].data["additions"], 3);
 

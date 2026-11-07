@@ -173,6 +173,26 @@ impl AuditLog {
             .await?)
     }
 
+    /// Replaces the arguments of an open approval, such as the text the owner
+    /// edited before deciding. Returns `None` once it is decided or expired.
+    pub async fn edit_approval(
+        &self,
+        id: Uuid,
+        input: &Value,
+    ) -> Result<Option<Approval>, AuditError> {
+        let query = format!(
+            "UPDATE approvals SET input = $1 \
+             WHERE id = $2 AND tenant_id = $3 AND status = 'pending' AND expires_at > now() \
+             RETURNING {COLUMNS}"
+        );
+        Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(input)
+            .bind(id)
+            .bind(self.tenant.as_uuid())
+            .fetch_optional(self.store.pool())
+            .await?)
+    }
+
     /// Marks overdue approvals as expired and returns the affected runs.
     pub async fn expire_approvals(&self) -> Result<Vec<Uuid>, AuditError> {
         let rows: Vec<(Uuid,)> = sqlx::query_as(
@@ -310,6 +330,20 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(approval.input, edited);
+    }
+
+    #[tokio::test]
+    async fn open_approvals_can_be_edited_before_the_decision() {
+        let id = Uuid::now_v7();
+        let (log, _) = paused(&[id]).await;
+        let edited = json!({"to": "c", "body": "Shorter"});
+        let approval = log.edit_approval(id, &edited).await.unwrap().unwrap();
+        assert_eq!(
+            (approval.input, approval.status.as_str()),
+            (edited.clone(), "pending")
+        );
+        log.decide_approval(id, true, None).await.unwrap();
+        assert!(log.edit_approval(id, &edited).await.unwrap().is_none());
     }
 
     #[tokio::test]

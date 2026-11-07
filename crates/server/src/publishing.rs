@@ -62,6 +62,12 @@ fn label(post: &Post) -> String {
 
 #[async_trait]
 impl Publisher for ServerPublisher {
+    fn service(&self) -> Option<String> {
+        self.config
+            .as_ref()
+            .and_then(|config| config.service.clone())
+    }
+
     async fn publish(&self, post: &Post) -> Result<ActionResult, ActionError> {
         let config = self.config.as_ref().ok_or_else(|| {
             ActionError::Rejected(
