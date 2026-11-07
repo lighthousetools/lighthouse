@@ -7,6 +7,7 @@
 
 pub mod engine;
 pub mod mapping;
+pub mod numbers;
 pub mod orgs;
 pub mod sources;
 pub mod store;
@@ -15,6 +16,7 @@ pub use engine::{
     CheckChange, PreparedAction, SyncError, SyncEvent, SyncReport, Syncer, prune_empty,
 };
 pub use mapping::{MappedItem, MappingError, Owner};
+pub use numbers::{CurrencyNumbers, Numbers, PeriodAmount, StageTotal};
 pub use orgs::{Organization, OrganizationError, OrganizationInput};
 pub use sources::{DOMAINS, PRESETS, Source, SourceError, preset, resolve};
 pub use store::{ItemFilter, ItemPage, Order, SyncStatus, SyncStore, SyncedItem};

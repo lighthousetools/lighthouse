@@ -273,6 +273,86 @@ list_endpoint!(
     Order::Recent
 );
 list_endpoint!(
+    deals,
+    "/deals",
+    "list_deals",
+    "Lists deals, latest change first. Open deals by default.",
+    Some("deals"),
+    &["deal"],
+    true,
+    Order::Recent
+);
+list_endpoint!(
+    accounts,
+    "/bank/accounts",
+    "list_bank_accounts",
+    "Lists bank accounts with their balances.",
+    Some("bank"),
+    &["account"],
+    false,
+    Order::Recent
+);
+list_endpoint!(
+    transactions,
+    "/bank/transactions",
+    "list_transactions",
+    "Lists bank transactions, latest first.",
+    Some("bank"),
+    &["transaction"],
+    false,
+    Order::Recent
+);
+list_endpoint!(
+    invoices,
+    "/invoices",
+    "list_invoices",
+    "Lists issued and received invoices, latest first. Filter with `flags=overdue`, `receivable` or `payable`.",
+    Some("invoices"),
+    &["invoice"],
+    false,
+    Order::Recent
+);
+list_endpoint!(
+    contracts,
+    "/contracts",
+    "list_contracts",
+    "Lists contracts and documents, latest first.",
+    Some("documents"),
+    &["contract", "document"],
+    false,
+    Order::Recent
+);
+list_endpoint!(
+    rooms,
+    "/rooms",
+    "list_rooms",
+    "Lists deal rooms, latest activity first.",
+    Some("rooms"),
+    &["room"],
+    false,
+    Order::Recent
+);
+list_endpoint!(
+    holdings,
+    "/holdings",
+    "list_holdings",
+    "Lists holdings of the portfolio. Data only.",
+    Some("holdings"),
+    &["holding"],
+    false,
+    Order::Recent
+);
+list_endpoint!(
+    quotes,
+    "/holdings/quotes",
+    "list_quotes",
+    "Lists market quotes. Data only.",
+    Some("holdings"),
+    &["quote"],
+    false,
+    Order::Recent
+);
+list_endpoint!(
     search,
     "/connected/search",
     "search_connected",
@@ -336,6 +416,39 @@ pub(crate) async fn item(
         children,
         raw,
     }))
+}
+
+/// Parameters of the key numbers.
+#[derive(Deserialize)]
+pub(crate) struct NumbersQuery {
+    org: Option<String>,
+    months: Option<i32>,
+}
+
+/// Computes key numbers from the cache: pipeline, cash, burn, runway, open and
+/// overdue invoices, revenue per month and holdings, per currency.
+#[utoipa::path(
+    get,
+    operation_id = "numbers",
+    path = "/numbers",
+    params(
+        ("org" = Option<String>, Query, description = "Only sources of this organization"),
+        ("months" = Option<i32>, Query, description = "Months of revenue, default 12, at most 36")
+    ),
+    responses((status = 200, body = lighthouse_sync::Numbers)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn numbers(
+    State(state): State<ApiState>,
+    Query(query): Query<NumbersQuery>,
+) -> Result<Json<lighthouse_sync::Numbers>, ApiError> {
+    let months = query.months.unwrap_or(12).clamp(1, 36);
+    let numbers = state
+        .sync
+        .numbers(query.org.as_deref(), months, Utc::now())
+        .await
+        .map_err(internal)?;
+    Ok(Json(numbers))
 }
 
 /// Range of the free/busy query.

@@ -10,12 +10,22 @@ const GITHUB: &str = include_str!("presets/github.toml");
 const LINEAR: &str = include_str!("presets/linear.toml");
 
 /// The domains and the item kinds each one knows.
-pub const DOMAINS: [(&str, &[&str]); 4] = [
+pub const DOMAINS: [(&str, &[&str]); 10] = [
     ("mail", &["thread", "message"]),
     ("calendar", &["event"]),
     ("issues", &["issue", "project", "cycle", "comment"]),
     ("code", &["pull_request", "check", "file", "review"]),
+    ("deals", &["deal", "stage", "activity"]),
+    ("bank", &["account", "transaction"]),
+    ("invoices", &["invoice"]),
+    ("documents", &["contract", "document"]),
+    ("rooms", &["room", "document", "activity"]),
+    ("holdings", &["holding", "quote"]),
 ];
+
+/// Domains that only show data. Their sources cannot have actions, so
+/// Lighthouse never trades or acts on them.
+pub const READ_ONLY_DOMAINS: [&str; 1] = ["holdings"];
 
 /// Errors in a source.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -126,6 +136,11 @@ pub fn resolve(
             )));
         }
     }
+    if READ_ONLY_DOMAINS.contains(&domain.as_str()) && !actions.is_empty() {
+        return Err(invalid(format!(
+            "{domain} sources only show data and cannot have actions"
+        )));
+    }
     let interval = config
         .interval
         .as_deref()
@@ -235,5 +250,14 @@ mod tests {
         interval.interval = Some("often".to_owned());
         assert!(resolve("x", &interval, Vec::new()).is_err());
         assert!(preset("nope").is_none());
+        let mut holdings = source(None);
+        holdings.domain = Some("holdings".to_owned());
+        holdings
+            .actions
+            .insert("buy".to_owned(), lighthouse_config::ActionConfig::default());
+        assert!(
+            resolve("x", &holdings, Vec::new()).is_err(),
+            "no actions on holdings"
+        );
     }
 }

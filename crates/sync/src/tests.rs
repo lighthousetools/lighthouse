@@ -478,3 +478,126 @@ async fn organizations_own_sources_and_narrow_lists() {
     assert!(store.delete_organization("acme").await.unwrap());
     assert!(!store.delete_organization("acme").await.unwrap());
 }
+
+fn money(id: &str, amount: f64, state: Option<&str>, flags: &[&str]) -> MappedItem {
+    MappedItem {
+        external_id: id.to_owned(),
+        amount: Some(amount),
+        currency: Some("EUR".to_owned()),
+        state: state.map(str::to_owned),
+        flags: flags.iter().map(|flag| (*flag).to_owned()).collect(),
+        data: json!({}),
+        ..MappedItem::default()
+    }
+}
+
+#[tokio::test]
+async fn numbers_sum_pipeline_cash_burn_invoices_and_revenue() {
+    let store = SyncStore::new(fresh_store().await, TenantId::SINGLE);
+    let now = Utc::now();
+    let mut weighted = money("d1", 10_000.0, Some("proposal"), &["cold"]);
+    weighted.data = json!({"probability": "50"});
+    store
+        .upsert(
+            "crm",
+            "deals",
+            "deal",
+            &[
+                weighted,
+                money("d2", 5_000.0, Some("proposal"), &[]),
+                money("d3", 99_000.0, Some("won"), &[]),
+            ],
+            &[],
+        )
+        .await
+        .unwrap();
+    store
+        .upsert(
+            "bank",
+            "bank",
+            "account",
+            &[money("a1", 30_000.0, None, &[])],
+            &[],
+        )
+        .await
+        .unwrap();
+    let mut spend = money("t1", -9_000.0, None, &[]);
+    spend.occurred_at = Some(now - Duration::days(10));
+    let mut old = money("t2", -50_000.0, None, &[]);
+    old.occurred_at = Some(now - Duration::days(200));
+    store
+        .upsert("bank", "bank", "transaction", &[spend, old], &[])
+        .await
+        .unwrap();
+    let mut overdue = money("i1", 1_000.0, Some("sent"), &["receivable"]);
+    overdue.ends_at = Some(now - Duration::days(3));
+    overdue.starts_at = Some(now);
+    let mut paid = money("i2", 2_000.0, Some("paid"), &["receivable"]);
+    paid.starts_at = Some(now);
+    let bill = money("i3", 400.0, Some("open"), &["payable"]);
+    store
+        .upsert("books", "invoices", "invoice", &[overdue, paid, bill], &[])
+        .await
+        .unwrap();
+    store
+        .upsert(
+            "depot",
+            "holdings",
+            "holding",
+            &[money("h1", 700.0, None, &[])],
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let numbers = store.numbers(None, 3, now).await.unwrap();
+    assert_eq!(numbers.currencies.len(), 1);
+    let eur = &numbers.currencies[0];
+    assert_eq!(eur.currency, "EUR");
+    assert_eq!(
+        (eur.pipeline_open, eur.pipeline_weighted),
+        (15_000.0, 10_000.0)
+    );
+    assert_eq!((eur.deals_open, eur.deals_cold), (2, 1));
+    assert_eq!(
+        eur.stages,
+        [StageTotal {
+            stage: "proposal".to_owned(),
+            count: 2,
+            amount: 15_000.0
+        }]
+    );
+    assert_eq!(eur.cash, 30_000.0);
+    assert_eq!(eur.monthly_burn, 3_000.0);
+    assert_eq!(eur.runway_months, Some(10.0));
+    assert_eq!(
+        (
+            eur.receivables_open,
+            eur.receivables_overdue,
+            eur.invoices_overdue
+        ),
+        (1_000.0, 1_000.0, 1)
+    );
+    assert_eq!(eur.payables_open, 400.0);
+    assert_eq!(
+        eur.revenue[0].amount, 3_000.0,
+        "paid invoices count as revenue"
+    );
+    assert_eq!(eur.holdings, 700.0);
+
+    store
+        .save_organization(
+            "acme",
+            OrganizationInput {
+                name: "Acme".to_owned(),
+                sources: vec!["crm".to_owned()],
+                ..OrganizationInput::default()
+            },
+        )
+        .await
+        .unwrap();
+    let acme = store.numbers(Some("acme"), 3, now).await.unwrap();
+    assert_eq!(acme.currencies[0].cash, 0.0);
+    assert_eq!(acme.currencies[0].pipeline_open, 15_000.0);
+    assert_eq!(acme.currencies[0].runway_months, None);
+}

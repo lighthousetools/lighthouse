@@ -483,6 +483,9 @@ impl utoipa::Modify for SecurityAddon {
         connected::free_busy, connected::sources, connected::refresh_all, connected::refresh,
         connected::act_on_item, connected::act_on_source,
         organizations::list, organizations::save, organizations::delete,
+        connected::deals, connected::accounts, connected::transactions, connected::invoices,
+        connected::contracts, connected::rooms, connected::holdings, connected::quotes,
+        connected::numbers,
     ),
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
@@ -507,6 +510,8 @@ impl utoipa::Modify for SecurityAddon {
         lighthouse_sync::SyncedItem, lighthouse_sync::ItemPage, lighthouse_sync::SyncStatus,
         SourceInfo, RefreshResult, ActionRequest, ActionResult, ItemDetail, BusyBlock,
         lighthouse_sync::Organization, lighthouse_sync::OrganizationInput,
+        lighthouse_sync::Numbers, lighthouse_sync::CurrencyNumbers, lighthouse_sync::StageTotal,
+        lighthouse_sync::PeriodAmount,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -628,6 +633,15 @@ pub fn router(state: ApiState) -> Router {
             "/organizations/{id}",
             put(organizations::save).delete(organizations::delete),
         )
+        .route("/deals", get(connected::deals))
+        .route("/bank/accounts", get(connected::accounts))
+        .route("/bank/transactions", get(connected::transactions))
+        .route("/invoices", get(connected::invoices))
+        .route("/contracts", get(connected::contracts))
+        .route("/rooms", get(connected::rooms))
+        .route("/holdings", get(connected::holdings))
+        .route("/holdings/quotes", get(connected::quotes))
+        .route("/numbers", get(connected::numbers))
         .route("/inbox", get(connected::inbox))
         .route("/mail/threads", get(connected::mail))
         .route("/calendar/events", get(connected::events))

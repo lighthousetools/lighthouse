@@ -12,7 +12,8 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 const COLUMNS: &str = "id, source, domain, kind, external_id, parent_id, title, summary, author, assignee, \
-                       state, url, flags, importance, occurred_at, starts_at, ends_at, data, synced_at, \
+                       state, url, flags, importance, occurred_at, starts_at, ends_at, amount, currency, \
+                       data, synced_at, \
                        (SELECT o.id FROM organizations o WHERE o.tenant_id = synced_items.tenant_id \
                         AND synced_items.source = ANY(o.sources) ORDER BY o.id LIMIT 1) AS org";
 
@@ -51,8 +52,12 @@ pub struct SyncedItem {
     pub occurred_at: Option<DateTime<Utc>>,
     /// Start, for events and cycles.
     pub starts_at: Option<DateTime<Utc>>,
-    /// End, for events and cycles.
+    /// End, for events and cycles. The due date of an invoice, the expiry of a contract.
     pub ends_at: Option<DateTime<Utc>>,
+    /// Value of a deal, balance, transaction, invoice or holding.
+    pub amount: Option<f64>,
+    /// Currency code.
+    pub currency: Option<String>,
     /// Every mapped field.
     pub data: Value,
     /// When it was fetched.
@@ -222,16 +227,17 @@ impl SyncStore {
             let (id,): (Uuid,) = sqlx::query_as(
                 "INSERT INTO synced_items (id, tenant_id, source, domain, kind, external_id, parent_id, \
                  title, summary, author, assignee, state, url, flags, importance, occurred_at, \
-                 starts_at, ends_at, data, raw) \
+                 starts_at, ends_at, data, raw, amount, currency) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
-                 $18, $19, $20) \
+                 $18, $19, $20, $21, $22) \
                  ON CONFLICT (tenant_id, source, kind, external_id) DO UPDATE SET \
                  parent_id = EXCLUDED.parent_id, title = EXCLUDED.title, summary = EXCLUDED.summary, \
                  author = EXCLUDED.author, assignee = EXCLUDED.assignee, state = EXCLUDED.state, \
                  url = EXCLUDED.url, flags = EXCLUDED.flags, \
                  importance = EXCLUDED.importance, \
                  occurred_at = EXCLUDED.occurred_at, starts_at = EXCLUDED.starts_at, \
-                 ends_at = EXCLUDED.ends_at, data = EXCLUDED.data, raw = EXCLUDED.raw, synced_at = now() \
+                 ends_at = EXCLUDED.ends_at, data = EXCLUDED.data, raw = EXCLUDED.raw, \
+                 amount = EXCLUDED.amount, currency = EXCLUDED.currency, synced_at = now() \
                  RETURNING id",
             )
             .bind(Uuid::now_v7())
@@ -254,6 +260,8 @@ impl SyncStore {
             .bind(item.ends_at)
             .bind(&item.data)
             .bind(&item.raw)
+            .bind(item.amount)
+            .bind(&item.currency)
             .fetch_one(&mut *transaction)
             .await?;
             stored.push(Stored {

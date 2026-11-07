@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 /// Most bytes of an item kept as raw data.
 const MAX_RAW: usize = 64 * 1024;
 /// States that count as closed or done.
-pub const CLOSED_STATES: [&str; 10] = [
+pub const CLOSED_STATES: [&str; 16] = [
     "closed",
     "merged",
     "done",
@@ -19,7 +19,17 @@ pub const CLOSED_STATES: [&str; 10] = [
     "declined",
     "duplicate",
     "resolved",
+    "paid",
+    "won",
+    "lost",
+    "void",
+    "expired",
+    "terminated",
 ];
+/// Days without activity after which an open deal counts as cold.
+pub const COLD_AFTER_DAYS: i64 = 30;
+/// Days before expiry from which a contract counts as expiring.
+pub const EXPIRING_WITHIN_DAYS: i64 = 30;
 /// States of a check that count as failed.
 pub const FAILED_STATES: [&str; 5] = ["failure", "failed", "error", "timed_out", "action_required"];
 /// Flags the cache sets from the fields of an item.
@@ -75,8 +85,13 @@ pub struct MappedItem {
     pub occurred_at: Option<DateTime<Utc>>,
     /// Start, for events.
     pub starts_at: Option<DateTime<Utc>>,
-    /// End, for events.
+    /// End, for events. The due date of an invoice and the expiry of a contract.
     pub ends_at: Option<DateTime<Utc>>,
+    /// Value of a deal, balance of an account, amount of a transaction or an
+    /// invoice, value of a holding.
+    pub amount: Option<f64>,
+    /// Currency code such as `EUR`.
+    pub currency: Option<String>,
     /// Every mapped field.
     pub data: Value,
     /// The item as the tool returned it, if it is small enough.
@@ -211,6 +226,41 @@ fn truthy(value: Option<&Value>) -> bool {
     }
 }
 
+/// Reads an amount from a number or from text such as `1234.5`, `1,234.50`,
+/// `1.234,50` or `-12 EUR`.
+pub fn parse_amount(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => {
+            let cleaned: String = text
+                .chars()
+                .filter(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '-'))
+                .collect();
+            let normalized = match (cleaned.rfind('.'), cleaned.rfind(',')) {
+                (Some(dot), Some(comma)) if comma > dot => {
+                    cleaned.replace('.', "").replace(',', ".")
+                }
+                (Some(_), Some(_)) => cleaned.replace(',', ""),
+                (None, Some(comma)) if cleaned.len() - comma - 1 == 3 && comma > 0 => {
+                    cleaned.replace(',', "")
+                }
+                (None, Some(_)) => cleaned.replace(',', "."),
+                _ => cleaned,
+            };
+            normalized.parse().ok()
+        }
+        Value::Object(map) => map
+            .get("value")
+            .or_else(|| map.get("amount"))
+            .and_then(parse_amount),
+        _ => None,
+    }
+}
+
+fn is_closed(state: Option<&str>) -> bool {
+    state.is_some_and(|state| CLOSED_STATES.contains(&state.to_lowercase().as_str()))
+}
+
 /// Parses a tool result and returns its list of items.
 pub fn items_of(tool: &str, text: &str, path: &str) -> Result<Vec<Value>, MappingError> {
     let parsed: Value =
@@ -236,12 +286,18 @@ pub fn importance(
         80
     } else if has("failed") && has("mine") {
         75
-    } else if has("assigned") || has("important") {
+    } else if has("assigned") || has("important") || (has("overdue") && has("receivable")) {
         70
+    } else if has("overdue") {
+        65
+    } else if has("expiring") {
+        50
     } else if has("mention") {
         60
     } else if has("unread") {
         40
+    } else if has("cold") {
+        30
     } else {
         10
     };
@@ -296,6 +352,46 @@ pub fn map_item(
         flags.insert("failed".to_owned());
     }
     let occurred_at = data.get("occurred_at").and_then(parse_time);
+    let ends_at = data
+        .get("ends_at")
+        .or_else(|| data.get("due_at"))
+        .or_else(|| data.get("expires_at"))
+        .and_then(parse_time);
+    let open = !is_closed(state.as_deref());
+    match collection.kind.as_str() {
+        "deal" => {
+            let last = data
+                .get("last_activity_at")
+                .and_then(parse_time)
+                .or(occurred_at);
+            if open && last.is_some_and(|time| now - time > chrono::Duration::days(COLD_AFTER_DAYS))
+            {
+                flags.insert("cold".to_owned());
+            }
+        }
+        "invoice" => {
+            let payable = text("direction").is_some_and(|direction| {
+                let direction = direction.to_lowercase();
+                ["receiv", "incoming", "payable", "bill", "purchase"]
+                    .iter()
+                    .any(|word| direction.contains(word))
+            });
+            flags.insert(if payable { "payable" } else { "receivable" }.to_owned());
+            if open && ends_at.is_some_and(|due| due < now) {
+                flags.insert("overdue".to_owned());
+            }
+        }
+        "contract" => {
+            if open
+                && ends_at.is_some_and(|expiry| {
+                    expiry > now && expiry - now < chrono::Duration::days(EXPIRING_WITHIN_DAYS)
+                })
+            {
+                flags.insert("expiring".to_owned());
+            }
+        }
+        _ => {}
+    }
     let raw = serde_json::to_string(item)
         .ok()
         .filter(|encoded| encoded.len() <= MAX_RAW)
@@ -313,7 +409,9 @@ pub fn map_item(
         flags: flags.into_iter().collect(),
         occurred_at,
         starts_at: data.get("starts_at").and_then(parse_time),
-        ends_at: data.get("ends_at").and_then(parse_time),
+        ends_at,
+        amount: data.get("amount").and_then(parse_amount),
+        currency: text("currency").map(|code| code.to_uppercase()),
         data: Value::Object(data),
         raw,
     })
@@ -512,6 +610,93 @@ mod tests {
         )
         .unwrap();
         assert_eq!(failed.flags, ["failed"]);
+    }
+
+    #[test]
+    fn amounts_and_business_flags() {
+        for (text, expected) in [
+            ("1234.5", 1234.5),
+            ("1,234.50", 1234.5),
+            ("1.234,50", 1234.5),
+            ("-12 EUR", -12.0),
+            ("12,5", 12.5),
+            ("1,234", 1234.0),
+        ] {
+            assert_eq!(parse_amount(&json!(text)), Some(expected), "{text}");
+        }
+        assert_eq!(parse_amount(&json!(7)), Some(7.0));
+        assert_eq!(parse_amount(&json!({"value": "3"})), Some(3.0));
+        assert_eq!(parse_amount(&json!(null)), None);
+
+        let now = Utc::now();
+        let old = (now - chrono::Duration::days(60)).to_rfc3339();
+        let soon = (now + chrono::Duration::days(10)).to_rfc3339();
+        let owner = Owner::default();
+        let deal = collection(
+            "deal",
+            &[
+                ("external_id", path("id")),
+                ("last_activity_at", path("last")),
+                ("state", path("status")),
+                ("amount", path("value")),
+                ("currency", path("cur")),
+            ],
+        );
+        let cold = map_item(
+            &deal,
+            &json!({"id": 1, "last": old, "status": "open", "value": "5.000,00", "cur": "eur"}),
+            &owner,
+            now,
+        )
+        .unwrap();
+        assert_eq!(cold.flags, ["cold"]);
+        assert_eq!(
+            (cold.amount, cold.currency.as_deref()),
+            (Some(5000.0), Some("EUR"))
+        );
+        let won = map_item(
+            &deal,
+            &json!({"id": 2, "last": old, "status": "won"}),
+            &owner,
+            now,
+        )
+        .unwrap();
+        assert!(won.flags.is_empty());
+
+        let invoice = collection(
+            "invoice",
+            &[
+                ("external_id", path("id")),
+                ("due_at", path("due")),
+                ("state", path("status")),
+                ("direction", path("type")),
+            ],
+        );
+        let overdue = map_item(
+            &invoice,
+            &json!({"id": 1, "due": old, "status": "sent"}),
+            &owner,
+            now,
+        )
+        .unwrap();
+        assert_eq!(overdue.flags, ["overdue", "receivable"]);
+        assert_eq!(overdue.importance, 70);
+        assert!(overdue.ends_at.is_some());
+        let paid = map_item(
+            &invoice,
+            &json!({"id": 2, "due": old, "status": "paid", "type": "incoming"}),
+            &owner,
+            now,
+        )
+        .unwrap();
+        assert_eq!(paid.flags, ["payable"]);
+
+        let contract = collection(
+            "contract",
+            &[("external_id", path("id")), ("expires_at", path("end"))],
+        );
+        let expiring = map_item(&contract, &json!({"id": 1, "end": soon}), &owner, now).unwrap();
+        assert_eq!(expiring.flags, ["expiring"]);
     }
 
     #[test]
