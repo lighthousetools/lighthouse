@@ -948,6 +948,19 @@ mod tests {
             "/connectors/{id}/connect",
             "/auth/login",
             "/credentials/{name}",
+            "/ready",
+            "/ready/drafts/{id}/dismiss",
+            "/tasks",
+            "/tasks/order",
+            "/tasks/{id}/complete",
+            "/rules/{id}",
+            "/memory/{id}/confirm",
+            "/alerts/{id}/resolve",
+            "/briefs/latest",
+            "/recaps/{week}",
+            "/runs/{id}/document",
+            "/automations/{id}/webhook",
+            "/automations/events",
         ] {
             assert!(spec["paths"].get(path).is_some(), "{path}");
         }
