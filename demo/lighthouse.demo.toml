@@ -27,7 +27,7 @@ automations = "/usr/share/lighthouse/demo/automations"
 skills = "/usr/share/lighthouse/skills"
 created_agents = "/var/lib/lighthouse/data/agents"
 created_automations = "/var/lib/lighthouse/data/automations"
-web = "/srv/web"
+web = "/srv/lighthouse-web/dist"
 
 [providers.demo]
 kind = "demo"

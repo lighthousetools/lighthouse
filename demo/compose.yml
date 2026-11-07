@@ -54,7 +54,8 @@ services:
     volumes:
       - ./lighthouse.demo.toml:/etc/lighthouse/lighthouse.toml:ro
       - demo-data:/var/lib/lighthouse/data
-      - ${LIGHTHOUSE_WEB_DIST:-../../lighthouse-web/dist}:/srv/web:ro
+      # The parent of `dist`, so a fresh `pnpm build` that replaces `dist` stays visible.
+      - ${LIGHTHOUSE_WEB:-../../lighthouse-web}:/srv/lighthouse-web:ro
 
 volumes:
   demo-postgres:

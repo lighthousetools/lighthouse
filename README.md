@@ -49,7 +49,8 @@ docker compose -f demo/compose.yml up --build
 ```
 
 Open http://localhost:8088 and sign in with the password `lighthouse-demo`. The web app is served from
-`../lighthouse-web/dist` if you built it next to this repository; set `LIGHTHOUSE_WEB_DIST` to use another directory.
+`dist` of `../lighthouse-web` if you built it next to this repository; set `LIGHTHOUSE_WEB` to another checkout of the
+web app to use that one.
 The API answers to the bearer token `demo-admin-token`. Run the agents `morning-brief`, `weekly-report` and `inbox`
 from the web app, or with `curl -X POST -H 'Authorization: Bearer demo-admin-token' localhost:8088/agents/morning-brief/run`;
 the inbox agent stops at an approval before it "sends" a reply. Afterwards `demo/verify.sh` checks that every list has

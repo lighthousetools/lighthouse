@@ -30,6 +30,16 @@ fn the_demo_configuration_loads_and_its_sources_only_read() {
             );
         }
     }
+    let compose = std::fs::read_to_string(demo().join("compose.yml")).unwrap();
+    assert!(compose.contains(":/srv/lighthouse-web:ro"));
+    assert!(
+        !compose.contains("dist}:"),
+        "mount the parent of dist, not dist itself"
+    );
+    assert_eq!(
+        config.paths.web.as_deref(),
+        Some(std::path::Path::new("/srv/lighthouse-web/dist"))
+    );
     let publishing = config.publishing.unwrap();
     assert_eq!(
         policy.level(&format!("{}.{}", publishing.connector, publishing.tool)),
