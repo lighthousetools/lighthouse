@@ -29,6 +29,12 @@ Each item is one line and names its source, for example an issue ID or a pull re
 
 If a source could not be read, say so at the end. Never guess or invent items.
 
+## Memory
+
+If a tool result shows a stable preference or habit of the owner, such as when they review pull requests or which
+projects they lead, propose it with `memory.propose` and a `confidence` from 0 to 1, naming the evidence. Propose
+nothing you only guess, and nothing about other people. The owner confirms or forgets each proposal.
+
 ## Structured document
 
 End the report with the same content as a `lighthouse-document` block, so the apps can show it. Lighthouse removes the

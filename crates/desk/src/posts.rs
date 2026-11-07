@@ -337,6 +337,42 @@ impl Desk {
             .await?)
     }
 
+    /// Stores a post an agent proposes, as an `idea`. It never schedules or
+    /// publishes; the owner decides what becomes of it.
+    pub async fn propose_post(&self, post: NewPost) -> Result<Post, DeskError> {
+        if post.body.trim().is_empty() {
+            return Err(invalid("`body` must not be empty"));
+        }
+        let query = format!(
+            "INSERT INTO posts (id, tenant_id, org, channel, kind, pillar, topic, title, body, status, origin) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'idea', 'agent') RETURNING {COLUMNS}"
+        );
+        Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(Uuid::now_v7())
+            .bind(self.tenant())
+            .bind(&post.org)
+            .bind(post.channel.as_deref().unwrap_or("linkedin"))
+            .bind(&post.kind)
+            .bind(&post.pillar)
+            .bind(&post.topic)
+            .bind(&post.title)
+            .bind(check_body(&post.body)?)
+            .fetch_one(self.pool())
+            .await?)
+    }
+
+    /// Lists the posts agents proposed that the owner has not taken up yet.
+    pub async fn proposed_posts(&self) -> Result<Vec<Post>, DeskError> {
+        let query = format!(
+            "SELECT {COLUMNS} FROM posts WHERE tenant_id = $1 AND origin = 'agent' AND status = 'idea' \
+             ORDER BY created_at DESC LIMIT 200"
+        );
+        Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant())
+            .fetch_all(self.pool())
+            .await?)
+    }
+
     /// Returns a post.
     pub async fn post(&self, id: Uuid) -> Result<Option<Post>, DeskError> {
         let query = format!("SELECT {COLUMNS} FROM posts WHERE tenant_id = $1 AND id = $2");
@@ -855,6 +891,29 @@ mod tests {
             ..NewPost::default()
         };
         assert!(desk.create_post(bad_status).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn agents_propose_ideas_only() {
+        let desk = desk().await;
+        assert!(desk.propose_post(NewPost::default()).await.is_err());
+        let idea = desk
+            .propose_post(NewPost {
+                body: "A thought".to_owned(),
+                scheduled_at: Some(Utc::now()),
+                ..NewPost::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            (idea.status.as_str(), idea.origin.as_str()),
+            ("idea", "agent")
+        );
+        assert_eq!(idea.scheduled_at, None);
+        assert_eq!(desk.proposed_posts().await.unwrap().len(), 1);
+        let taken: PostPatch = serde_json::from_value(json!({"status": "draft"})).unwrap();
+        desk.update_post(idea.id, taken).await.unwrap();
+        assert!(desk.proposed_posts().await.unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -208,6 +208,23 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
             detail: to_value(&fact),
         });
     }
+    for post in state.desk.proposed_posts().await.map_err(desk_error)? {
+        items.push(ReadyItem {
+            kind: "post".to_owned(),
+            group: "suggestions".to_owned(),
+            id: post.id.to_string(),
+            title: post
+                .title
+                .clone()
+                .unwrap_or_else(|| post.body.lines().next().unwrap_or_default().to_owned()),
+            summary: None,
+            agent_id: None,
+            run_id: None,
+            created_at: post.created_at,
+            expires_at: None,
+            detail: to_value(&post),
+        });
+    }
     let mut hidden = std::collections::HashMap::new();
     for kind in ["approval", "permission", "task", "fact", "post"] {
         hidden.insert(kind, state.desk.dismissed(kind).await.map_err(desk_error)?);
@@ -223,7 +240,7 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
     });
     let mut counts = BTreeMap::new();
     let mut groups = BTreeMap::new();
-    for kind in ["approval", "permission", DRAFT, "task", "fact"] {
+    for kind in ["approval", "permission", DRAFT, "task", "fact", "post"] {
         counts.insert(kind.to_owned(), 0);
     }
     for group in ["decisions", "drafts", "suggestions"] {

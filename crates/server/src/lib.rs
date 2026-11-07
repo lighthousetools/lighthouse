@@ -355,6 +355,7 @@ impl ServerCatalog {
             "brain.link: draft".to_owned(),
             "tasks.propose: draft".to_owned(),
             "memory.propose: draft".to_owned(),
+            "posts.propose: draft".to_owned(),
         ];
         for (name, connector) in &self.config.connectors {
             tools.extend(

@@ -66,7 +66,11 @@ Use `lht connectors tools <connector>` to see the real tool names of a server.
 | `brain.search`, `brain.get` | `read` | Search and read the Second Brain, see [brain.md](brain.md) |
 | `brain.remember`, `brain.link` | `draft` | Store and link Brain entries |
 | `tasks.propose` | `draft` | Propose a task for the owner's list. It waits as `proposed` until the owner accepts it |
+| `posts.propose` | `draft` | Propose a post as an idea. The owner edits, plans and publishes it. Agents with this tool see the owner's brand profile in their prompt |
 | `memory.propose` | `draft` | Propose a fact about the owner with a `confidence` from 0 to 1. It reaches prompts only once the owner confirms it |
+
+The bundled Morning Brief and weekly report agents propose facts about the owner with `memory.propose` when a tool
+result shows a stable habit.
 
 A briefing agent can end its report with a structured document for the apps, see [documents.md](documents.md).
 

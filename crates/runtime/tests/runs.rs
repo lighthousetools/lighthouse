@@ -849,3 +849,36 @@ async fn an_automation_is_drafted_from_a_sentence_and_corrected() {
 async fn fixture_with_script(script: Vec<ChatResponse>) -> Fixture {
     fixture(script, false).await
 }
+
+#[tokio::test]
+async fn writing_agents_get_the_brand_voice_and_others_do_not() {
+    let fixture = fixture(
+        vec![
+            ChatResponse::text("Done", usage()),
+            ChatResponse::text("Done", usage()),
+        ],
+        false,
+    )
+    .await;
+    fixture
+        .desk
+        .save_brand_profile(&lighthouse_desk::BrandProfile {
+            voice: Some("Plain, short sentences".to_owned()),
+            topics: vec!["Automation".to_owned()],
+            avoid: vec!["Buzzwords".to_owned()],
+            ..lighthouse_desk::BrandProfile::default()
+        })
+        .await
+        .unwrap();
+    let writer = AgentDefinition::parse(
+        "---\nname: Writer\nscope: org\ntrigger:\n  manual: true\ntools:\n  - posts.propose: draft\n---\nWrite.\n",
+    )
+    .unwrap();
+    run(&fixture, &writer).await;
+    run(&fixture, &agent("")).await;
+    let requests = fixture.provider.requests();
+    assert!(requests[0].system.contains(
+        "<owner_brand>\n- Voice: Plain, short sentences\n- Topics: Automation\n- Avoid: Buzzwords\n</owner_brand>"
+    ));
+    assert!(!requests[1].system.contains("<owner_brand>"));
+}

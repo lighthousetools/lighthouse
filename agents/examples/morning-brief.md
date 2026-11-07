@@ -5,6 +5,7 @@ scope: org
 trigger:
   cron: "0 7 * * MON-FRI"
 tools:
+  - memory.propose: draft
   - linear.list_issues
   - github.list_pull_requests
   - grafana.list_alert_rules

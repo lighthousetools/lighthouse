@@ -77,6 +77,12 @@ approval. `POST /posts/{id}/publish` checks the text, proposes the call and sets
 appears in `GET /approvals` and `GET /ready`. After you approve and the tool succeeds, the post is `published`. A denial
 or an error puts it back to `scheduled` or `draft`.
 
+### Proposals from agents
+
+An agent with the `posts.propose` tool can propose a post. It lands as an `idea` with the origin `agent` and shows up
+under suggestions in `GET /ready` until you change its status or delete it. Agents with this tool get your brand
+profile in their system prompt, next to your confirmed facts. They can never plan or publish a post.
+
 ## Decks
 
 A deck is a Brain entry of the type `deck`, so it lives as a Markdown file in `brain/decks/`. A line with only `---`
@@ -94,6 +100,7 @@ For a PDF, open the HTML export and print it: the page breaks after every slide.
 ## Brand profile
 
 `GET /branding` and `PUT /branding` hold how you present yourself: `headline`, `bio`, `audience`, `voice` (notes on tone
-and style), `topics` and `avoid`. The apps show it next to the editor.
+and style), `topics` and `avoid`. The apps show it next to the editor, and agents with the `posts.propose` tool write in this
+voice.
 
 `GET /events` sends `posts.changed`, `decks.changed` and `branding.changed`.

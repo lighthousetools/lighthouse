@@ -15,6 +15,8 @@ use std::sync::Arc;
 pub const PROPOSE_TASK: &str = "tasks.propose";
 /// Qualified name of the fact proposal tool.
 pub const PROPOSE_FACT: &str = "memory.propose";
+/// Qualified name of the post proposal tool.
+pub const PROPOSE_POST: &str = "posts.propose";
 const DEFAULT_CONFIDENCE: f64 = 0.5;
 
 fn spec(tool: &str) -> Option<ToolSpec> {
@@ -43,6 +45,15 @@ fn spec(tool: &str) -> Option<ToolSpec> {
                 "evidence": {"type": "string", "description": "What you learned it from"}
             }, "required": ["text"]}),
         ),
+        PROPOSE_POST => (
+            "Proposes a post for the owner, written in their voice. It lands as an idea; the owner edits, plans and publishes it.",
+            json!({"type": "object", "properties": {
+                "body": {"type": "string"},
+                "title": {"type": "string"},
+                "pillar": {"type": "string"},
+                "topic": {"type": "string"}
+            }, "required": ["body"]}),
+        ),
         _ => return None,
     };
     Some(ToolSpec {
@@ -53,7 +64,7 @@ fn spec(tool: &str) -> Option<ToolSpec> {
 }
 
 fn is_desk_tool(tool: &str) -> bool {
-    tool == PROPOSE_TASK || tool == PROPOSE_FACT
+    tool == PROPOSE_TASK || tool == PROPOSE_FACT || tool == PROPOSE_POST
 }
 
 struct DeskHost {
@@ -113,6 +124,21 @@ impl DeskHost {
                     .await
                     .map_err(|error| error.to_string())?;
                 Ok(format!("Proposed as fact {}", fact.id))
+            }
+            PROPOSE_POST => {
+                let post = lighthouse_desk::NewPost {
+                    body: text(input, "body").unwrap_or_default(),
+                    title: text(input, "title"),
+                    pillar: text(input, "pillar"),
+                    topic: text(input, "topic"),
+                    ..lighthouse_desk::NewPost::default()
+                };
+                let post = self
+                    .desk
+                    .propose_post(post)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(format!("Proposed as post {}", post.id))
             }
             other => Err(format!("unknown tool `{other}`")),
         }
@@ -226,10 +252,29 @@ mod tests {
             .await
             .unwrap();
         let factory = DeskToolFactory::new(desk.clone(), Arc::new(Nothing));
-        let names = [PROPOSE_TASK.to_owned(), PROPOSE_FACT.to_owned()];
+        let names = [
+            PROPOSE_TASK.to_owned(),
+            PROPOSE_FACT.to_owned(),
+            PROPOSE_POST.to_owned(),
+        ];
         let host = factory.open(&names, run).await.unwrap();
         let specs = host.list_tools(&names).await.unwrap();
-        assert_eq!(specs.len(), 2);
+        assert_eq!(specs.len(), 3);
+        let post = host
+            .call_tool(
+                PROPOSE_POST,
+                json!({"body": "An idea", "pillar": "finance"}),
+            )
+            .await
+            .unwrap();
+        assert!(!post.is_error, "{}", post.text);
+        assert!(
+            host.call_tool(PROPOSE_POST, json!({}))
+                .await
+                .unwrap()
+                .is_error
+        );
+        assert_eq!(desk.proposed_posts().await.unwrap().len(), 1);
 
         let task = json!({"title": "Reply to the request", "due_on": "2026-05-04", "priority": 2,
                           "source": {"kind": "mail", "reference": "m-1"}});

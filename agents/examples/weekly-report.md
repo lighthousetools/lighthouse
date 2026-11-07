@@ -5,6 +5,7 @@ scope: org
 trigger:
   cron: "0 8 * * FRI"
 tools:
+  - memory.propose: draft
   - linear.list_issues
   - linear.list_cycles
   - github.list_releases

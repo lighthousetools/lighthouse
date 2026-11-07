@@ -11,7 +11,7 @@ pub use actions::{ACTION_PREFIX, ActionOutcome};
 pub use agents::{AgentFile, load_agents};
 pub use automation_registry::{AutomationRegistry, LoadedAutomation};
 pub use automations::{AgentOutcome, AgentSteps};
-pub use desk_tools::{DeskToolFactory, PROPOSE_FACT, PROPOSE_TASK};
+pub use desk_tools::{DeskToolFactory, PROPOSE_FACT, PROPOSE_POST, PROPOSE_TASK};
 pub use registry::{AgentRegistry, LoadedAgent, RegistryError};
 
 use async_trait::async_trait;
@@ -212,6 +212,29 @@ fn elapsed_ms(start: Instant) -> u64 {
 struct OwnerInstructions {
     rules: Vec<String>,
     facts: Vec<String>,
+    brand: Vec<String>,
+}
+
+/// Turns the brand profile into lines for writing agents.
+fn brand_lines(profile: &lighthouse_desk::BrandProfile) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (label, value) in [
+        ("Headline", &profile.headline),
+        ("About", &profile.bio),
+        ("Audience", &profile.audience),
+        ("Voice", &profile.voice),
+    ] {
+        if let Some(value) = value {
+            lines.push(format!("{label}: {value}"));
+        }
+    }
+    if !profile.topics.is_empty() {
+        lines.push(format!("Topics: {}", profile.topics.join(", ")));
+    }
+    if !profile.avoid.is_empty() {
+        lines.push(format!("Avoid: {}", profile.avoid.join(", ")));
+    }
+    lines
 }
 
 /// Puts owner text on one line that cannot close the surrounding tag.
@@ -232,9 +255,23 @@ impl Runtime {
             self.desk.known_facts().await.map_err(|error| {
                 Stop::Failed(format!("cannot read the owner's memory: {error}"))
             })?;
+        let writes = agent
+            .tools
+            .iter()
+            .any(|grant| grant.name == desk_tools::PROPOSE_POST);
+        let brand = if writes {
+            let profile =
+                self.desk.brand_profile().await.map_err(|error| {
+                    Stop::Failed(format!("cannot read the brand profile: {error}"))
+                })?;
+            brand_lines(&profile)
+        } else {
+            Vec::new()
+        };
         Ok(OwnerInstructions {
             rules: rules.into_iter().map(|rule| rule.text).collect(),
             facts: facts.into_iter().map(|fact| fact.text).collect(),
+            brand,
         })
     }
 
@@ -282,6 +319,15 @@ impl Runtime {
                 let _ = writeln!(system, "- {}", owner_line(fact));
             }
             system.push_str("</owner_facts>\n");
+        }
+        if !owner.brand.is_empty() {
+            system.push_str(
+                "\nHow the owner presents themselves. Write posts and drafts in this voice:\n<owner_brand>\n",
+            );
+            for line in &owner.brand {
+                let _ = writeln!(system, "- {}", owner_line(line));
+            }
+            system.push_str("</owner_brand>\n");
         }
         system
     }

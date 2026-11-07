@@ -7,7 +7,11 @@ const BRAIN_READ_TOOLS: [&str; 2] = ["search", "get"];
 /// Changes to the Brain are reversible and never leave the instance.
 const BRAIN_DRAFT_TOOLS: [&str; 2] = ["remember", "link"];
 /// Proposals to the owner, who accepts or rejects them. They never leave the instance.
-const PROPOSAL_TOOLS: [(&str, &str); 2] = [("tasks", "propose"), ("memory", "propose")];
+const PROPOSAL_TOOLS: [(&str, &str); 3] = [
+    ("tasks", "propose"),
+    ("memory", "propose"),
+    ("posts", "propose"),
+];
 
 /// Classifies tools by the connector allowlists.
 ///
@@ -178,6 +182,7 @@ mod tests {
         let policy = policy();
         assert_eq!(policy.level("tasks.propose"), ToolLevel::Draft);
         assert_eq!(policy.level("memory.propose"), ToolLevel::Draft);
+        assert_eq!(policy.level("posts.propose"), ToolLevel::Draft);
         assert_eq!(policy.level("tasks.delete"), ToolLevel::Write);
     }
 }
