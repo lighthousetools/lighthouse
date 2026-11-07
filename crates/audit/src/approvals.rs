@@ -189,6 +189,19 @@ impl AuditLog {
         Ok(runs)
     }
 
+    /// Lists paused runs that wait for this run to end, such as automations
+    /// whose agent step paused.
+    pub async fn runs_waiting_on(&self, run: Uuid) -> Result<Vec<Uuid>, AuditError> {
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT run_id FROM run_checkpoints WHERE tenant_id = $1 AND state->>'waiting_run' = $2::text",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(run)
+        .fetch_all(self.store.pool())
+        .await?;
+        Ok(rows.into_iter().map(|(run,)| run).collect())
+    }
+
     /// Lists paused runs that wait for no decision anymore.
     pub async fn resumable_runs(&self) -> Result<Vec<Uuid>, AuditError> {
         let rows: Vec<(Uuid,)> = sqlx::query_as(
@@ -342,5 +355,34 @@ mod tests {
         assert_eq!(log.resumable_runs().await.unwrap(), vec![run.as_uuid()]);
         let approvals = log.run_approvals(run.as_uuid()).await.unwrap();
         assert_eq!(approvals[0].status, "expired");
+    }
+
+    #[tokio::test]
+    async fn paused_runs_that_wait_on_another_run_are_found() {
+        let log = AuditLog::new(
+            lighthouse_store::testing::fresh_store().await,
+            lighthouse_core::TenantId::SINGLE,
+        );
+        let (parent, child) = (RunId::new(), RunId::new());
+        log.start_run(parent, "automation:x", "manual")
+            .await
+            .unwrap();
+        log.start_run(child, "triage", "automation:x")
+            .await
+            .unwrap();
+        let state = json!({"waiting_run": child.as_uuid()});
+        log.pause_run(parent, "automation:x", &state, &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            log.runs_waiting_on(child.as_uuid()).await.unwrap(),
+            [parent.as_uuid()]
+        );
+        assert!(
+            log.runs_waiting_on(parent.as_uuid())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

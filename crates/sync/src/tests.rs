@@ -184,7 +184,10 @@ async fn pull_requests_checks_and_files_sync_with_events_after_the_first_run() {
 
     let statuses = store.statuses().await.unwrap();
     assert!(statuses[0].last_error.is_none());
-    let history = store.daily_syncs("github", 3).await.unwrap();
+    let history = store
+        .daily_syncs("github", 3, "Europe/Berlin")
+        .await
+        .unwrap();
     assert_eq!(history.len(), 3);
     assert_eq!(history.last().unwrap().1, 3, "three refreshes today");
     assert!(syncer.due(Utc::now()).await.unwrap().is_empty());

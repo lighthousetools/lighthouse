@@ -94,8 +94,8 @@ and `message` can use placeholders:
 
 ## Runs
 
-An agent step that pauses for an approval makes the automation wait too. When the agent run ends, the automation goes
-on with its report, at the latest one minute later.
+An agent step that pauses for an approval makes the automation wait too. As soon as the agent run ends, the automation
+goes on with its report. A maintenance check every minute catches any it missed, for example after a restart.
 
 An automation run is an ordinary run with the agent ID `automation:<id>`. Its steps are in the log: `agent`, `tool`,
 `delivery` and `condition`. A run ends as `succeeded`, or as `failed` when its last step failed. A condition that does

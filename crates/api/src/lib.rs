@@ -111,16 +111,12 @@ pub trait RunTrigger: Send + Sync {
     /// Continues a paused run in the background if no decision is open.
     async fn resume(&self, run: Uuid) -> Result<(), TriggerError>;
 
-    /// Starts a run with extra context, which the model sees as untrusted
-    /// content. Without an override, the context is left out.
+    /// Starts a run with extra context, which the model sees as untrusted content.
     async fn trigger_with_context(
         &self,
         agent_id: &str,
         context: &str,
-    ) -> Result<Uuid, TriggerError> {
-        let _ = context;
-        self.trigger(agent_id).await
-    }
+    ) -> Result<Uuid, TriggerError>;
 }
 
 /// Answers questions from the Second Brain.
@@ -194,6 +190,10 @@ pub struct Health {
 pub struct Me {
     /// Display name.
     pub name: String,
+    /// IANA time zone of the owner, such as `Europe/Berlin`. Dates such as
+    /// "today" and the days of charts follow it.
+    #[serde(default)]
+    pub timezone: String,
 }
 
 /// Answer when a run started.
@@ -290,6 +290,7 @@ async fn health() -> Json<Health> {
 async fn me(State(state): State<ApiState>) -> Json<Me> {
     Json(Me {
         name: state.owner_name.clone(),
+        timezone: state.zone.name().to_owned(),
     })
 }
 
@@ -1069,6 +1070,15 @@ mod tests {
             self.1.lock().unwrap().push(run);
             Ok(())
         }
+
+        async fn trigger_with_context(
+            &self,
+            agent_id: &str,
+            context: &str,
+        ) -> Result<Uuid, TriggerError> {
+            assert!(!context.is_empty(), "context reaches the trigger");
+            self.trigger(agent_id).await
+        }
     }
 
     fn brain_root() -> std::path::PathBuf {
@@ -1421,6 +1431,7 @@ mod tests {
         );
         let (_, body) = call(&app, "GET", "/me", Some(&token)).await;
         assert!(body.contains("Alex"));
+        assert!(body.contains("Europe/Berlin"));
         let (_, body) = call(&app, "GET", "/auth/devices", Some(&token)).await;
         assert!(body.contains("\"name\":\"test\""));
         assert_eq!(

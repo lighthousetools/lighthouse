@@ -146,6 +146,32 @@ impl AutomationEngine {
         });
     }
 
+    /// Resumes the automations that waited for an agent run, right after it ended.
+    async fn resume_waiting(self: &Arc<Self>, child: Uuid) {
+        let audit = &self.runtime.audit;
+        let waiting = match audit.runs_waiting_on(child).await {
+            Ok(waiting) => waiting,
+            Err(error) => {
+                tracing::error!(%error, "cannot find waiting automations");
+                return;
+            }
+        };
+        for run in waiting {
+            match audit.take_checkpoint(run).await {
+                Ok(Some(checkpoint)) => {
+                    self.resume(
+                        RunId::from_uuid(run),
+                        &checkpoint.agent_id,
+                        checkpoint.state,
+                    )
+                    .await;
+                }
+                Ok(None) => {}
+                Err(error) => tracing::error!(%error, "cannot take the checkpoint"),
+            }
+        }
+    }
+
     /// Starts a scheduled automation, given as `automation:<id>`.
     pub async fn start_scheduled(self: &Arc<Self>, scheduled: &str) {
         let id = scheduled.strip_prefix(RUN_PREFIX).unwrap_or(scheduled);
@@ -197,6 +223,11 @@ impl AutomationEngine {
     /// Runs that automations started never trigger automations, so they cannot
     /// loop.
     pub async fn after_agent_run(self: &Arc<Self>, record: &RunRecord) {
+        if record.trigger.starts_with(RUN_PREFIX)
+            && !matches!(record.status.as_str(), "running" | "waiting")
+        {
+            self.resume_waiting(record.id).await;
+        }
         if record.agent_id.starts_with(RUN_PREFIX) || record.trigger.starts_with(RUN_PREFIX) {
             return;
         }

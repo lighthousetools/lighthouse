@@ -1,6 +1,9 @@
 # API
 
-`GET /openapi.json` describes every endpoint with its schemas. This page explains the concepts behind them. Everything
+`GET /openapi.json` describes every endpoint with its schemas. This page explains the concepts behind them. `GET /me` returns the owner's `name` and `timezone` (from `server.timezone`), which "today" and the days of charts
+follow.
+
+Everything
 except `/health`, `/openapi.json`, `/auth/status`, `/auth/login` and `/oauth/callback` needs a bearer token.
 
 ## Live events
@@ -149,7 +152,7 @@ and the severity can only go up. After it is resolved, the next occurrence opens
 | `GET /alerts/{id}` | One alert |
 | `POST /alerts/{id}/acknowledge` | Mark an open alert as seen. It stays until it is resolved |
 | `POST /alerts/{id}/resolve` | Resolve it by hand |
-| `GET /alerts/{id}/series?days=14` | A daily series for a chart, in UTC days: runs, failures and cost of the agent for `run` and `cost_limit` alerts, failed runs naming the connector for `connector` alerts, and refreshes of the source for `check_failed` alerts. `metric` is `runs`, `syncs` or `none` |
+| `GET /alerts/{id}/series?days=14` | A daily series for a chart, in days of `server.timezone`: runs, failures and cost of the agent for `run` and `cost_limit` alerts, failed runs naming the connector for `connector` alerts, and refreshes of the source for `check_failed` alerts. `metric` is `runs`, `syncs` or `none` |
 
 ## Pushes
 

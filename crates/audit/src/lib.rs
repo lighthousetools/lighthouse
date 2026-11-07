@@ -323,23 +323,24 @@ impl AuditLog {
         .await?)
     }
 
-    /// Counts runs, failed runs and their cost per day, oldest first, with a
-    /// row for every day. `agent` narrows to one agent, `reason` to failures
-    /// whose reason contains the text.
+    /// Counts runs, failed runs and their cost per day of the time zone, oldest
+    /// first, with a row for every day. `agent` narrows to one agent, `reason`
+    /// to runs whose reason contains the text.
     pub async fn daily_runs(
         &self,
         agent: Option<&str>,
         reason: Option<&str>,
         days: i32,
+        zone: &str,
     ) -> Result<Vec<(String, i64, i64, f64)>, AuditError> {
         Ok(sqlx::query_as(
             "SELECT to_char(day, 'YYYY-MM-DD'), count(r.id), \
              count(r.id) FILTER (WHERE r.status IN ('failed', 'limit_exceeded', 'rejected')), \
              coalesce(sum(r.cost_eur), 0)::float8 \
-             FROM generate_series(date_trunc('day', now()) - make_interval(days => $4 - 1), \
-                                  date_trunc('day', now()), interval '1 day') AS day \
-             LEFT JOIN runs r ON r.tenant_id = $1 AND r.started_at >= day \
-                  AND r.started_at < day + interval '1 day' \
+             FROM generate_series(date_trunc('day', now() AT TIME ZONE $5) - make_interval(days => $4 - 1), \
+                                  date_trunc('day', now() AT TIME ZONE $5), interval '1 day') AS day \
+             LEFT JOIN runs r ON r.tenant_id = $1 AND (r.started_at AT TIME ZONE $5) >= day \
+                  AND (r.started_at AT TIME ZONE $5) < day + interval '1 day' \
                   AND ($2::text IS NULL OR r.agent_id = $2) \
                   AND ($3::text IS NULL OR r.reason LIKE '%' || $3 || '%') \
              GROUP BY day ORDER BY day",
@@ -348,6 +349,7 @@ impl AuditLog {
         .bind(agent)
         .bind(reason)
         .bind(days)
+        .bind(zone)
         .fetch_all(self.store.pool())
         .await?)
     }
@@ -576,12 +578,18 @@ mod tests {
             };
             log.finish_run(run, end).await.unwrap();
         }
-        let days = log.daily_runs(Some("brief"), None, 7).await.unwrap();
+        let days = log
+            .daily_runs(Some("brief"), None, 7, "Europe/Berlin")
+            .await
+            .unwrap();
         assert_eq!(days.len(), 7);
         let today = days.last().unwrap();
         assert_eq!((today.1, today.2), (2, 1));
         assert!((today.3 - 1.0).abs() < 1e-9);
-        let connector = log.daily_runs(None, Some("linear"), 3).await.unwrap();
+        let connector = log
+            .daily_runs(None, Some("linear"), 3, "UTC")
+            .await
+            .unwrap();
         assert_eq!(connector.last().unwrap().1, 3);
         assert_eq!(days[0].1, 0);
     }

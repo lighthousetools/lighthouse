@@ -574,24 +574,26 @@ impl SyncStore {
         Ok(())
     }
 
-    /// Counts refresh attempts and failures of a source per day, oldest first,
-    /// with a row for every day.
+    /// Counts refresh attempts and failures of a source per day of the time
+    /// zone, oldest first, with a row for every day.
     pub async fn daily_syncs(
         &self,
         source: &str,
         days: i32,
+        zone: &str,
     ) -> Result<Vec<(String, i64, i64)>, sqlx::Error> {
         sqlx::query_as(
             "SELECT to_char(day, 'YYYY-MM-DD'), count(h.id), count(h.id) FILTER (WHERE NOT h.ok) \
-             FROM generate_series(date_trunc('day', now()) - make_interval(days => $3 - 1), \
-                                  date_trunc('day', now()), interval '1 day') AS day \
+             FROM generate_series(date_trunc('day', now() AT TIME ZONE $4) - make_interval(days => $3 - 1), \
+                                  date_trunc('day', now() AT TIME ZONE $4), interval '1 day') AS day \
              LEFT JOIN sync_history h ON h.tenant_id = $1 AND h.source = $2 \
-                  AND h.at >= day AND h.at < day + interval '1 day' \
+                  AND (h.at AT TIME ZONE $4) >= day AND (h.at AT TIME ZONE $4) < day + interval '1 day' \
              GROUP BY day ORDER BY day",
         )
         .bind(self.tenant.as_uuid())
         .bind(source)
         .bind(days)
+        .bind(zone)
         .fetch_all(self.pool())
         .await
     }

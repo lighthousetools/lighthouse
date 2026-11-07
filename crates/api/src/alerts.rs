@@ -72,10 +72,10 @@ pub(crate) async fn get(
     alert.map(Json).ok_or_else(|| not_found("alert"))
 }
 
-/// One day of an alert's chart.
+/// One day of an alert's chart, in the owner's time zone.
 #[derive(Clone, Debug, serde::Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SeriesPoint {
-    /// Day in UTC, as `YYYY-MM-DD`.
+    /// Day as `YYYY-MM-DD` in the owner's time zone.
     pub day: String,
     /// Runs or refreshes that day.
     pub total: i64,
@@ -142,13 +142,18 @@ pub(crate) async fn series(
     let series = match alert.key.split_once(':') {
         Some(("run" | "cost", agent)) => runs(
             audit
-                .daily_runs(Some(agent), None, days)
+                .daily_runs(Some(agent), None, days, state.zone.name())
                 .await
                 .map_err(crate::internal)?,
         ),
         Some(("connector", connector)) => runs(
             audit
-                .daily_runs(None, Some(&format!("`{connector}`")), days)
+                .daily_runs(
+                    None,
+                    Some(&format!("`{connector}`")),
+                    days,
+                    state.zone.name(),
+                )
                 .await
                 .map_err(crate::internal)?,
         ),
@@ -156,7 +161,7 @@ pub(crate) async fn series(
             let source = rest.split_once(':').map_or(rest, |(source, _)| source);
             let rows = state
                 .sync
-                .daily_syncs(source, days)
+                .daily_syncs(source, days, state.zone.name())
                 .await
                 .map_err(crate::internal)?;
             AlertSeries {
