@@ -54,7 +54,9 @@ web app to use that one, and `LIGHTHOUSE_DEMO_PORT` to serve on another port tha
 The API answers to the bearer token `demo-admin-token`. Run the agents `morning-brief`, `weekly-report` and `inbox`
 from the web app, or with `curl -X POST -H 'Authorization: Bearer demo-admin-token' localhost:8088/agents/morning-brief/run`;
 the inbox agent stops at an approval before it "sends" a reply. At start, the demo runs what is missing (`lht demo warm`): the agent `ready` while Ready for you is empty, and the
-Morning Brief and weekly report while there is no brief or recap. So Ready for
+Morning Brief and weekly report while there is no brief or recap. It also starts a simulated Claude Code machine, "Demo MacBook",
+through the normal `/node/` endpoints: one session works (todos, plan, diffs, timeline, usage), one waits for your
+permission to run `git push`. Since nothing reports again, the machine shows up offline after 15 minutes. So Ready for
 you already holds mail replies with the original quoted, an issue comment, a pull request review, a calendar move and a
 post idea, each with its service, counterpart and reason. Afterwards `demo/verify.sh` checks that every list has
 data.

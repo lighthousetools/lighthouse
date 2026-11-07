@@ -345,6 +345,63 @@ fn server_url(config: &Config, flag: Option<String>) -> String {
     })
 }
 
+/// Posts JSON with a token, the admin token when `token` is `None`.
+async fn post_json(
+    config: &Config,
+    server: Option<String>,
+    path: &str,
+    token: Option<&str>,
+    body: &Value,
+) -> anyhow::Result<Value> {
+    let admin = config
+        .server
+        .admin_token
+        .as_ref()
+        .context("set LIGHTHOUSE_SERVER__ADMIN_TOKEN")?;
+    let response = reqwest::Client::new()
+        .post(format!("{}{path}", server_url(config, server)))
+        .bearer_auth(token.unwrap_or_else(|| admin.expose_secret()))
+        .json(body)
+        .send()
+        .await
+        .context("cannot reach the server")?;
+    let status = response.status();
+    let answer: Value = response.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        bail!(
+            "server answered {status} to {path}: {}",
+            answer["error"].as_str().unwrap_or("unknown error")
+        );
+    }
+    Ok(answer)
+}
+
+/// Feeds the demo machine through the node endpoints, as `lighthouse-node` would.
+async fn demo_node(config: &Config, server: Option<String>) -> anyhow::Result<()> {
+    let issued = post_json(
+        config,
+        server.clone(),
+        "/auth/tokens",
+        None,
+        &demo::node_token_request(),
+    )
+    .await?;
+    let token = issued["token"]
+        .as_str()
+        .context("the server issued no token")?;
+    let now = chrono::Utc::now();
+    for (path, body) in [
+        ("/node/report", demo::node_report()),
+        ("/node/events", demo::node_events(now)),
+        ("/node/otel/v1/metrics", demo::node_metrics()),
+        ("/node/permissions", demo::node_permission()),
+    ] {
+        post_json(config, server.clone(), path, Some(token), &body).await?;
+    }
+    println!("started the demo machine with two Claude Code sessions");
+    Ok(())
+}
+
 async fn post(config: &Config, server: Option<String>, path: &str) -> anyhow::Result<Value> {
     let token = config
         .server
@@ -453,8 +510,15 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .unwrap_or_default();
             let agents = demo::warmup_agents(&feed, brief, &recaps);
-            if agents.is_empty() {
+            let sessions = get(&config, cli.server.clone(), "/sessions")
+                .await
+                .unwrap_or_default();
+            let node = demo::needs_node(&sessions);
+            if agents.is_empty() && !node {
                 println!("The demo is warm already.");
+            }
+            if node {
+                demo_node(&config, cli.server.clone()).await?;
             }
             for agent in agents {
                 let body =

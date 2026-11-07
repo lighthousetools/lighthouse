@@ -67,6 +67,79 @@ pub fn warmup_agents(
     agents
 }
 
+/// Whether the demo machine still has to report: while `GET /sessions` is empty.
+pub fn needs_node(sessions: &serde_json::Value) -> bool {
+    sessions.as_array().is_none_or(Vec::is_empty)
+}
+
+/// The demo session that works.
+const WORKING: &str = "demo-session-billing";
+/// The demo session that waits for a permission.
+const WAITING: &str = "demo-session-website";
+
+/// The token request of the demo machine.
+pub fn node_token_request() -> serde_json::Value {
+    json!({"name": "Demo MacBook", "kind": "node"})
+}
+
+/// The report of the demo machine: one session works, one waits.
+pub fn node_report() -> serde_json::Value {
+    json!({"name": "Demo MacBook", "sessions": [
+        {"id": WORKING, "project": "billing", "branch": "feature/csv-export", "status": "running",
+         "summary": "Adds the CSV export of invoices", "cost_eur": 0.0},
+        {"id": WAITING, "project": "website", "branch": "main", "status": "waiting",
+         "summary": "Updates the pricing page", "cost_eur": 0.0},
+    ]})
+}
+
+/// What the working session did: prompt, todos, plan, edits, tool calls.
+pub fn node_events(now: chrono::DateTime<Utc>) -> serde_json::Value {
+    let at = |minutes: i64| (now - Duration::minutes(minutes)).to_rfc3339();
+    json!({"events": [
+        {"session_id": WORKING, "kind": "prompt", "summary": "Add a CSV export for invoices with a test", "at": at(42)},
+        {"session_id": WORKING, "kind": "plan", "tool": "ExitPlanMode", "at": at(40),
+         "detail": {"plan": "1. Add an export module\n2. Stream rows in batches\n3. Add a download button\n4. Test with 10,000 invoices"}},
+        {"session_id": WORKING, "kind": "todos", "tool": "TodoWrite", "at": at(38),
+         "detail": {"todos": [
+             {"content": "Add the export module", "status": "completed"},
+             {"content": "Stream rows in batches", "status": "completed"},
+             {"content": "Add the download button", "status": "in_progress"},
+             {"content": "Test with 10,000 invoices", "status": "pending"}]}},
+        {"session_id": WORKING, "kind": "file", "tool": "Write", "file_path": "src/export.rs", "at": at(30),
+         "detail": {"diff": "+pub fn export_csv(rows: &[Invoice]) -> String {\n+    rows.iter().map(Invoice::to_csv).collect()\n+}"}},
+        {"session_id": WORKING, "kind": "tool", "tool": "Bash", "summary": "cargo test export", "at": at(20)},
+        {"session_id": WORKING, "kind": "file", "tool": "Edit", "file_path": "src/invoices.rs", "at": at(12),
+         "detail": {"diff": "-let rows = load();\n+let rows = load_in_batches(500);"}},
+        {"session_id": WORKING, "kind": "tool", "tool": "Bash", "summary": "cargo test", "at": at(5)},
+        {"session_id": WAITING, "kind": "prompt", "summary": "Update the prices on the pricing page", "at": at(9)},
+        {"session_id": WAITING, "kind": "file", "tool": "Edit", "file_path": "pages/pricing.html", "at": at(6),
+         "detail": {"diff": "-<td>19 EUR</td>\n+<td>24 EUR</td>"}},
+    ]})
+}
+
+/// Cost and tokens of the working session, as Claude Code exports them.
+pub fn node_metrics() -> serde_json::Value {
+    let point = |kind: Option<&str>, value: f64| {
+        let mut attributes = vec![json!({"key": "session.id", "value": {"stringValue": WORKING}})];
+        if let Some(kind) = kind {
+            attributes.push(json!({"key": "type", "value": {"stringValue": kind}}));
+        }
+        json!({"attributes": attributes, "asDouble": value})
+    };
+    json!({"resourceMetrics": [{"resource": {"attributes": []}, "scopeMetrics": [{"metrics": [
+        {"name": "claude_code.cost.usage", "sum": {"aggregationTemporality": 2, "dataPoints": [point(None, 1.84)]}},
+        {"name": "claude_code.token.usage", "sum": {"aggregationTemporality": 2, "dataPoints": [
+            point(Some("input"), 182_000.0), point(Some("output"), 24_500.0),
+            point(Some("cacheRead"), 640_000.0), point(Some("cacheCreation"), 51_000.0)]}},
+    ]}]}]})
+}
+
+/// The permission the waiting session asks for.
+pub fn node_permission() -> serde_json::Value {
+    json!({"session_id": WAITING, "project": "website", "tool": "Bash",
+           "input": {"command": "git push origin main", "description": "Publish the new prices"}})
+}
+
 /// Adds the demo data, unless it is there already.
 pub async fn seed(store: &Store, brain_dir: &Path) -> anyhow::Result<Seeded> {
     let tenant = TenantId::SINGLE;
@@ -178,34 +251,69 @@ pub async fn seed(store: &Store, brain_dir: &Path) -> anyhow::Result<Seeded> {
     )
     .await?;
 
-    for (kind, key, severity, title, detail) in [
-        (
-            "connector",
-            "connector:calendar",
-            Severity::Warning,
-            "The calendar connector was slow",
-            "Timeouts on two refreshes",
-        ),
-        (
-            "run_failed",
-            "run:weekly-report",
-            Severity::Warning,
-            "The agent weekly-report failed",
-            "The model answered too late",
-        ),
-    ] {
-        desk.raise_alert(NewAlert {
-            value: None,
-            unit: None,
+    // Alerts with a history: repeats count up, one escalates, one is acknowledged.
+    let alert =
+        |kind: &str, key: &str, severity, title: &str, detail: &str, value, unit: &str| NewAlert {
+            value: Some(value),
+            unit: Some(unit.to_owned()),
             kind: kind.to_owned(),
             key: key.to_owned(),
             severity,
             title: title.to_owned(),
             detail: Some(detail.to_owned()),
             source: None,
-        })
+        };
+    let failures = lighthouse_desk::FAILURES;
+    let mut calendar = None;
+    for (severity, detail) in [
+        (Severity::Warning, "Timeout after 30 s"),
+        (Severity::Warning, "Timeout after 30 s"),
+        (
+            Severity::Critical,
+            "Timeout after 30 s on three refreshes in a row",
+        ),
+    ] {
+        let raised = desk
+            .raise_alert(alert(
+                "connector",
+                "connector:calendar",
+                severity,
+                "The calendar connector cannot be reached",
+                detail,
+                1.0,
+                failures,
+            ))
+            .await?;
+        calendar = Some(raised.alert.id);
+    }
+    if let Some(id) = calendar {
+        desk.acknowledge_alert(id).await?;
+    }
+    for detail in [
+        "The model answered too late",
+        "The model answered too late again",
+    ] {
+        desk.raise_alert(alert(
+            "run_failed",
+            "run:weekly-report",
+            Severity::Warning,
+            "The agent weekly-report failed",
+            detail,
+            1.0,
+            failures,
+        ))
         .await?;
     }
+    desk.raise_alert(alert(
+        "cost_limit",
+        "cost:assistant",
+        Severity::Warning,
+        "The agent assistant hit its cost limit",
+        "cost limit of 0.50 EUR reached",
+        0.52,
+        "EUR",
+    ))
+    .await?;
 
     desk.save_brand_profile(&BrandProfile {
         headline: Some("Helps small teams send invoices on time".to_owned()),
@@ -366,6 +474,27 @@ mod tests {
     use lighthouse_store::testing::fresh_store;
 
     #[test]
+    fn the_demo_machine_reports_two_sessions_once() {
+        assert!(needs_node(&json!([])));
+        assert!(!needs_node(&json!([{"id": WORKING}])));
+        assert_eq!(node_report()["sessions"].as_array().unwrap().len(), 2);
+        let events = node_events(Utc::now());
+        let kinds: Vec<&str> = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|event| event["kind"].as_str())
+            .collect();
+        for kind in ["prompt", "plan", "todos", "file", "tool"] {
+            assert!(kinds.contains(&kind), "{kind}");
+        }
+        let usage = lighthouse_sessions::parse_otlp(&node_metrics());
+        assert_eq!(usage[0].session_id, WORKING);
+        assert_eq!(node_permission()["session_id"], WAITING);
+        assert_eq!(node_token_request()["kind"], "node");
+    }
+
+    #[test]
     fn the_warmup_runs_only_what_is_missing() {
         let empty = json!({"counts": {"approval": 0}});
         assert_eq!(
@@ -392,7 +521,19 @@ mod tests {
         let desk = Desk::new(store.clone(), TenantId::SINGLE);
         let today = Utc::now().date_naive();
         assert_eq!(desk.tasks(TaskView::All, today, 50).await.unwrap().len(), 5);
-        assert_eq!(desk.alerts(AlertView::Active, 10).await.unwrap().len(), 2);
+        let alerts = desk.alerts(AlertView::Active, 10).await.unwrap();
+        assert_eq!(alerts.len(), 3);
+        let calendar = alerts
+            .iter()
+            .find(|alert| alert.key == "connector:calendar")
+            .unwrap();
+        assert_eq!(calendar.value, Some(3.0));
+        let kinds: Vec<&str> = calendar
+            .events
+            .iter()
+            .map(|event| event.kind.as_str())
+            .collect();
+        assert_eq!(kinds, ["raised", "seen", "escalated", "acknowledged"]);
         let sync = SyncStore::new(store.clone(), TenantId::SINGLE);
         assert_eq!(sync.organizations().await.unwrap().len(), 2);
         let brain = Brain::new(store, TenantId::SINGLE, brain.path().to_path_buf()).unwrap();
