@@ -36,7 +36,9 @@ pub use connected::{
     SourceInfo,
 };
 pub use ready::{ReadyFeed, ReadyItem};
-pub use sessions::{NodeChange, PermissionDecision};
+pub use sessions::{
+    NewSessionMessage, NodeChange, PermissionDecision, SessionDetail, SessionEvents,
+};
 pub use tasks::{TaskOrder, TaskOrderResult};
 
 use async_trait::async_trait;
@@ -463,6 +465,7 @@ impl utoipa::Modify for SecurityAddon {
         catalog::costs,
         sessions::report, sessions::request, sessions::await_decision, sessions::nodes,
         sessions::update_node, sessions::sessions, sessions::permissions, sessions::decide,
+        sessions::record_events, sessions::take_messages, sessions::session, sessions::send_message,
         tasks::list, tasks::create, tasks::get, tasks::update, tasks::delete, tasks::complete,
         tasks::reopen, tasks::accept, tasks::reorder,
         rules::list, rules::create, rules::get, rules::update, rules::delete,
@@ -487,7 +490,9 @@ impl utoipa::Modify for SecurityAddon {
         AskRequest, AskAnswer, ResolvedEntry,
         AgentInfo, AgentTool, ConnectorInfo, SkillInfo, AgentDraftRequest, AgentSource, DailyCost,
         Node, NodeChange, NodeReport, NodeState, NewPermission, Permission, PermissionDecision,
-        Session, SessionReport,
+        Session, SessionReport, SessionEvents, NewSessionMessage, SessionDetail,
+        lighthouse_sessions::NewSessionEvent, lighthouse_sessions::SessionEvent,
+        lighthouse_sessions::SessionMessage, lighthouse_sessions::ChangedFile,
         Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Origin, SourceLink,
         Rule, NewRule, RulePatch, Fact, FactSource, NewFact, FactPatch,
         Alert, AlertCounts, AlertView, lighthouse_desk::Severity,
@@ -540,6 +545,13 @@ pub fn router(state: ApiState) -> Router {
         .route("/nodes", get(sessions::nodes))
         .route("/nodes/{id}", patch(sessions::update_node))
         .route("/sessions", get(sessions::sessions))
+        .route("/sessions/{node}/{id}", get(sessions::session))
+        .route(
+            "/sessions/{node}/{id}/messages",
+            post(sessions::send_message),
+        )
+        .route("/node/events", post(sessions::record_events))
+        .route("/node/sessions/{id}/messages", get(sessions::take_messages))
         .route("/permissions", get(sessions::permissions))
         .route("/permissions/{id}/decision", post(sessions::decide))
         .route("/connectors", get(catalog::connectors))
@@ -1144,7 +1156,7 @@ mod tests {
 
     const PASSWORD: &str = "a long enough password";
 
-    async fn signed_in(app: &Router) -> String {
+    pub(crate) async fn signed_in(app: &Router) -> String {
         let (status, _) = send(
             app,
             "POST",

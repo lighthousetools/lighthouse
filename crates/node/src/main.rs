@@ -82,7 +82,10 @@ fn hook_url(port: u16) -> String {
 
 async fn run(config: NodeConfig) -> anyhow::Result<()> {
     let server = Server::new(&config.server, &config.token);
-    let agent = Arc::new(Agent::new(server, config.name));
+    let agent = Arc::new(
+        Agent::new(server, config.name)
+            .with_stop_hold(std::time::Duration::from_secs(config.stop_hold_seconds)),
+    );
     tokio::spawn(agent.clone().run_reports());
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, config.port));
     let listener = tokio::net::TcpListener::bind(address)
@@ -158,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
                 token,
                 name,
                 port: DEFAULT_PORT,
+                stop_hold_seconds: 0,
             };
             paired.save(&path)?;
             println!("Paired. Run `lighthouse-node install`, then `lighthouse-node run`.");

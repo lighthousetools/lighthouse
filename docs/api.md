@@ -21,6 +21,7 @@ never report texts, tool arguments or other private content.
 | `ready.changed` | `{"id": <item>}` | An item was cleared from the ready feed |
 | `automations.changed` | `{"id": <automation>}` | An automation was created, switched or deleted, see [automations.md](automations.md) |
 | `connected.changed` | `{"source"}` or `{"run_id"}` | A source refreshed or an action ran, see [connected.md](connected.md) |
+| `sessions.changed` | `{"node_id", "session_id"}` | A Claude Code session reported work or got a message, see [desktop-agent.md](desktop-agent.md) |
 | `document.created` | `{"id", "run_id", "kind", "period"}` | A run stored a briefing document, see [documents.md](documents.md) |
 
 A client that falls behind gets a `changed` event instead of the events it missed.

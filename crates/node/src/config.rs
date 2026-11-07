@@ -20,6 +20,9 @@ pub struct NodeConfig {
     /// Port of the local hook server.
     #[serde(default = "default_port")]
     pub port: u16,
+    /// Seconds a stopped session waits for a message from the owner, at most 60.
+    #[serde(default)]
+    pub stop_hold_seconds: u64,
 }
 
 fn default_port() -> u16 {
@@ -68,6 +71,7 @@ mod tests {
             token: "lht_x".to_owned(),
             name: "mac".to_owned(),
             port: DEFAULT_PORT,
+            stop_hold_seconds: 0,
         };
         config.save(&path).unwrap();
         assert_eq!(NodeConfig::load(&path).unwrap(), config);

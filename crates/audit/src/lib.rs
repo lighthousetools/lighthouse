@@ -340,7 +340,10 @@ impl AuditLog {
               max(greatest(last_seen_at, acknowledged_at, resolved_at))::text \
               FROM alerts WHERE tenant_id = $1), \
              (SELECT count(*) FROM ready_dismissals WHERE tenant_id = $1), \
-             (SELECT count(*) FROM run_documents WHERE tenant_id = $1))",
+             (SELECT count(*) FROM run_documents WHERE tenant_id = $1), \
+             (SELECT count(*) FROM session_events WHERE tenant_id = $1), \
+             (SELECT count(*) || max(delivered_at)::text FROM session_messages WHERE tenant_id = $1), \
+             (SELECT count(*)::text || max(synced_at)::text FROM synced_items WHERE tenant_id = $1))",
         )
         .bind(self.tenant.as_uuid())
         .fetch_one(self.store.pool())

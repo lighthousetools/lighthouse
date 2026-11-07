@@ -35,6 +35,44 @@ closed. Whether an interactive session falls back to its terminal prompt still n
 
 The hook only fires when a prompt would appear. Commands your settings already allow never reach it.
 
+## Session details
+
+The hooks also report what a session does. `GET /sessions/{node}/{id}` returns:
+
+| Field | From |
+|---|---|
+| `todos` | The latest `TodoWrite` call, the session's own todo list |
+| `plan` | The latest `ExitPlanMode` call, the plan the session presented |
+| `files` | Files changed with `Edit`, `MultiEdit`, `Write` and `NotebookEdit`, with the latest change as a diff built from the tool input |
+| `timeline` | The latest 200 events: prompts, tool calls with a one-line summary such as the command, file changes and stops |
+| `messages` | Messages you sent to the session |
+
+Events reach the server in the background and never hold up a hook. Prompts and summaries are cut at 300 characters,
+diffs at 20,000.
+
+## Messages to a session
+
+`POST /sessions/{node}/{id}/messages` with `{"text": "..."}` queues a message. The next time the session stops, the
+`Stop` hook answers with `"decision": "block"` and your message as the reason, which is the official way to let Claude
+Code go on with a new instruction. The session then continues by itself.
+
+A session that already stopped and waits at its prompt runs no more hooks until someone types, so a message reaches it
+only at its next stop. To reach such sessions, set `stop_hold_seconds` (at most 60) in `~/.config/lighthouse/node.toml`.
+Every stopped session then waits that long for a message before it hands control back to the terminal. While it waits,
+the terminal shows the session as busy. A paused machine hands over no messages.
+
+## What the official interfaces cannot do
+
+| Wish | Why not, or not yet |
+|---|---|
+| See every tool call before it runs | Only `PostToolUse` is reported, and the permission hook fires only when a prompt would appear |
+| Changes made through the shell | Files changed by `Bash`, such as `git checkout` or `sed`, are not visible. Diffs come from the tool input, not from Git |
+| Text and reasoning of the model | Only the last assistant message at a stop arrives. The agent does not read transcripts, by design |
+| Type into an idle session at any time | Hooks only run during a turn. `stop_hold_seconds` is the closest official way |
+| Start a new turn from outside | Possible with headless mode (`claude -p --resume <id>`), but it would run a second process on the same session next to your terminal. Not done |
+| Remote Control | A separate official product with no interface for other programs |
+| Costs per session | Claude Code can export metrics through OpenTelemetry. Lighthouse does not collect them yet, so `cost_eur` stays 0 |
+
 ## Kill switch
 
 `lighthouse-node stop`, or pausing the machine in the apps, denies every open request and all new ones until you resume

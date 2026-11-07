@@ -4,13 +4,17 @@
 //! reports them to the server over an outbound connection, and holds
 //! permission requests open until a device decides. It opens no public port.
 
+pub mod activity;
 pub mod config;
 pub mod hooks;
 
 use axum::Json;
 use axum::extract::State;
 use axum::routing::{get, post};
-use lighthouse_sessions::{NewPermission, NodeReport, NodeState, Permission, SessionReport};
+use lighthouse_sessions::{
+    NewPermission, NewSessionEvent, NodeReport, NodeState, Permission, SessionMessage,
+    SessionReport,
+};
 use reqwest::StatusCode;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -22,6 +26,10 @@ use std::time::Duration;
 /// Claude Code gives up on the hook after 600 seconds, so answer before that.
 const HOLD_LIMIT: Duration = Duration::from_secs(590);
 const LONG_POLL_SECONDS: u64 = 30;
+/// Time for reporting an event or fetching messages without holding a hook.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(3);
+/// The server waits at most this long for a message.
+const MAX_STOP_HOLD: Duration = Duration::from_secs(60);
 /// Sessions that ended stay in reports for one more round.
 const REPORT_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -86,6 +94,40 @@ impl Server {
         Self::parse(response).await
     }
 
+    async fn events(&self, events: &[NewSessionEvent]) -> Result<(), NodeError> {
+        let response = self
+            .http
+            .post(format!("{}/node/events", self.url))
+            .bearer_auth(&self.token)
+            .timeout(EVENT_TIMEOUT)
+            .json(&json!({"events": events}))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(NodeError::Status(response.status()));
+        }
+        Ok(())
+    }
+
+    async fn messages(
+        &self,
+        session: &str,
+        wait: Duration,
+    ) -> Result<Vec<SessionMessage>, NodeError> {
+        let response = self
+            .http
+            .get(format!(
+                "{}/node/sessions/{session}/messages?wait={}",
+                self.url,
+                wait.as_secs()
+            ))
+            .bearer_auth(&self.token)
+            .timeout(wait + EVENT_TIMEOUT)
+            .send()
+            .await?;
+        Self::parse(response).await
+    }
+
     async fn poll(&self, id: uuid::Uuid) -> Result<Permission, NodeError> {
         let response = self
             .http
@@ -108,6 +150,7 @@ pub struct Agent {
     sessions: Mutex<BTreeMap<String, SessionReport>>,
     paused: Mutex<bool>,
     hold_limit: Duration,
+    stop_hold: Duration,
 }
 
 /// State shown by `lighthouse-node status`.
@@ -161,6 +204,49 @@ impl Agent {
             sessions: Mutex::default(),
             paused: Mutex::new(false),
             hold_limit: HOLD_LIMIT,
+            stop_hold: Duration::ZERO,
+        }
+    }
+
+    /// Keeps a stopped session waiting this long for a message from the owner.
+    /// Zero, the default, only hands over messages that are already there.
+    #[must_use]
+    pub fn with_stop_hold(mut self, hold: Duration) -> Self {
+        self.stop_hold = hold.min(MAX_STOP_HOLD);
+        self
+    }
+
+    fn send_event(&self, hook: &Value) {
+        let Some(event) = activity::event_of(hook) else {
+            return;
+        };
+        let server = self.server.clone();
+        tokio::spawn(async move {
+            if let Err(error) = server.events(&[event]).await {
+                tracing::debug!(%error, "event not reported");
+            }
+        });
+    }
+
+    /// Hands messages from the owner over when a session stops.
+    async fn stop(&self, hook: &Value) -> Value {
+        let Some(session) = hook["session_id"].as_str() else {
+            return no_decision();
+        };
+        if *self.paused.lock().expect("paused lock") {
+            return no_decision();
+        }
+        match self.server.messages(session, self.stop_hold).await {
+            Ok(messages) if !messages.is_empty() => {
+                let texts: Vec<String> = messages.into_iter().map(|message| message.text).collect();
+                self.touch(hook, "running").await;
+                activity::continue_with(&texts)
+            }
+            Ok(_) => no_decision(),
+            Err(error) => {
+                tracing::debug!(%error, "cannot fetch messages");
+                no_decision()
+            }
         }
     }
 
@@ -268,6 +354,7 @@ impl Agent {
             self.touch(&hook, "waiting").await;
             self.report_quietly().await;
         }
+        self.send_event(&hook);
         let answer = self.apply(&hook).await;
         if !matches!(event, "PreToolUse" | "PostToolUse") {
             self.report_quietly().await;
@@ -301,7 +388,7 @@ impl Agent {
             }
             "Stop" => {
                 self.touch(hook, "waiting").await;
-                no_decision()
+                self.stop(hook).await
             }
             "SessionEnd" => {
                 self.touch(hook, "done").await;
@@ -452,10 +539,74 @@ mod tests {
             "sent once, then dropped"
         );
         assert!(agent.status().paused, "the server state is adopted");
-        let requests = server.received_requests().await.unwrap();
+        let requests: Vec<_> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == "/node/report")
+            .collect();
         let body: Value = requests.last().unwrap().body_json().unwrap();
         assert_eq!(body["sessions"][0]["status"], "done");
         assert_eq!(requests.len(), 3, "every change is reported at once");
+    }
+
+    #[tokio::test]
+    async fn a_stopped_session_gets_the_owners_messages_and_tools_are_reported() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/node/report"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"paused": false})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/node/events"))
+            .respond_with(ResponseTemplate::new(202))
+            .mount(&server)
+            .await;
+        let message = json!([{"id": ID, "session_id": "s1", "text": "Now run the tests",
+            "status": "delivered", "created_at": "2026-11-06T10:00:00Z", "delivered_at": null}]);
+        Mock::given(method("GET"))
+            .and(path("/node/sessions/s1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(message))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/node/sessions/s1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&server)
+            .await;
+        let agent = Agent::new(Server::new(&server.uri(), "token"), "mac".to_owned())
+            .with_stop_hold(Duration::from_secs(1));
+        agent
+            .handle(
+                json!({"hook_event_name": "PostToolUse", "session_id": "s1", "cwd": "/tmp/app",
+                           "tool_name": "Bash", "tool_input": {"command": "ls"}}),
+            )
+            .await;
+        let stop = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": "/tmp/app"});
+        let answer = agent.handle(stop.clone()).await;
+        assert_eq!(answer["decision"], "block");
+        assert!(
+            answer["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Now run the tests")
+        );
+        assert_eq!(agent.status().sessions[0].status, "running");
+        assert_eq!(agent.handle(stop).await, no_decision());
+        for _ in 0..50 {
+            let requests = server.received_requests().await.unwrap();
+            if requests
+                .iter()
+                .any(|request| request.url.path() == "/node/events")
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("no event was reported");
     }
 
     #[tokio::test]

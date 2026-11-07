@@ -14,7 +14,8 @@ const EVENTS: [&str; 7] = [
     "SessionEnd",
     "PostToolUse",
 ];
-/// Claude Code waits at most this long for an HTTP hook.
+/// Claude Code waits at most this long for an HTTP hook. `Stop` gets it too,
+/// so the agent can hold a stopped session for a message from the owner.
 const PERMISSION_TIMEOUT: u64 = 600;
 const EVENT_TIMEOUT: u64 = 5;
 
@@ -56,7 +57,7 @@ pub fn install(settings: &mut Value, url: &str) {
         .entry("hooks")
         .or_insert_with(|| json!({}));
     for event in EVENTS {
-        let timeout = if event == "PermissionRequest" {
+        let timeout = if event == "PermissionRequest" || event == "Stop" {
             PERMISSION_TIMEOUT
         } else {
             EVENT_TIMEOUT

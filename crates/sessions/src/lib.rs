@@ -4,6 +4,10 @@
 //! device token identifies the node, so one machine cannot touch another's
 //! requests. The first decision wins, whichever device it comes from.
 
+pub mod activity;
+
+pub use activity::{ChangedFile, NewSessionEvent, SessionEvent, SessionMessage};
+
 use chrono::{DateTime, Duration, Utc};
 use lighthouse_core::TenantId;
 use lighthouse_store::Store;
@@ -212,6 +216,21 @@ impl Sessions {
         .bind(self.tenant.as_uuid())
         .bind(limit)
         .fetch_all(self.store.pool())
+        .await?)
+    }
+
+    /// Returns one session.
+    pub async fn session(&self, node: Uuid, id: &str) -> Result<Option<Session>, SessionError> {
+        Ok(sqlx::query_as(
+            "SELECT s.id, s.node_id, n.name AS node_name, s.project, s.branch, s.status, \
+             s.summary, s.cost_eur, s.started_at, s.updated_at \
+             FROM sessions s JOIN nodes n ON n.id = s.node_id \
+             WHERE s.tenant_id = $1 AND s.node_id = $2 AND s.id = $3",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(node)
+        .bind(id)
+        .fetch_optional(self.store.pool())
         .await?)
     }
 
