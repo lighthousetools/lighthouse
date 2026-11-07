@@ -194,7 +194,10 @@ impl AuditLog {
         let rows: Vec<(Uuid,)> = sqlx::query_as(
             "SELECT run_id FROM run_checkpoints checkpoint WHERE tenant_id = $1 \
              AND NOT EXISTS (SELECT 1 FROM approvals \
-                             WHERE run_id = checkpoint.run_id AND status = 'pending')",
+                             WHERE run_id = checkpoint.run_id AND status = 'pending') \
+             AND NOT EXISTS (SELECT 1 FROM runs child \
+                             WHERE child.id::text = checkpoint.state->>'waiting_run' \
+                             AND child.status IN ('running', 'waiting'))",
         )
         .bind(self.tenant.as_uuid())
         .fetch_all(self.store.pool())

@@ -65,7 +65,23 @@ Webhooks and events need a bearer token like every endpoint. Issue a device toke
 | `notify: {to, subject, message}` | Sends a message to `owner`, `mail:<address>` or `slack:<alias>` |
 | `if: {contains: <text>}` | Goes on only if the previous output contains the text, ignoring case. Also `not_contains: <text>` and `status: succeeded` or `status: failed` |
 
-An automation has 1 to 20 steps. Each step sees the output and status of the one before. Strings in `input`, `subject`
+### Branches
+
+An `if` with `then` and `else` takes one of two ways and then goes on with the next step:
+
+```yaml
+  - if:
+      contains: urgent
+      then:
+        - notify:
+            message: "Urgent: {{output}}"
+      else:
+        - agent: archive-helper
+```
+
+An `if` without `then` and `else` stops the automation when the condition does not hold. Branches can be nested.
+
+An automation has 1 to 20 steps, branches included. Each step sees the output and status of the one before. Strings in `input`, `subject`
 and `message` can use placeholders:
 
 | Placeholder | Value |
@@ -77,6 +93,9 @@ and `message` can use placeholders:
 | `{{event.<field>}}` | One field of the payload |
 
 ## Runs
+
+An agent step that pauses for an approval makes the automation wait too. When the agent run ends, the automation goes
+on with its report, at the latest one minute later.
 
 An automation run is an ordinary run with the agent ID `automation:<id>`. Its steps are in the log: `agent`, `tool`,
 `delivery` and `condition`. A run ends as `succeeded`, or as `failed` when its last step failed. A condition that does
@@ -99,5 +118,8 @@ Approvals of automations appear in `GET /approvals` and `GET /ready` like those 
 | `POST /automations/{id}/run` | Start it now with an optional `{"payload": {...}}`, also when it is switched off |
 | `POST /automations/{id}/webhook` | Call its webhook with a JSON payload |
 | `POST /automations/events` | Report an event from outside |
+
+| `POST /automations/dry-run` | Show what it would do with `{"id"` or `"source", "payload"}`: whether the payload matches the trigger, and every step with its placeholders filled in and whether it needs approval. Nothing runs |
+| `POST /automations/draft` | Write an automation file from `{"description": "..."}` for you to review and save. The model sees the agents and their tools |
 
 `GET /events` sends `automations.changed` when one is created, switched or deleted.

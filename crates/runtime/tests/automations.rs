@@ -66,6 +66,7 @@ impl Notifier for Mailbox {
 #[derive(Default)]
 struct Agents {
     fail: bool,
+    waiting: Option<Uuid>,
     contexts: Mutex<Vec<(String, String, String)>>,
 }
 
@@ -84,6 +85,14 @@ impl AgentSteps for Agents {
         ));
         if agent_id == "missing" {
             return Err("unknown agent `missing`".to_owned());
+        }
+        if let Some(run_id) = self.waiting {
+            return Ok(AgentOutcome {
+                run_id,
+                status: "waiting".to_owned(),
+                report: None,
+                reason: None,
+            });
         }
         Ok(AgentOutcome {
             run_id: Uuid::now_v7(),
@@ -485,4 +494,107 @@ async fn actions_run_at_once_or_wait_for_approval() {
         .unwrap()
         .unwrap();
     assert_eq!(detail.run.status, "failed");
+}
+
+#[tokio::test]
+async fn branches_take_one_way_and_go_on() {
+    let fixture = fixture().await;
+    let automation = automation(
+        "  - tool:\n      name: linear.list_issues\n  - if:\n      contains: calm\n      then:\n        - notify:\n            message: calm\n      else:\n        - notify:\n            message: \"urgent: {{output}}\"\n  - notify:\n      message: done",
+    );
+    let detail = start(&fixture, &automation, &Agents::default()).await;
+    assert_eq!(detail.run.status, "succeeded");
+    assert_eq!(
+        kinds(&detail)[1],
+        ("condition".into(), "contains calm".into(), "else".into())
+    );
+    let mail: Vec<String> = fixture
+        .mailbox
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, text)| text.clone())
+        .collect();
+    assert_eq!(mail, ["urgent: linear.list_issues says URGENT", "done"]);
+}
+
+#[tokio::test]
+async fn an_agent_that_waits_makes_the_automation_wait() {
+    let fixture = fixture().await;
+    let child = RunId::new();
+    fixture
+        .audit
+        .start_run(child, "triage", "automation:follow-up")
+        .await
+        .unwrap();
+    let agents = Agents {
+        waiting: Some(child.as_uuid()),
+        ..Agents::default()
+    };
+    let automation = automation("  - agent: triage\n  - notify:\n      message: \"{{output}}\"");
+    let detail = start(&fixture, &automation, &agents).await;
+    assert_eq!(detail.run.status, "waiting");
+    let run = detail.run.id;
+    assert!(
+        !fixture.audit.resumable_runs().await.unwrap().contains(&run),
+        "it waits while the agent waits"
+    );
+    fixture
+        .audit
+        .finish_run(
+            child,
+            lighthouse_audit::RunEnd {
+                status: lighthouse_audit::RunStatus::Succeeded,
+                reason: None,
+                report: Some("Triage: done"),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(fixture.audit.resumable_runs().await.unwrap().contains(&run));
+    let checkpoint = fixture.audit.take_checkpoint(run).await.unwrap().unwrap();
+    fixture
+        .runtime
+        .resume_automation(
+            RunId::from_uuid(run),
+            &automation,
+            checkpoint.state,
+            &Agents::default(),
+        )
+        .await
+        .unwrap();
+    let detail = fixture.audit.run_detail(run).await.unwrap().unwrap();
+    assert_eq!(detail.run.status, "succeeded");
+    assert_eq!(fixture.mailbox.0.lock().unwrap()[0].1, "Triage: done");
+
+    let early = RunId::new();
+    fixture
+        .audit
+        .start_run(early, "automation:follow-up", "manual")
+        .await
+        .unwrap();
+    let other = RunId::new();
+    fixture
+        .audit
+        .start_run(other, "triage", "automation:follow-up")
+        .await
+        .unwrap();
+    let state = serde_json::json!({"next": 0, "event": null, "output": "", "status": "succeeded",
+                                   "pending": null, "waiting_run": other.as_uuid()});
+    fixture
+        .runtime
+        .resume_automation(early, &automation, state, &Agents::default())
+        .await
+        .unwrap();
+    let detail = fixture
+        .audit
+        .run_detail(early.as_uuid())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        detail.run.status, "waiting",
+        "a resume while the agent still runs waits again"
+    );
 }

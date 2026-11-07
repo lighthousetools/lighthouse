@@ -690,3 +690,49 @@ async fn a_post_is_published_only_after_approval() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_dry_run_shows_the_steps_and_a_draft_needs_a_valid_file() {
+    let (base, _dir, _database) = start().await;
+    let client = reqwest::Client::new();
+    let plan: Value = client
+        .post(format!("{base}/automations/dry-run"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"id": "on-failure", "payload": {"agent_id": "deleter"}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(plan["trigger_matches"], true, "{plan}");
+    assert_eq!(plan["steps"][3]["needs_approval"], true);
+    assert_eq!(plan["steps"][3]["input"]["note"], "deleter failed");
+    let source = "---\nname: B\ntrigger:\n  manual: true\nsteps:\n  - if:\n      contains: x\n      then:\n        - agent: reader\n      else:\n        - notify:\n            message: \"{{output}}\"\n---\n";
+    let plan: Value = client
+        .post(format!("{base}/automations/dry-run"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"source": source}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let paths: Vec<&str> = plan["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| step["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["1", "1.then.1", "1.else.1"]);
+    assert_eq!(plan["trigger_matches"], Value::Null);
+    let draft = client
+        .post(format!("{base}/automations/draft"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"description": "Tell me when a run fails"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(draft.status(), 502, "the mock model writes no file");
+}

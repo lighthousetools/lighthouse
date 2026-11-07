@@ -75,6 +75,70 @@ pub enum AutomationStep {
     },
     /// Stops the automation unless the condition holds.
     If(Condition),
+    /// Runs `then` if the condition holds and `otherwise` if not, then goes on.
+    Branch {
+        /// The check.
+        condition: Condition,
+        /// Steps if it holds.
+        then: Vec<AutomationStep>,
+        /// Steps if it does not.
+        otherwise: Vec<AutomationStep>,
+    },
+}
+
+/// One instruction of an automation, with branches turned into jumps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Op<'a> {
+    /// Runs a step. `If` steps stop the run when they fail.
+    Step(&'a AutomationStep),
+    /// Goes to the instruction at the index unless the condition holds.
+    JumpUnless(&'a Condition, usize),
+    /// Goes to the instruction at the index.
+    Jump(usize),
+}
+
+fn compile<'a>(steps: &'a [AutomationStep], ops: &mut Vec<Op<'a>>) {
+    for step in steps {
+        if let AutomationStep::Branch {
+            condition,
+            then,
+            otherwise,
+        } = step
+        {
+            let test = ops.len();
+            ops.push(Op::Jump(0));
+            compile(then, ops);
+            let skip = ops.len();
+            ops.push(Op::Jump(0));
+            let else_start = ops.len();
+            compile(otherwise, ops);
+            let end = ops.len();
+            ops[test] = Op::JumpUnless(condition, else_start);
+            ops[skip] = Op::Jump(end);
+        } else {
+            ops.push(Op::Step(step));
+        }
+    }
+}
+
+/// Turns the steps into a flat program. The same file always gives the same
+/// program, so a paused run resumes at the right instruction.
+pub fn program(steps: &[AutomationStep]) -> Vec<Op<'_>> {
+    let mut ops = Vec::new();
+    compile(steps, &mut ops);
+    ops
+}
+
+fn count(steps: &[AutomationStep]) -> usize {
+    steps
+        .iter()
+        .map(|step| match step {
+            AutomationStep::Branch {
+                then, otherwise, ..
+            } => 1 + count(then) + count(otherwise),
+            _ => 1,
+        })
+        .sum()
 }
 
 impl AutomationStep {
@@ -85,6 +149,7 @@ impl AutomationStep {
             Self::Tool { .. } => "tool",
             Self::Notify { .. } => "notify",
             Self::If(_) => "if",
+            Self::Branch { .. } => "branch",
         }
     }
 }
@@ -151,6 +216,9 @@ struct RawCondition {
     contains: Option<String>,
     not_contains: Option<String>,
     status: Option<String>,
+    then: Option<Vec<RawStep>>,
+    #[serde(rename = "else")]
+    otherwise: Option<Vec<RawStep>>,
 }
 
 #[derive(Deserialize)]
@@ -220,8 +288,12 @@ fn parse_trigger(raw: RawTrigger) -> Result<AutomationTrigger, AgentError> {
     Ok(trigger)
 }
 
-fn parse_condition(raw: RawCondition) -> Result<Condition, AgentError> {
-    match (raw.contains, raw.not_contains, raw.status) {
+fn parse_condition(
+    contains: Option<String>,
+    not_contains: Option<String>,
+    status: Option<String>,
+) -> Result<Condition, AgentError> {
+    match (contains, not_contains, status) {
         (Some(text), None, None) => Ok(Condition::Contains(text)),
         (None, Some(text), None) => Ok(Condition::NotContains(text)),
         (None, None, Some(status)) if status == "succeeded" || status == "failed" => {
@@ -267,7 +339,25 @@ fn parse_step(raw: RawStep) -> Result<AutomationStep, AgentError> {
                 message: notify.message,
             }
         }
-        RawStep::If(condition) => AutomationStep::If(parse_condition(condition)?),
+        RawStep::If(raw) => {
+            let condition = parse_condition(raw.contains, raw.not_contains, raw.status)?;
+            match (raw.then, raw.otherwise) {
+                (None, None) => AutomationStep::If(condition),
+                (then, otherwise) => AutomationStep::Branch {
+                    condition,
+                    then: then
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(parse_step)
+                        .collect::<Result<_, _>>()?,
+                    otherwise: otherwise
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(parse_step)
+                        .collect::<Result<_, _>>()?,
+                },
+            }
+        }
     })
 }
 
@@ -290,7 +380,7 @@ impl Automation {
         if id.is_empty() || slugify(&id) != id {
             return Err(field("id", "must be lowercase letters, digits and dashes"));
         }
-        if raw.steps.is_empty() || raw.steps.len() > MAX_STEPS {
+        if raw.steps.is_empty() {
             return Err(field("steps", format!("needs 1 to {MAX_STEPS} steps")));
         }
         Ok(Self {
@@ -304,6 +394,15 @@ impl Automation {
                 .map(parse_step)
                 .collect::<Result<_, _>>()?,
             description: body.trim().to_owned(),
+        })
+        .and_then(|automation| {
+            if count(&automation.steps) > MAX_STEPS {
+                return Err(field(
+                    "steps",
+                    format!("needs 1 to {MAX_STEPS} steps, branches included"),
+                ));
+            }
+            Ok(automation)
         })
     }
 }
@@ -408,6 +507,49 @@ Looks into failed briefs.
 
     fn with(frontmatter: &str) -> Result<Automation, AgentError> {
         Automation::parse(&format!("---\n{frontmatter}\n---\n"))
+    }
+
+    #[test]
+    fn branches_compile_into_jumps() {
+        let automation = with(
+            "name: A\ntrigger:\n  manual: true\nsteps:\n  - agent: triage\n  - if:\n      contains: urgent\n      then:\n        - agent: escalate\n      else:\n        - notify:\n            message: calm\n        - agent: archive\n  - agent: wrap",
+        )
+        .unwrap();
+        assert_eq!(automation.steps[1].kind(), "branch");
+        let ops = program(&automation.steps);
+        let shape: Vec<String> = ops
+            .iter()
+            .map(|op| match op {
+                Op::Step(step) => step.kind().to_owned(),
+                Op::JumpUnless(_, target) => format!("unless->{target}"),
+                Op::Jump(target) => format!("jump->{target}"),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                "agent",
+                "unless->4",
+                "agent",
+                "jump->6",
+                "notify",
+                "agent",
+                "agent"
+            ]
+        );
+        let only_then = with(
+            "name: A\ntrigger:\n  manual: true\nsteps:\n  - if:\n      status: failed\n      then:\n        - agent: retry",
+        )
+        .unwrap();
+        assert_eq!(program(&only_then.steps).len(), 3);
+        let nested = format!(
+            "name: A\ntrigger:\n  manual: true\nsteps:\n  - if:\n      status: failed\n      then:\n{}",
+            "        - agent: a\n".repeat(MAX_STEPS)
+        );
+        assert!(
+            with(nested.trim_end()).is_err(),
+            "branches count toward the limit"
+        );
     }
 
     #[test]

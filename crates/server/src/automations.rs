@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use lighthouse_api::{
-    AgentChangeError, AutomationInfo, AutomationStepInfo, AutomationTriggerInfo, Automations,
-    TriggerError,
+    AgentChangeError, AutomationDryRun, AutomationInfo, AutomationStepInfo, AutomationTriggerInfo,
+    Automations, DryRunRequest, PlannedStep, TriggerError,
 };
 use lighthouse_audit::{AuditError, RunRecord};
 use lighthouse_core::RunId;
@@ -251,6 +251,61 @@ impl AgentSteps for AutomationEngine {
     }
 }
 
+/// Placeholder output of steps a dry run does not run.
+const DRY_OUTPUT: &str = "(output of the previous step)";
+
+fn plan_steps(
+    steps: &[AutomationStep],
+    prefix: &str,
+    event: &Value,
+    policy: &lighthouse_mcp::ToolPolicy,
+    planned: &mut Vec<PlannedStep>,
+) {
+    let values = std::collections::BTreeMap::from([
+        ("output", DRY_OUTPUT.to_owned()),
+        ("status", "succeeded".to_owned()),
+        ("automation", String::new()),
+    ]);
+    for (index, step) in steps.iter().enumerate() {
+        let path = format!("{prefix}{}", index + 1);
+        let mut entry = PlannedStep {
+            path: path.clone(),
+            kind: step.kind().to_owned(),
+            summary: String::new(),
+            input: None,
+            message: None,
+            needs_approval: false,
+        };
+        match step {
+            AutomationStep::Agent(agent) => entry.summary = format!("run the agent {agent}"),
+            AutomationStep::Tool { name, input } => {
+                entry.summary = format!("call {name}");
+                entry.input = Some(lighthouse_core::automation::render_value(
+                    input, &values, event,
+                ));
+                entry.needs_approval = policy.level(name) == ToolLevel::Write;
+            }
+            AutomationStep::Notify { to, message, .. } => {
+                entry.summary = format!("notify {}", crate::delivery_name(to));
+                entry.message = Some(lighthouse_core::automation::render(message, &values, event));
+            }
+            AutomationStep::If(condition) => entry.summary = condition_summary(condition),
+            AutomationStep::Branch {
+                condition,
+                then,
+                otherwise,
+            } => {
+                entry.summary = format!("branch: {}", condition_summary(condition));
+                planned.push(entry);
+                plan_steps(then, &format!("{path}.then."), event, policy, planned);
+                plan_steps(otherwise, &format!("{path}.else."), event, policy, planned);
+                continue;
+            }
+        }
+        planned.push(entry);
+    }
+}
+
 /// Serves the automations to the apps.
 pub struct ServerAutomations {
     engine: Arc<AutomationEngine>,
@@ -359,6 +414,9 @@ impl ServerAutomations {
                             (format!("notify {}", crate::delivery_name(to)), false)
                         }
                         AutomationStep::If(condition) => (condition_summary(condition), false),
+                        AutomationStep::Branch { condition, .. } => {
+                            (format!("branch: {}", condition_summary(condition)), false)
+                        }
                     };
                     AutomationStepInfo {
                         kind: step.kind().to_owned(),
@@ -472,5 +530,77 @@ impl Automations for ServerAutomations {
 
     async fn emit(&self, name: &str, payload: Value) -> Result<Vec<Uuid>, String> {
         Ok(self.engine.emit(name, payload).await)
+    }
+
+    async fn dry_run(&self, request: DryRunRequest) -> Result<AutomationDryRun, AgentChangeError> {
+        let automation = match (&request.source, &request.id) {
+            (Some(source), _) => Arc::new(
+                Automation::parse(source)
+                    .map_err(|error| AgentChangeError::Rejected(error.to_string()))?,
+            ),
+            (None, Some(id)) => {
+                self.engine
+                    .automations
+                    .get(id)
+                    .ok_or_else(|| {
+                        AgentChangeError::Rejected(format!("unknown automation `{id}`"))
+                    })?
+                    .automation
+            }
+            (None, None) => {
+                return Err(AgentChangeError::Rejected(
+                    "name an `id` or send a `source`".to_owned(),
+                ));
+            }
+        };
+        let trigger_matches = match &automation.trigger {
+            AutomationTrigger::Event { filter, .. } | AutomationTrigger::Webhook { filter } => {
+                Some(matches(filter, &request.payload))
+            }
+            _ => None,
+        };
+        let mut steps = Vec::new();
+        plan_steps(
+            &automation.steps,
+            "",
+            &request.payload,
+            &self.engine.runtime.policy,
+            &mut steps,
+        );
+        Ok(AutomationDryRun {
+            id: automation.id.clone(),
+            trigger_matches,
+            steps,
+        })
+    }
+
+    async fn draft(&self, description: &str) -> Result<String, String> {
+        let agents: Vec<String> = self
+            .engine
+            .agents
+            .list()
+            .iter()
+            .map(|known| format!("{}: {}", known.agent.id, known.agent.name))
+            .collect();
+        let tools: Vec<String> = self
+            .engine
+            .agents
+            .list()
+            .iter()
+            .flat_map(|known| {
+                known
+                    .agent
+                    .tools
+                    .iter()
+                    .map(|grant| grant.name.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        self.engine
+            .runtime
+            .draft_automation(description, &agents, &tools)
+            .await
     }
 }

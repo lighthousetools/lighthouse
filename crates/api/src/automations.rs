@@ -87,6 +87,55 @@ pub struct AutomationRuns {
     pub runs: Vec<Uuid>,
 }
 
+/// What a dry run would do.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct AutomationDryRun {
+    /// Automation ID.
+    pub id: String,
+    /// Whether an event or webhook payload matches the trigger. `None` for other triggers.
+    pub trigger_matches: Option<bool>,
+    /// Every step, branches included, with filled placeholders.
+    pub steps: Vec<PlannedStep>,
+}
+
+/// A step of a dry run. Nothing runs and nothing is sent.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct PlannedStep {
+    /// Position, such as `2` or `2.then.1`.
+    pub path: String,
+    /// `agent`, `tool`, `notify`, `if` or `branch`.
+    pub kind: String,
+    /// What it would do.
+    pub summary: String,
+    /// Tool arguments with the payload filled in.
+    pub input: Option<Value>,
+    /// Message with the payload filled in.
+    pub message: Option<String>,
+    /// Whether it would wait for the owner's approval.
+    pub needs_approval: bool,
+}
+
+/// What to try in a dry run.
+#[derive(Clone, Debug, Default, Deserialize, ToSchema)]
+pub struct DryRunRequest {
+    /// A saved automation.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Or an automation file that is not saved yet.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// The event or webhook payload to try.
+    #[serde(default)]
+    pub payload: Value,
+}
+
+/// A sentence that describes an automation.
+#[derive(Deserialize, ToSchema)]
+pub struct AutomationDraftRequest {
+    /// What the automation should do.
+    pub description: String,
+}
+
 /// Starts and manages automations.
 #[async_trait]
 pub trait Automations: Send + Sync {
@@ -111,6 +160,10 @@ pub trait Automations: Send + Sync {
     async fn webhook(&self, id: &str, payload: Value) -> Result<Option<Uuid>, TriggerError>;
     /// Starts every enabled automation that waits for this event.
     async fn emit(&self, name: &str, payload: Value) -> Result<Vec<Uuid>, String>;
+    /// Shows what an automation would do with a payload, without running it.
+    async fn dry_run(&self, request: DryRunRequest) -> Result<AutomationDryRun, AgentChangeError>;
+    /// Writes an automation file from a sentence. It is not saved.
+    async fn draft(&self, description: &str) -> Result<String, String>;
 }
 
 fn trigger_error(error: TriggerError) -> ApiError {
@@ -355,6 +408,56 @@ pub(crate) async fn emit(
         .await
         .map_err(internal)?;
     Ok((StatusCode::ACCEPTED, Json(AutomationRuns { runs })))
+}
+
+/// Shows what an automation would do with a payload. Nothing runs and nothing is sent.
+#[utoipa::path(
+    post,
+    operation_id = "dry_run_automation",
+    path = "/automations/dry-run",
+    request_body = DryRunRequest,
+    responses(
+        (status = 200, body = AutomationDryRun),
+        (status = 404, description = "Unknown automation"),
+        (status = 422, description = "Invalid file or neither ID nor file")
+    ),
+    security(("bearer" = []))
+)]
+pub(crate) async fn dry_run(
+    State(state): State<ApiState>,
+    Json(request): Json<DryRunRequest>,
+) -> Result<Json<AutomationDryRun>, ApiError> {
+    let unknown = request.source.is_none() && request.id.is_some();
+    let result = state.automations.dry_run(request).await;
+    match result {
+        Ok(plan) => Ok(Json(plan)),
+        Err(AgentChangeError::Rejected(_)) if unknown => Err(not_found("automation")),
+        Err(error) => Err(change_error(error)),
+    }
+}
+
+/// Writes an automation file from a sentence for the owner to review. It is not saved.
+#[utoipa::path(
+    post,
+    operation_id = "draft_automation",
+    path = "/automations/draft",
+    request_body = AutomationDraftRequest,
+    responses(
+        (status = 200, body = AgentSource),
+        (status = 502, description = "The model wrote no valid automation")
+    ),
+    security(("bearer" = []))
+)]
+pub(crate) async fn draft(
+    State(state): State<ApiState>,
+    Json(request): Json<AutomationDraftRequest>,
+) -> Result<Json<AgentSource>, ApiError> {
+    let source = state
+        .automations
+        .draft(&request.description)
+        .await
+        .map_err(|error| ApiError(StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(AgentSource { source }))
 }
 
 #[cfg(test)]

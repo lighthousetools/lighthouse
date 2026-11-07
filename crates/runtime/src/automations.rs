@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use lighthouse_audit::{AuditError, NewApproval, RunEnd, RunStatus};
 use lighthouse_core::RunId;
 use lighthouse_core::agent::{Delivery, ToolLevel};
-use lighthouse_core::automation::{Automation, AutomationStep, Condition, render, render_value};
+use lighthouse_core::automation::{
+    Automation, AutomationStep, Condition, Op, program, render, render_value,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -59,6 +61,9 @@ struct AutomationState {
     output: String,
     status: String,
     pending: Option<PendingTool>,
+    /// An agent run of this automation that waits for a decision.
+    #[serde(default)]
+    waiting_run: Option<Uuid>,
 }
 
 impl AutomationState {
@@ -108,6 +113,7 @@ impl Runtime {
             output: String::new(),
             status: SUCCEEDED.to_owned(),
             pending: None,
+            waiting_run: None,
         };
         self.drive_automation(run, automation, state, agents).await
     }
@@ -129,6 +135,27 @@ impl Runtime {
                     .await;
             }
         };
+        if let Some(child) = state.waiting_run {
+            let detail = self.audit.run_detail(child).await?;
+            match detail.map(|detail| detail.run) {
+                Some(record) if matches!(record.status.as_str(), "running" | "waiting") => {
+                    let trigger = automation.run_agent_id();
+                    let saved = serde_json::to_value(&state).unwrap_or(Value::Null);
+                    return self.audit.pause_run(run, &trigger, &saved, &[]).await;
+                }
+                Some(record) => {
+                    let ok = record.status == SUCCEEDED;
+                    let mut finished =
+                        step("agent", &record.agent_id, if ok { "ok" } else { "error" });
+                    finished.detail = Some(format!("run={child} status={}", record.status));
+                    self.audit.record_step(run, &finished).await?;
+                    state.set(ok, record.report.or(record.reason).unwrap_or_default());
+                }
+                None => state.set(false, format!("the agent run {child} is gone")),
+            }
+            state.waiting_run = None;
+            state.next += 1;
+        }
         if let Some(pending) = state.pending.take() {
             let approval = self
                 .audit
@@ -213,7 +240,25 @@ impl Runtime {
         agents: &dyn AgentSteps,
     ) -> Result<(), AuditError> {
         let trigger = automation.run_agent_id();
-        while let Some(current) = automation.steps.get(state.next) {
+        let ops = program(&automation.steps);
+        while let Some(op) = ops.get(state.next) {
+            let current = match op {
+                Op::Jump(target) => {
+                    state.next = *target;
+                    continue;
+                }
+                Op::JumpUnless(condition, target) => {
+                    let name = condition_name(condition);
+                    let holds = holds(condition, &state);
+                    let status = if holds { "ok" } else { "else" };
+                    self.audit
+                        .record_step(run, &step("condition", &name, status))
+                        .await?;
+                    state.next = if holds { state.next + 1 } else { *target };
+                    continue;
+                }
+                Op::Step(step) => *step,
+            };
             let values = state.values(automation);
             match current {
                 AutomationStep::Agent(agent) => {
@@ -223,6 +268,14 @@ impl Runtime {
                     );
                     let mut record = step("agent", agent, "ok");
                     match agents.run_agent(agent, &trigger, &context).await {
+                        Ok(outcome) if outcome.status == "waiting" => {
+                            record.status = "waiting".to_owned();
+                            record.detail = Some(format!("run={} status=waiting", outcome.run_id));
+                            self.audit.record_step(run, &record).await?;
+                            state.waiting_run = Some(outcome.run_id);
+                            let saved = serde_json::to_value(&state).unwrap_or(Value::Null);
+                            return self.audit.pause_run(run, &trigger, &saved, &[]).await;
+                        }
                         Ok(outcome) => {
                             let ok = outcome.status == SUCCEEDED;
                             record.detail =
@@ -302,6 +355,7 @@ impl Runtime {
                     }
                     self.audit.record_step(run, &record).await?;
                 }
+                AutomationStep::Branch { .. } => {}
                 AutomationStep::If(condition) => {
                     let name = condition_name(condition);
                     if !holds(condition, &state) {

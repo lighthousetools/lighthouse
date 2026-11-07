@@ -802,3 +802,50 @@ async fn context_from_an_automation_reaches_the_model_as_untrusted_content() {
     assert!(text.contains("<untrusted_content source=\"automation\">"));
     assert!(text.contains("a@example.com"));
 }
+
+#[tokio::test]
+async fn an_automation_is_drafted_from_a_sentence_and_corrected() {
+    let valid = "```markdown\n---\nname: Ping\ntrigger:\n  manual: true\nsteps:\n  - agent: brief\n---\nPings.\n```";
+    let fixture = fixture(
+        vec![
+            ChatResponse::text("not a file", usage()),
+            ChatResponse::text(valid, usage()),
+        ],
+        false,
+    )
+    .await;
+    let file = fixture
+        .runtime
+        .draft_automation(
+            "Ping me",
+            &["brief".to_owned()],
+            &["linear.list_issues".to_owned()],
+        )
+        .await
+        .unwrap();
+    assert!(file.starts_with("---\nname: Ping"));
+    let requests = fixture.provider.requests();
+    assert!(requests[0].system.contains("Available agents:\nbrief"));
+    let Block::Text { text } = &requests[1].messages.last().unwrap().content[0] else {
+        panic!("no text")
+    };
+    assert!(text.contains("invalid"));
+
+    let failing = fixture_with_script(vec![
+        ChatResponse::text("x", usage()),
+        ChatResponse::text("y", usage()),
+        ChatResponse::text("z", usage()),
+    ])
+    .await;
+    assert!(
+        failing
+            .runtime
+            .draft_automation("x", &[], &[])
+            .await
+            .is_err()
+    );
+}
+
+async fn fixture_with_script(script: Vec<ChatResponse>) -> Fixture {
+    fixture(script, false).await
+}

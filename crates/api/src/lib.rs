@@ -26,8 +26,9 @@ pub use auth::{
     AuthStatus, Caller, CredentialValue, LoginRequest, SetupRequest, TokenIssued, TokenRequest,
 };
 pub use automations::{
-    AutomationInfo, AutomationRuns, AutomationStepInfo, AutomationSwitch, AutomationTriggerInfo,
-    Automations, ExternalEvent,
+    AutomationDraftRequest, AutomationDryRun, AutomationInfo, AutomationRuns, AutomationStepInfo,
+    AutomationSwitch, AutomationTriggerInfo, Automations, DryRunRequest, ExternalEvent,
+    PlannedStep,
 };
 pub use brain::{AskAnswer, AskRequest, EntryDetail, ResolvedEntry};
 pub use catalog::{
@@ -483,7 +484,7 @@ impl utoipa::Modify for SecurityAddon {
         documents::of_run,
         automations::list, automations::get, automations::save, automations::switch,
         automations::delete, automations::runs, automations::run, automations::webhook,
-        automations::emit,
+        automations::emit, automations::dry_run, automations::draft,
         connected::mail, connected::events, connected::issues, connected::projects,
         connected::cycles, connected::pulls, connected::search, connected::inbox, connected::item,
         connected::free_busy, connected::sources, connected::refresh_all, connected::refresh,
@@ -516,7 +517,8 @@ impl utoipa::Modify for SecurityAddon {
         lighthouse_desk::DocumentSection, lighthouse_desk::DocumentItem,
         lighthouse_desk::ItemSource, lighthouse_desk::ItemNumber,
         AutomationInfo, AutomationTriggerInfo, AutomationStepInfo, AutomationSwitch,
-        AutomationRuns, ExternalEvent,
+        AutomationRuns, ExternalEvent, AutomationDryRun, PlannedStep, DryRunRequest,
+        AutomationDraftRequest,
         lighthouse_sync::SyncedItem, lighthouse_sync::ItemPage, lighthouse_sync::SyncStatus,
         SourceInfo, RefreshResult, ActionRequest, ActionResult, ItemDetail, BusyBlock,
         lighthouse_sync::Organization, lighthouse_sync::OrganizationInput,
@@ -634,6 +636,8 @@ pub fn router(state: ApiState) -> Router {
             get(automations::list).post(automations::save),
         )
         .route("/automations/events", post(automations::emit))
+        .route("/automations/dry-run", post(automations::dry_run))
+        .route("/automations/draft", post(automations::draft))
         .route(
             "/automations/{id}",
             get(automations::get)
@@ -911,6 +915,27 @@ mod tests {
 
         async fn emit(&self, _name: &str, _payload: Value) -> Result<Vec<Uuid>, String> {
             Ok(vec![Uuid::nil()])
+        }
+
+        async fn dry_run(
+            &self,
+            request: DryRunRequest,
+        ) -> Result<AutomationDryRun, AgentChangeError> {
+            match (request.id.as_deref(), request.source.as_deref()) {
+                (Some("follow-up"), _) => Ok(AutomationDryRun {
+                    id: "follow-up".to_owned(),
+                    trigger_matches: Some(true),
+                    steps: Vec::new(),
+                }),
+                _ => Err(AgentChangeError::Rejected("invalid".to_owned())),
+            }
+        }
+
+        async fn draft(&self, description: &str) -> Result<String, String> {
+            match description {
+                "fail" => Err("no model".to_owned()),
+                other => Ok(format!("file for {other}")),
+            }
         }
     }
 

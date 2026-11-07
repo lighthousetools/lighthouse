@@ -45,6 +45,8 @@ const DRAFT_AGENT: &str = "agent-draft";
 /// Tries to get a valid agent file from the model.
 const DRAFT_ATTEMPTS: usize = 3;
 const AGENT_FORMAT: &str = include_str!("agent_format.md");
+const AUTOMATION_FORMAT: &str = include_str!("automation_format.md");
+const AUTOMATION_DRAFT: &str = "automation-draft";
 const APPROVAL_NOTE: &str = "would have needed an approval";
 
 /// Provides the current router.
@@ -735,6 +737,85 @@ impl Runtime {
             )));
         }
         Err(format!("the model wrote no valid agent: {problem}"))
+    }
+
+    /// Writes an automation file from a sentence. Costs land in the log as a run.
+    ///
+    /// The model sees parse errors and can correct itself. The file is not saved.
+    pub async fn draft_automation(
+        &self,
+        description: &str,
+        agents: &[String],
+        tools: &[String],
+    ) -> Result<String, String> {
+        let run = RunId::new();
+        self.audit
+            .start_run(run, AUTOMATION_DRAFT, "draft")
+            .await
+            .map_err(|error| error.to_string())?;
+        let result = self.write_automation(run, description, agents, tools).await;
+        let (status, reason, report) = match &result {
+            Ok(file) => (RunStatus::Succeeded, None, Some(file.as_str())),
+            Err(reason) => (RunStatus::Failed, Some(reason.as_str()), None),
+        };
+        self.audit
+            .finish_run(
+                run,
+                RunEnd {
+                    status,
+                    reason,
+                    report,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        result
+    }
+
+    async fn write_automation(
+        &self,
+        run: RunId,
+        description: &str,
+        agents: &[String],
+        tools: &[String],
+    ) -> Result<String, String> {
+        let router = self
+            .router
+            .router()
+            .await
+            .map_err(|error| error.to_string())?;
+        let system = format!(
+            "{AUTOMATION_FORMAT}\n\nAvailable agents:\n{}\n\nAvailable tools:\n{}\n\n{}",
+            agents.join("\n"),
+            tools.join("\n"),
+            self.owner_context
+        );
+        let mut messages = vec![Message::user(description)];
+        let mut problem = String::new();
+        for _ in 0..DRAFT_ATTEMPTS {
+            let request = ChatRequest {
+                system: system.clone(),
+                messages: messages.clone(),
+                ..ChatRequest::default()
+            };
+            let completion = self
+                .call_model(run, &router, &RouteOverride::default(), &request)
+                .await
+                .map_err(stop_reason)?;
+            let file = clean_agent_file(&completion.response.text_content());
+            problem = match lighthouse_core::automation::Automation::parse(&file) {
+                Ok(_) => return Ok(file),
+                Err(error) => error.to_string(),
+            };
+            messages.push(Message {
+                role: Role::Assistant,
+                content: vec![Block::Text { text: file }],
+            });
+            messages.push(Message::user(format!(
+                "That file is invalid: {problem}. Answer with the corrected file only."
+            )));
+        }
+        Err(format!("the model wrote no valid automation: {problem}"))
     }
 
     /// Answers a question from the given context. Costs land in the log as a run.
