@@ -54,6 +54,12 @@ draft_tools = ["create_draft"]
 [talk]
 agent = "assistant"
 
+# The demo asks Open-Meteo for the weather in Berlin; without a network the brief has none.
+[weather]
+latitude = 52.52
+longitude = 13.41
+location = "Berlin"
+
 [publishing]
 connector = "demo"
 tool = "create_post"

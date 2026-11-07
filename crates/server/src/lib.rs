@@ -38,6 +38,7 @@ pub mod automations;
 pub mod connected;
 pub mod outcomes;
 pub mod publishing;
+pub mod weather;
 
 use automations::{AutomationEngine, ServerAutomations};
 use connected::ConnectedService;
@@ -736,6 +737,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         pushes: Pushes::from_config(&config.notifications)?,
         agents: agents.clone(),
         zone,
+        weather: config.weather.clone(),
     }));
     let automation_files = Arc::new(AutomationRegistry::load(
         config.paths.automations.clone(),

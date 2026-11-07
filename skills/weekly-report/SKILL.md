@@ -57,11 +57,21 @@ Lighthouse removes the block from the report before delivery. Use exactly this s
     {"key": "risks", "title": "Risks", "items": []},
     {"key": "topics", "title": "Topics for the meeting", "items": []}
   ],
+  "projects": [
+    {
+      "name": "Web app",
+      "done": [{"text": "The login timeout is fixed", "source": {"service": "linear", "reference": "APP-1"}}],
+      "open": [{"text": "The release notes are still open", "source": {"service": "linear", "reference": "APP-2"}}],
+      "numbers": [{"label": "Issues done", "value": 4, "previous": 3}]
+    }
+  ],
   "unavailable": []
 }
 ```
 
 - The keys are `numbers`, `shipped`, `risks` and `topics`. Leave out a section without items.
+- `projects` groups the week's work by project, from the project field of issues or the repository of pull requests:
+  what got `done`, what is still `open`, and their `numbers`.
 - A number without a tool result stays out of `numbers`. Say "not available" in the `text` instead.
 - `previous` is the value of the week before, only if a tool result gives it.
 - Every item names its `source` with the `service` and, where you have them, a `reference` and a `url` from a tool

@@ -20,8 +20,8 @@ pub mod tasks;
 pub use alerts::{Alert, AlertCounts, AlertEvent, AlertView, FAILURES, NewAlert, Raised, Severity};
 pub use branding::BrandProfile;
 pub use documents::{
-    BriefingContent, BriefingDocument, DocumentItem, DocumentSection, ItemNumber, ItemSource,
-    MORNING_BRIEF, WEEKLY_RECAP, extract_document,
+    BriefingContent, BriefingDocument, Connection, DocumentItem, DocumentSection, ItemNumber,
+    ItemSource, MORNING_BRIEF, ProjectWork, WEEKLY_RECAP, Weather, WeekDay, extract_document,
 };
 pub use facts::{Fact, FactFilter, FactPatch, FactSource, NewFact, ProposedFact};
 pub use post_check::{CheckIssue, PostCheck, check_post};

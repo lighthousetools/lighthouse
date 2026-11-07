@@ -17,6 +17,8 @@ pub const FENCE: &str = "lighthouse-document";
 pub const MORNING_BRIEF: &str = "morning_brief";
 /// Kind of the weekly recap.
 pub const WEEKLY_RECAP: &str = "weekly_recap";
+/// Days a brief looks ahead, at most.
+const MAX_WEEK_DAYS: usize = 14;
 const MAX_KIND: usize = 40;
 const MAX_SECTIONS: usize = 20;
 const MAX_ITEMS: usize = 100;
@@ -55,6 +57,12 @@ pub struct ItemNumber {
 pub struct DocumentItem {
     /// The statement, one sentence.
     pub text: String,
+    /// A short title for a card, such as "Globex offer".
+    #[serde(default)]
+    pub title: Option<String>,
+    /// A line under the title, such as "Mail from John Roe · yesterday".
+    #[serde(default)]
+    pub subtitle: Option<String>,
     /// More detail, if needed.
     #[serde(default)]
     pub detail: Option<String>,
@@ -94,6 +102,82 @@ pub struct BriefingContent {
     /// Sources that could not be read.
     #[serde(default)]
     pub unavailable: Vec<String>,
+    /// How things connect: short stories that link items across services, such
+    /// as a mail, the deal it is about and the meeting where it is decided.
+    #[serde(default)]
+    pub connections: Vec<Connection>,
+    /// The days ahead, for a brief: what each day holds.
+    #[serde(default)]
+    pub week: Vec<WeekDay>,
+    /// The weather of the day, filled by Lighthouse when `[weather]` is set.
+    #[serde(default)]
+    pub weather: Option<Weather>,
+    /// Work grouped by project, for a recap.
+    #[serde(default)]
+    pub projects: Vec<ProjectWork>,
+}
+
+/// A story that links items across services.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Connection {
+    /// One line, such as "The Globex renewal hangs on one answer".
+    pub title: String,
+    /// Two or three sentences on how the items connect.
+    pub text: String,
+    /// The items it links, in the order of the story.
+    #[serde(default)]
+    pub items: Vec<ItemSource>,
+}
+
+/// One day ahead.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct WeekDay {
+    /// The date, `YYYY-MM-DD`.
+    pub date: String,
+    /// A word on the day, such as "Busy" or "Focus day".
+    #[serde(default)]
+    pub label: Option<String>,
+    /// What it holds.
+    #[serde(default)]
+    pub items: Vec<DocumentItem>,
+}
+
+/// The weather of a day.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Weather {
+    /// Such as "Light rain".
+    pub summary: String,
+    /// The temperature now, in °C.
+    #[serde(default)]
+    pub temperature_c: Option<f64>,
+    /// The highest of the day, in °C.
+    #[serde(default)]
+    pub high_c: Option<f64>,
+    /// The lowest of the day, in °C.
+    #[serde(default)]
+    pub low_c: Option<f64>,
+    /// The place, such as "Berlin".
+    #[serde(default)]
+    pub location: Option<String>,
+    /// Where it comes from, such as "Open-Meteo".
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// The work of one project in a recap.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ProjectWork {
+    /// Project name.
+    pub name: String,
+    /// What got done.
+    #[serde(default)]
+    pub done: Vec<DocumentItem>,
+    /// What is still open or at risk.
+    #[serde(default)]
+    pub open: Vec<DocumentItem>,
+    /// Its numbers, such as issues closed.
+    #[serde(default)]
+    pub numbers: Vec<ItemNumber>,
 }
 
 impl BriefingContent {
@@ -123,6 +207,33 @@ impl BriefingContent {
             if section.items.iter().any(|item| item.text.trim().is_empty()) {
                 return Err(invalid("every item needs a `text`"));
             }
+        }
+        if self.connections.len() > MAX_ITEMS
+            || self.week.len() > MAX_WEEK_DAYS
+            || self.projects.len() > MAX_SECTIONS
+        {
+            return Err(invalid(format!(
+                "at most {MAX_ITEMS} connections, {MAX_WEEK_DAYS} days and {MAX_SECTIONS} projects"
+            )));
+        }
+        if self.connections.iter().any(|connection| {
+            connection.title.trim().is_empty() || connection.text.trim().is_empty()
+        }) {
+            return Err(invalid("every connection needs a `title` and a `text`"));
+        }
+        if self
+            .week
+            .iter()
+            .any(|day| NaiveDate::parse_from_str(&day.date, "%Y-%m-%d").is_err())
+        {
+            return Err(invalid("every day of `week` needs a `date` as YYYY-MM-DD"));
+        }
+        if self.projects.iter().any(|project| {
+            project.name.trim().is_empty() || project.done.len() + project.open.len() > MAX_ITEMS
+        }) {
+            return Err(invalid(format!(
+                "every project needs a `name` and at most {MAX_ITEMS} items"
+            )));
         }
         Ok(())
     }
@@ -289,6 +400,26 @@ impl Desk {
         Ok(row.map(Into::into))
     }
 
+    /// Adds the weather to a stored document.
+    pub async fn set_document_weather(
+        &self,
+        id: Uuid,
+        weather: &Weather,
+    ) -> Result<Option<BriefingDocument>, DeskError> {
+        let value = serde_json::to_value(weather).map_err(|error| invalid(error.to_string()))?;
+        let query = format!(
+            "UPDATE run_documents SET content = jsonb_set(content, '{{weather}}', $3) \
+             WHERE tenant_id = $1 AND id = $2 RETURNING {COLUMNS}"
+        );
+        let row: Option<DocumentRow> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant())
+            .bind(id)
+            .bind(value)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.map(Into::into))
+    }
+
     /// Returns the document of a run.
     pub async fn run_document(&self, run: Uuid) -> Result<Option<BriefingDocument>, DeskError> {
         let query =
@@ -353,6 +484,12 @@ mod tests {
             let content = extract_document(skill).1.unwrap().unwrap();
             assert_eq!(content.kind, kind);
             assert!(!content.sections.is_empty());
+            if kind == MORNING_BRIEF {
+                assert_eq!((content.connections.len(), content.week.len()), (1, 1));
+                assert!(content.sections[0].items[0].title.is_some());
+            } else {
+                assert_eq!(content.projects[0].done.len(), 1);
+            }
         }
         let docs = include_str!("../../../docs/documents.md");
         let content = extract_document(docs).1.unwrap().unwrap();
@@ -367,6 +504,9 @@ mod tests {
             r#"{"kind": "weekly_recap", "title": " ", "sections": []}"#,
             r#"{"kind": "weekly_recap", "title": "x", "sections": [{"title": ""}]}"#,
             r#"{"kind": "weekly_recap", "title": "x", "sections": [{"title": "A", "items": [{"text": ""}]}]}"#,
+            r#"{"kind": "morning_brief", "title": "x", "sections": [], "connections": [{"title": "", "text": "y"}]}"#,
+            r#"{"kind": "morning_brief", "title": "x", "sections": [], "week": [{"date": "Monday"}]}"#,
+            r#"{"kind": "weekly_recap", "title": "x", "sections": [], "projects": [{"name": " "}]}"#,
         ] {
             let (markdown, document) = extract_document(&report(block));
             assert!(document.unwrap().is_err(), "{block}");

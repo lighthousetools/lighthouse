@@ -69,6 +69,25 @@ pub struct Config {
     /// Conversations in the apps.
     #[serde(default)]
     pub talk: TalkConfig,
+    /// Where the owner is, for the weather in the Morning Brief.
+    #[serde(default)]
+    pub weather: Option<WeatherConfig>,
+}
+
+/// A place for the weather, from Open-Meteo, which needs no key.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeatherConfig {
+    /// Latitude in degrees.
+    pub latitude: f64,
+    /// Longitude in degrees.
+    pub longitude: f64,
+    /// Name of the place, shown with the weather.
+    #[serde(default)]
+    pub location: Option<String>,
+    /// Another Open-Meteo compatible server, for tests or self-hosting.
+    #[serde(default)]
+    pub base_url: Option<String>,
 }
 
 /// HTTP server settings.

@@ -55,10 +55,29 @@ The bundled skills `morning-brief` and `weekly-report` describe the block to the
 | `sections[].title` | yes | Heading |
 | `sections[].items` | no | At most 100 items |
 | `items[].text` | yes | The statement, one sentence |
+| `items[].title`, `items[].subtitle` | no | A short title for its card, and a line with who and when |
 | `items[].detail` | no | More detail |
 | `items[].source` | no | `service` (required), `reference` and `url` |
 | `items[].numbers` | no | `label` and `value` (required), `unit` and `previous` (the period before) |
 | `unavailable` | no | Services that could not be read |
+| `connections` | no | At most 100 stories of how items connect across services: `title` and `text` (required), and the `items` it links as sources |
+| `week` | no | At most 14 days ahead: `date` as `YYYY-MM-DD` (required), a one-word `label` and its `items` |
+| `weather` | no | `summary` (required), `temperature_c`, `high_c`, `low_c`, `location` and `source`. Lighthouse fills it, see below |
+| `projects` | no | For a recap, at most 20 projects: `name` (required), the items `done` and `open`, and `numbers` |
+
+### Weather
+
+With a location in the configuration, Lighthouse adds today's weather to every Morning Brief that has none, from
+[Open-Meteo](https://open-meteo.com), which needs no key and is free for non-commercial use:
+
+```toml
+[weather]
+latitude = 52.52
+longitude = 13.41
+location = "Berlin"   # optional, shown with the weather
+```
+
+Without `[weather]`, briefs have no weather. Only the coordinates leave the server.
 
 Unknown fields are ignored, so a model that adds a field does not lose the document. The last block of a report counts.
 
@@ -119,7 +138,59 @@ As JSON Schema:
         }
       }
     },
-    "unavailable": {"type": "array", "items": {"type": "string"}}
+    "unavailable": {"type": "array", "items": {"type": "string"}},
+    "connections": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": ["title", "text"],
+        "properties": {
+          "title": {"type": "string", "minLength": 1},
+          "text": {"type": "string", "minLength": 1},
+          "items": {"type": "array", "items": {"type": "object", "required": ["service"]}}
+        }
+      }
+    },
+    "week": {
+      "type": "array",
+      "maxItems": 14,
+      "items": {
+        "type": "object",
+        "required": ["date"],
+        "properties": {
+          "date": {"type": "string", "format": "date"},
+          "label": {"type": "string"},
+          "items": {"type": "array"}
+        }
+      }
+    },
+    "weather": {
+      "type": "object",
+      "required": ["summary"],
+      "properties": {
+        "summary": {"type": "string"},
+        "temperature_c": {"type": "number"},
+        "high_c": {"type": "number"},
+        "low_c": {"type": "number"},
+        "location": {"type": "string"},
+        "source": {"type": "string"}
+      }
+    },
+    "projects": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "done": {"type": "array"},
+          "open": {"type": "array"},
+          "numbers": {"type": "array"}
+        }
+      }
+    }
   }
 }
 ```

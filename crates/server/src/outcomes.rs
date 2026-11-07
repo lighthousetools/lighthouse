@@ -142,6 +142,7 @@ pub struct Outcomes {
     pushes: Pushes,
     agents: Arc<AgentRegistry>,
     zone: chrono_tz::Tz,
+    weather: Option<lighthouse_config::WeatherConfig>,
 }
 
 impl std::fmt::Debug for Outcomes {
@@ -170,6 +171,8 @@ pub struct OutcomeParts {
     pub agents: Arc<AgentRegistry>,
     /// The owner's time zone, for the months of the budget.
     pub zone: chrono_tz::Tz,
+    /// Where the owner is, for the weather in briefs.
+    pub weather: Option<lighthouse_config::WeatherConfig>,
 }
 
 impl Outcomes {
@@ -184,6 +187,7 @@ impl Outcomes {
             pushes: parts.pushes,
             agents: parts.agents,
             zone: parts.zone,
+            weather: parts.weather,
         }
     }
 
@@ -344,7 +348,19 @@ impl Outcomes {
             self.events.emit("tasks.changed", json!({"id": task.id}));
         }
         if record.status == "succeeded" {
-            if let Some(document) = self.desk.run_document(run).await? {
+            if let Some(mut document) = self.desk.run_document(run).await? {
+                if let (Some(place), true) = (
+                    &self.weather,
+                    document.kind == lighthouse_desk::MORNING_BRIEF
+                        && document.content.weather.is_none(),
+                ) && let Some(weather) = crate::weather::today(place).await
+                    && let Some(updated) = self
+                        .desk
+                        .set_document_weather(document.id, &weather)
+                        .await?
+                {
+                    document = updated;
+                }
                 self.events.emit(
                     "document.created",
                     json!({"id": document.id, "run_id": run, "kind": document.kind,
@@ -470,6 +486,7 @@ mod tests {
             pushes: Pushes::from_config(&config).unwrap(),
             agents,
             zone: chrono_tz::UTC,
+            weather: None,
         });
         Fixture {
             outcomes,

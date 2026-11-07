@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 base64.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 lighthouse-config.workspace = true
 reqwest.workspace = true
 secrecy.workspace = true

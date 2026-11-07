@@ -45,9 +45,93 @@ fn tool_results(request: &ChatRequest) -> usize {
         .count()
 }
 
-const BRIEF: &str = "# Morning Brief\n\n**Needs you**\n- Review the pull request \"Speed up the invoice export\" (#42)\n- Globex asks for an updated offer\n\n**Overnight**\n- The nightly build passed\n- Two invoices of Acme were paid\n\n**Your day**\n- 10:00 Weekly planning with Jane Doe\n\n```lighthouse-document\n{\"kind\": \"morning_brief\", \"title\": \"Morning Brief\", \"summary\": \"One review and one offer wait for you; the night was calm.\", \"sections\": [{\"key\": \"needs_you\", \"title\": \"Needs you\", \"items\": [{\"text\": \"Review the pull request Speed up the invoice export\", \"source\": {\"service\": \"github\", \"reference\": \"#42\"}}, {\"text\": \"Globex asks for an updated offer\", \"source\": {\"service\": \"mail\"}}]}, {\"key\": \"overnight\", \"title\": \"Overnight\", \"items\": [{\"text\": \"The nightly build passed\", \"source\": {\"service\": \"github\"}}, {\"text\": \"Two invoices of Acme were paid\", \"source\": {\"service\": \"bank\"}, \"numbers\": [{\"label\": \"Paid\", \"value\": 2}]}]}, {\"key\": \"your_day\", \"title\": \"Your day\", \"items\": [{\"text\": \"10:00 Weekly planning with Jane Doe\", \"source\": {\"service\": \"calendar\"}}]}], \"unavailable\": []}\n```";
+fn day(offset: i64) -> String {
+    (chrono::Utc::now().date_naive() + chrono::Duration::days(offset))
+        .format("%Y-%m-%d")
+        .to_string()
+}
 
-const RECAP: &str = "# Weekly report\n\n**At a glance:** A steady week. Acme moved to the proposal stage, and the export got faster.\n\n**Numbers:** 9 issues done (7 the week before), 4 pull requests merged.\n\n```lighthouse-document\n{\"kind\": \"weekly_recap\", \"title\": \"Weekly report\", \"summary\": \"A steady week with more done than the week before.\", \"sections\": [{\"key\": \"numbers\", \"title\": \"Numbers\", \"items\": [{\"text\": \"Issues done\", \"source\": {\"service\": \"issues\"}, \"numbers\": [{\"label\": \"Done\", \"value\": 9, \"previous\": 7}]}, {\"text\": \"Pull requests merged\", \"source\": {\"service\": \"github\"}, \"numbers\": [{\"label\": \"Merged\", \"value\": 4, \"previous\": 3}]}]}, {\"key\": \"shipped\", \"title\": \"Shipped\", \"items\": [{\"text\": \"Faster invoice export\", \"source\": {\"service\": \"github\", \"reference\": \"#42\"}}]}, {\"key\": \"risks\", \"title\": \"Risks\", \"items\": [{\"text\": \"The Globex renewal has had no activity for 30 days\", \"source\": {\"service\": \"crm\"}}]}], \"unavailable\": []}\n```";
+fn with_document(markdown: &str, document: &serde_json::Value) -> String {
+    format!("{markdown}\n\n```lighthouse-document\n{document}\n```")
+}
+
+/// The demo Morning Brief, with the week ahead from today.
+fn brief() -> String {
+    let item = |title: &str, subtitle: &str, text: &str, service: &str, reference: &str| {
+        json!({"title": title, "subtitle": subtitle, "text": text,
+               "source": {"service": service, "reference": reference}})
+    };
+    let document = json!({
+        "kind": "morning_brief",
+        "title": "Morning Brief",
+        "summary": "One review and one offer wait for you; the night was calm.",
+        "sections": [
+            {"key": "needs_you", "title": "Needs you", "items": [
+                item("Invoice export", "Pull request by Jane Doe · waiting 2 days",
+                     "Review the pull request Speed up the invoice export", "github", "#42"),
+                item("Globex offer", "Mail from John Roe · yesterday",
+                     "Globex asks for an updated offer by Friday", "mail", "t1"),
+            ]},
+            {"key": "overnight", "title": "Overnight", "items": [
+                item("Nightly build", "CI · 03:10", "The nightly build passed", "github", "ci"),
+                {"title": "Acme paid", "subtitle": "Bank · this morning", "text": "Two invoices of Acme were paid",
+                 "source": {"service": "bank"}, "numbers": [{"label": "Paid", "value": 2}]},
+            ]},
+            {"key": "your_day", "title": "Your day", "items": [
+                item("Weekly planning", "10:00 · with Jane Doe", "10:00 Weekly planning with Jane Doe", "calendar", "e1"),
+            ]},
+        ],
+        "connections": [{
+            "title": "The Globex renewal hangs on one answer",
+            "text": "John Roe asked for the updated offer, the renewal deal has been quiet for a month, and the offer call is tomorrow. Answering today keeps the call useful.",
+            "items": [{"service": "mail", "reference": "t1"}, {"service": "crm", "reference": "d4"},
+                      {"service": "calendar", "reference": "e2"}],
+        }],
+        "week": [
+            {"date": day(0), "label": "Busy", "items": [{"text": "Weekly planning with Jane Doe", "source": {"service": "calendar"}}]},
+            {"date": day(1), "label": "Customer day", "items": [{"text": "Globex offer call", "source": {"service": "calendar"}}]},
+            {"date": day(2), "label": "Focus day", "items": [{"text": "Write the proposal", "source": {"service": "calendar"}}]},
+        ],
+        "unavailable": [],
+    });
+    with_document(
+        "# Morning Brief\n\n**Needs you**\n- Review the pull request \"Speed up the invoice export\" (#42)\n- Globex asks for an updated offer\n\n**Overnight**\n- The nightly build passed\n- Two invoices of Acme were paid\n\n**Your day**\n- 10:00 Weekly planning with Jane Doe",
+        &document,
+    )
+}
+
+/// The demo weekly report, with work grouped by project.
+fn recap() -> String {
+    let done = |text: &str, service: &str, reference: &str| json!({"text": text, "source": {"service": service, "reference": reference}});
+    let document = json!({
+        "kind": "weekly_recap",
+        "title": "Weekly report",
+        "summary": "A steady week with more done than the week before.",
+        "sections": [
+            {"key": "numbers", "title": "Numbers", "items": [
+                {"text": "Issues done", "source": {"service": "linear"}, "numbers": [{"label": "Done", "value": 9, "previous": 7}]},
+                {"text": "Pull requests merged", "source": {"service": "github"}, "numbers": [{"label": "Merged", "value": 4, "previous": 3}]},
+            ]},
+            {"key": "shipped", "title": "Shipped", "items": [done("Faster invoice export", "github", "#42")]},
+            {"key": "risks", "title": "Risks", "items": [done("The Globex renewal has had no activity for 30 days", "crm", "d4")]},
+        ],
+        "projects": [
+            {"name": "Web app",
+             "done": [done("The weekly report page is live", "github", "#41")],
+             "open": [done("The login timeout is still open", "linear", "DEMO-1")],
+             "numbers": [{"label": "Issues done", "value": 5, "previous": 4}]},
+            {"name": "Billing",
+             "done": [done("Invoices export as CSV", "linear", "DEMO-3")],
+             "open": [],
+             "numbers": [{"label": "Issues done", "value": 4, "previous": 3}]},
+        ],
+        "unavailable": [],
+    });
+    with_document(
+        "# Weekly report\n\n**At a glance:** A steady week. Acme moved to the proposal stage, and the export got faster.\n\n**Numbers:** 9 issues done (7 the week before), 4 pull requests merged.",
+        &document,
+    )
+}
 
 const DECK: &str = "# Proposal for Globex\n\nPrepared by Jane Doe\n\n---\n\n## The problem\n\n- Invoices go out late\n- Nobody sees the pipeline in one place\n\n---\n\n## Our approach\n\n- One weekly report\n- Reminders before due dates\n\n---\n\n## Next steps\n\n- Pilot with one team [TODO]\n- Decision by the end of the month";
 
@@ -190,10 +274,10 @@ pub fn answer(request: &ChatRequest) -> String {
     }
     let everything = format!("{system}\n{user}").to_lowercase();
     if everything.contains("morning-brief") || everything.contains("morning brief") {
-        return BRIEF.to_owned();
+        return brief();
     }
     if everything.contains("weekly-report") || everything.contains("weekly report") {
-        return RECAP.to_owned();
+        return recap();
     }
     if everything.contains("conversation") {
         return format!(

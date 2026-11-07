@@ -75,6 +75,12 @@ fn the_demo_briefs_hold_valid_documents() {
             ..ChatRequest::default()
         };
         let (_, document) = lighthouse_desk::extract_document(&answer(&request));
-        document.unwrap().unwrap();
+        let document = document.unwrap().unwrap();
+        if document.kind == lighthouse_desk::MORNING_BRIEF {
+            assert_eq!((document.connections.len(), document.week.len()), (1, 3));
+            assert!(document.sections[0].items[0].subtitle.is_some());
+        } else {
+            assert_eq!(document.projects.len(), 2);
+        }
     }
 }
