@@ -77,7 +77,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_profile_starts_empty_and_is_replaced() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         assert_eq!(desk.brand_profile().await.unwrap(), BrandProfile::default());
         let saved = desk
             .save_brand_profile(&BrandProfile {

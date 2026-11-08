@@ -112,7 +112,7 @@ struct Fixture {
 
 async fn fixture() -> Fixture {
     let store = fresh_store().await;
-    let audit = AuditLog::new(store.clone(), TenantId::SINGLE);
+    let audit = AuditLog::new(store.clone(), TenantId::DEFAULT);
     let connector = ConnectorConfig {
         transport: ConnectorTransport::Stdio {
             command: "x".to_owned(),
@@ -138,7 +138,7 @@ async fn fixture() -> Fixture {
         owner_context: "You work for Alex.".to_owned(),
         owner_email: "alex@example.com".to_owned(),
         zone: chrono_tz::Europe::Berlin,
-        desk: Desk::new(store, TenantId::SINGLE),
+        desk: Desk::new(store, TenantId::DEFAULT),
     };
     Fixture {
         runtime,

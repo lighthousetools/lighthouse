@@ -73,7 +73,7 @@ mod tests {
 
     #[tokio::test]
     async fn dismissals_are_remembered_once() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         assert!(desk.dismiss("draft", "a").await.unwrap());
         assert!(!desk.dismiss("draft", "a").await.unwrap());
         assert!(desk.dismissed("draft").await.unwrap().contains("a"));

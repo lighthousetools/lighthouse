@@ -304,7 +304,7 @@ mod tests {
     use serde_json::json;
 
     async fn paused(ids: &[Uuid]) -> (AuditLog, RunId) {
-        let log = AuditLog::new(fresh_store().await, TenantId::SINGLE);
+        let log = AuditLog::new(fresh_store().await, TenantId::DEFAULT);
         let run = RunId::new();
         log.start_run(run, "mailer", "manual").await.unwrap();
         let proposals: Vec<_> = ids
@@ -489,7 +489,7 @@ mod tests {
     async fn paused_runs_that_wait_on_another_run_are_found() {
         let log = AuditLog::new(
             lighthouse_store::testing::fresh_store().await,
-            lighthouse_core::TenantId::SINGLE,
+            lighthouse_core::TenantId::DEFAULT,
         );
         let (parent, child) = (RunId::new(), RunId::new());
         log.start_run(parent, "automation:x", "manual")

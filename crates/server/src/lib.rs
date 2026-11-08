@@ -635,7 +635,7 @@ impl MediaReader for ProviderMedia {
 }
 
 fn open_brain(config: &Arc<Config>, store: Store, vault: &Vault) -> anyhow::Result<Brain> {
-    let mut brain = Brain::new(store, TenantId::SINGLE, config.brain.path.clone())?;
+    let mut brain = Brain::new(store, TenantId::DEFAULT, config.brain.path.clone())?;
     if let Some(provider) = &config.brain.provider {
         let media = Arc::new(ProviderMedia {
             config: config.clone(),
@@ -670,7 +670,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         .migrate()
         .await
         .context("cannot migrate the database")?;
-    let tenant = TenantId::SINGLE;
+    let tenant = TenantId::DEFAULT;
     let vault = Vault::new(store.clone(), tenant, &master_key(&config)?);
     let audit = AuditLog::new(store.clone(), tenant);
     let interrupted = audit.fail_interrupted_runs().await?;

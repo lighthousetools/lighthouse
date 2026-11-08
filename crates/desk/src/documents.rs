@@ -526,7 +526,7 @@ mod tests {
     #[tokio::test]
     async fn documents_are_stored_per_run_and_found_by_period() {
         let store = fresh_store().await;
-        let desk = Desk::new(store.clone(), TenantId::SINGLE);
+        let desk = Desk::new(store.clone(), TenantId::DEFAULT);
         let content = extract_document(&report(BLOCK)).1.unwrap().unwrap();
         let mut runs = Vec::new();
         for _ in 0..2 {
@@ -536,7 +536,7 @@ mod tests {
                  VALUES ($1, $2, 'weekly-report', 'cron', 'succeeded')",
             )
             .bind(run)
-            .bind(TenantId::SINGLE.as_uuid())
+            .bind(TenantId::DEFAULT.as_uuid())
             .execute(store.pool())
             .await
             .unwrap();

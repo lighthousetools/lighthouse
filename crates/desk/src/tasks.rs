@@ -549,7 +549,7 @@ mod tests {
     use lighthouse_store::testing::fresh_store;
 
     async fn desk() -> Desk {
-        Desk::new(fresh_store().await, TenantId::SINGLE)
+        Desk::new(fresh_store().await, TenantId::DEFAULT)
     }
 
     fn day(text: &str) -> NaiveDate {
@@ -762,7 +762,7 @@ mod tests {
              VALUES ($1, $2, 'Old', 'proposed', 0, 'agent', 'pipeline', '00000000-0000-0000-0000-000000000000')",
         )
         .bind(Uuid::now_v7())
-        .bind(lighthouse_core::TenantId::SINGLE.as_uuid())
+        .bind(lighthouse_core::TenantId::DEFAULT.as_uuid())
         .execute(desk.pool())
         .await
         .unwrap();

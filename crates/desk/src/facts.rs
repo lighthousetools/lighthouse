@@ -342,7 +342,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_confirmed_and_active_facts_are_known() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         let stated = desk
             .create_fact(NewFact {
                 text: "Prefers short answers".to_owned(),
@@ -401,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn rewording_confirms_and_bad_input_is_refused() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         let bad = ProposedFact {
             text: "Likes tea".to_owned(),
             confidence: 1.5,

@@ -215,7 +215,7 @@ async fn read_only_agent_runs_and_write_agent_is_rejected() {
 #[tokio::test]
 async fn a_decision_through_the_api_finishes_the_paused_run() {
     let (base, _dir, database) = start().await;
-    let audit = AuditLog::new(database, TenantId::SINGLE);
+    let audit = AuditLog::new(database, TenantId::DEFAULT);
     let run = RunId::new();
     let approval = Uuid::now_v7();
     audit.start_run(run, "reader", "manual").await.unwrap();

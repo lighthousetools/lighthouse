@@ -72,7 +72,7 @@ async fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let brain = Brain::new(
         fresh_store().await,
-        TenantId::SINGLE,
+        TenantId::DEFAULT,
         dir.path().join("brain"),
     )
     .unwrap();
@@ -454,7 +454,7 @@ async fn a_restart_rebuilds_the_lexical_index() {
     let fixture = fixture().await;
     let brain = &fixture.brain;
     brain.remember(note("Rule", "January")).await.unwrap();
-    let restarted = Brain::new(brain.store.clone(), TenantId::SINGLE, brain.root.clone()).unwrap();
+    let restarted = Brain::new(brain.store.clone(), TenantId::DEFAULT, brain.root.clone()).unwrap();
     assert!(restarted.search("january", 5).await.unwrap().is_empty());
     restarted.sync().await.unwrap();
     assert_eq!(restarted.search("january", 5).await.unwrap().len(), 1);

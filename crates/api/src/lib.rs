@@ -1223,14 +1223,14 @@ mod tests {
         let key = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
         let vault = Vault::new(
             store.clone(),
-            TenantId::SINGLE,
+            TenantId::DEFAULT,
             &MasterKey::from_base64(&key).unwrap(),
         );
-        let audit = AuditLog::new(store.clone(), TenantId::SINGLE);
-        let desk = Desk::new(store.clone(), TenantId::SINGLE);
-        let sessions = Sessions::new(store.clone(), TenantId::SINGLE);
+        let audit = AuditLog::new(store.clone(), TenantId::DEFAULT);
+        let desk = Desk::new(store.clone(), TenantId::DEFAULT);
+        let sessions = Sessions::new(store.clone(), TenantId::DEFAULT);
         let events = EventBus::new();
-        let sync = lighthouse_sync::SyncStore::new(store.clone(), TenantId::SINGLE);
+        let sync = lighthouse_sync::SyncStore::new(store.clone(), TenantId::DEFAULT);
         let state = ApiState {
             audit: audit.clone(),
             trigger: Arc::new(FakeTrigger(Uuid::nil(), resumed.clone())),
@@ -1239,9 +1239,9 @@ mod tests {
                 vault.clone(),
                 "https://lighthouse.test",
             )),
-            auth: Auth::new(store.clone(), TenantId::SINGLE),
+            auth: Auth::new(store.clone(), TenantId::DEFAULT),
             vault,
-            brain: Brain::new(store.clone(), TenantId::SINGLE, brain_root()).unwrap(),
+            brain: Brain::new(store.clone(), TenantId::DEFAULT, brain_root()).unwrap(),
             sessions: sessions.clone(),
             owner_name: "Alex".to_owned(),
             assistant: Arc::new(FakeAssistant),

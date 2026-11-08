@@ -79,7 +79,7 @@ async fn github() -> (Syncer, Script) {
     };
     let source = resolve("github", &config, vec!["alex".to_owned()]).unwrap();
     let script = Script::default();
-    let store = SyncStore::new(fresh_store().await, TenantId::SINGLE);
+    let store = SyncStore::new(fresh_store().await, TenantId::DEFAULT);
     (
         Syncer::new(store, Arc::new(script.clone()), vec![source]),
         script,
@@ -365,7 +365,7 @@ state = "status"
         resolve("cal", &calendar, owner).unwrap(),
     ];
     let script = Script::default();
-    let store = SyncStore::new(fresh_store().await, TenantId::SINGLE);
+    let store = SyncStore::new(fresh_store().await, TenantId::DEFAULT);
     let syncer = Syncer::new(store, Arc::new(script.clone()), sources);
     let now = Utc::now();
     script.set("mail.list_threads", json!({"threads": []}));
@@ -516,7 +516,7 @@ fn money(id: &str, amount: f64, state: Option<&str>, flags: &[&str]) -> MappedIt
 
 #[tokio::test]
 async fn numbers_sum_pipeline_cash_burn_invoices_and_revenue() {
-    let store = SyncStore::new(fresh_store().await, TenantId::SINGLE);
+    let store = SyncStore::new(fresh_store().await, TenantId::DEFAULT);
     let now = Utc::now();
     let mut weighted = money("d1", 10_000.0, Some("proposal"), &["cold"]);
     weighted.data = json!({"probability": "50"});
@@ -710,7 +710,7 @@ async fn items_that_vanish_from_every_full_collection_are_removed_with_their_chi
 
 #[tokio::test]
 async fn splits_save_filters_and_list_their_items() {
-    let store = SyncStore::new(fresh_store().await, TenantId::SINGLE);
+    let store = SyncStore::new(fresh_store().await, TenantId::DEFAULT);
     let mail = |id: &str, title: &str| MappedItem {
         external_id: id.to_owned(),
         title: Some(title.to_owned()),

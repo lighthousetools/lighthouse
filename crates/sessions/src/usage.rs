@@ -205,7 +205,7 @@ mod tests {
 
     #[tokio::test]
     async fn increments_add_up_and_totals_replace() {
-        let sessions = Sessions::new(fresh_store().await, TenantId::SINGLE);
+        let sessions = Sessions::new(fresh_store().await, TenantId::DEFAULT);
         let node = Uuid::now_v7();
         sessions
             .report(

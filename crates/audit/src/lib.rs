@@ -470,7 +470,7 @@ mod tests {
 
     async fn log() -> (AuditLog, Store) {
         let store = fresh_store().await;
-        (AuditLog::new(store.clone(), TenantId::SINGLE), store)
+        (AuditLog::new(store.clone(), TenantId::DEFAULT), store)
     }
 
     fn step(kind: &str, tokens: u64, cost: f64) -> NewStep {

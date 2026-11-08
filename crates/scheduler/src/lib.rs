@@ -279,7 +279,7 @@ mod tests {
         let agents = [agent("cron: \"0 8 * * *\"")];
         let scheduler = Scheduler::new(
             fresh_store().await,
-            TenantId::SINGLE,
+            TenantId::DEFAULT,
             "Europe/Berlin",
             &agents,
             recorder.clone(),
@@ -301,7 +301,7 @@ mod tests {
         let agents = [agent("cron: \"0 8 * * *\"")];
         let scheduler = Scheduler::new(
             fresh_store().await,
-            TenantId::SINGLE,
+            TenantId::DEFAULT,
             "Europe/Berlin",
             &agents,
             recorder.clone(),
@@ -335,7 +335,7 @@ mod tests {
         let agents = [agent("cron: \"0 8 * * *\"")];
         let scheduler = Scheduler::new(
             fresh_store().await,
-            TenantId::SINGLE,
+            TenantId::DEFAULT,
             "Europe/Berlin",
             &agents,
             recorder.clone(),
@@ -353,7 +353,7 @@ mod tests {
         let agents = [agent("manual: true")];
         let scheduler = Scheduler::new(
             store.clone(),
-            TenantId::SINGLE,
+            TenantId::DEFAULT,
             "UTC",
             &agents,
             Arc::new(Recorder::default()),
@@ -362,7 +362,7 @@ mod tests {
         assert!(scheduler.agents.read().unwrap().is_empty());
         let error = Scheduler::new(
             store,
-            TenantId::SINGLE,
+            TenantId::DEFAULT,
             "Mars/Base",
             &agents,
             Arc::new(Recorder::default()),

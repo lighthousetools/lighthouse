@@ -227,7 +227,7 @@ mod tests {
 
     #[tokio::test]
     async fn threads_keep_messages_and_pending_answers() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         let thread = desk.create_thread("Release plan").await.unwrap();
         assert!(desk.create_thread(" ").await.is_err());
         desk.add_message(thread.id, "owner", "What is open?", "done", None, json!([]))

@@ -380,7 +380,7 @@ mod tests {
     }
 
     async fn sessions() -> (Sessions, Uuid) {
-        let sessions = Sessions::new(fresh_store().await, TenantId::SINGLE);
+        let sessions = Sessions::new(fresh_store().await, TenantId::DEFAULT);
         let node = Uuid::now_v7();
         sessions.report(node, &report("running")).await.unwrap();
         (sessions, node)

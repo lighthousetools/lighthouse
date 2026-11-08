@@ -463,9 +463,9 @@ mod tests {
 
     async fn fixture(config: NotificationsConfig) -> Fixture {
         let store = fresh_store().await;
-        let audit = AuditLog::new(store.clone(), TenantId::SINGLE);
-        let desk = Desk::new(store.clone(), TenantId::SINGLE);
-        let sessions = Sessions::new(store.clone(), TenantId::SINGLE);
+        let audit = AuditLog::new(store.clone(), TenantId::DEFAULT);
+        let desk = Desk::new(store.clone(), TenantId::DEFAULT);
+        let sessions = Sessions::new(store.clone(), TenantId::DEFAULT);
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("brief.md"),

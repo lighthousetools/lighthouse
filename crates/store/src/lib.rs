@@ -1,5 +1,6 @@
 //! Postgres storage and migrations.
 
+use lighthouse_core::TenantId;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 
@@ -14,6 +15,9 @@ pub enum StoreError {
     /// A migration failed.
     #[error("migration error: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
+    /// A tenant could not be deleted because rows outside it refer to its rows.
+    #[error("cannot delete the tenant, these tables are still referenced: {0}")]
+    Purge(String),
 }
 
 /// Handle to the database.
@@ -48,6 +52,72 @@ impl Store {
     /// Returns the connection pool.
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// Lists every table with a `tenant_id` column.
+    pub async fn tenant_tables(&self) -> Result<Vec<String>, StoreError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT c.table_name::text FROM information_schema.columns c \
+             JOIN information_schema.tables t \
+               ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
+             WHERE c.table_schema = current_schema() AND c.column_name = 'tenant_id' \
+               AND t.table_type = 'BASE TABLE' ORDER BY 1",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(name,)| name).collect())
+    }
+
+    /// Deletes a tenant and every row that belongs to it, in one transaction.
+    ///
+    /// Tables are found by their `tenant_id` column, so new tables are covered
+    /// without changes here. Rows that other rows still reference are retried
+    /// after their children are gone.
+    pub async fn purge_tenant(&self, tenant: TenantId) -> Result<(), StoreError> {
+        let mut pending = self.tenant_tables().await?;
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("SELECT set_config('lighthouse.purging_tenant', $1, true)")
+            .bind(tenant.as_uuid().to_string())
+            .execute(&mut *transaction)
+            .await?;
+        while !pending.is_empty() {
+            let mut blocked = Vec::new();
+            for table in &pending {
+                sqlx::query("SAVEPOINT purge")
+                    .execute(&mut *transaction)
+                    .await?;
+                let deleted = sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DELETE FROM \"{table}\" WHERE tenant_id = $1"
+                )))
+                .bind(tenant.as_uuid())
+                .execute(&mut *transaction)
+                .await;
+                match deleted {
+                    Ok(_) => {
+                        sqlx::query("RELEASE SAVEPOINT purge")
+                            .execute(&mut *transaction)
+                            .await?;
+                    }
+                    Err(sqlx::Error::Database(error)) if error.is_foreign_key_violation() => {
+                        sqlx::query("ROLLBACK TO SAVEPOINT purge")
+                            .execute(&mut *transaction)
+                            .await?;
+                        blocked.push(table.clone());
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            if blocked.len() == pending.len() {
+                return Err(StoreError::Purge(blocked.join(", ")));
+            }
+            pending = blocked;
+        }
+        sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(tenant.as_uuid())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(())
     }
 }
 
@@ -180,7 +250,7 @@ mod tests {
             .fetch_one(store.pool())
             .await
             .unwrap();
-        assert_eq!(id, TenantId::SINGLE.as_uuid());
+        assert_eq!(id, TenantId::DEFAULT.as_uuid());
     }
 
     #[test]
@@ -214,6 +284,82 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count, 0);
+    }
+
+    async fn tenant_rows(store: &super::Store, tenant: TenantId) -> i64 {
+        let mut total = 0;
+        for table in store.tenant_tables().await.unwrap() {
+            let (count,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT count(*) FROM \"{table}\" WHERE tenant_id = $1"
+            )))
+            .bind(tenant.as_uuid())
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+            total += count;
+        }
+        total
+    }
+
+    async fn fill(store: &super::Store, tenant: TenantId) {
+        let id = tenant.as_uuid();
+        let run = uuid::Uuid::now_v7();
+        for (statement, with_run) in [
+            (
+                "INSERT INTO tenants (id, name) VALUES ($1, 't') ON CONFLICT DO NOTHING",
+                false,
+            ),
+            (
+                "INSERT INTO runs (id, tenant_id, agent_id, trigger, status) VALUES ($2, $1, 'a', 'manual', 'done')",
+                true,
+            ),
+            (
+                "INSERT INTO run_steps (id, tenant_id, run_id, seq, kind, name, status) VALUES (gen_random_uuid(), $1, $2, 1, 'model', 'm', 'ok')",
+                true,
+            ),
+            (
+                "INSERT INTO run_documents (id, tenant_id, run_id, agent_id, kind, period, title, content) VALUES (gen_random_uuid(), $1, $2, 'a', 'brief', 'p', 't', '{}')",
+                true,
+            ),
+            (
+                "INSERT INTO talk_threads (id, tenant_id, title) VALUES (gen_random_uuid(), $1, 't')",
+                false,
+            ),
+            (
+                "INSERT INTO credentials (tenant_id, name, nonce, ciphertext) VALUES ($1, 'k', '\\x00', '\\x00')",
+                false,
+            ),
+        ] {
+            let query = sqlx::query(sqlx::AssertSqlSafe(statement)).bind(id);
+            let query = if with_run { query.bind(run) } else { query };
+            query.execute(store.pool()).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn purging_a_tenant_deletes_only_its_rows() {
+        let store = fresh_store().await;
+        let doomed = TenantId::generate();
+        fill(&store, TenantId::DEFAULT).await;
+        fill(&store, doomed).await;
+        assert!(tenant_rows(&store, doomed).await > 0);
+        let before = tenant_rows(&store, TenantId::DEFAULT).await;
+        store.purge_tenant(doomed).await.unwrap();
+        assert_eq!(tenant_rows(&store, doomed).await, 0);
+        assert_eq!(tenant_rows(&store, TenantId::DEFAULT).await, before);
+        let (left,): (i64,) = sqlx::query_as("SELECT count(*) FROM tenants WHERE id = $1")
+            .bind(doomed.as_uuid())
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(left, 0);
+        let outside = sqlx::query("DELETE FROM run_steps")
+            .execute(store.pool())
+            .await;
+        assert!(
+            outside.is_err(),
+            "run steps stay append-only outside a purge"
+        );
     }
 
     #[tokio::test]

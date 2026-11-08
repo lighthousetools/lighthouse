@@ -239,7 +239,7 @@ mod tests {
         let key = base64::engine::general_purpose::STANDARD.encode([3u8; 32]);
         Vault::new(
             fresh_store().await,
-            TenantId::SINGLE,
+            TenantId::DEFAULT,
             &MasterKey::from_base64(&key).unwrap(),
         )
     }

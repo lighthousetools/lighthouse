@@ -233,7 +233,7 @@ mod tests {
 
     #[tokio::test]
     async fn active_rules_are_enabled_global_or_for_the_agent() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         let global = desk
             .create_rule(new("Always ask before booking", None))
             .await
@@ -281,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn rules_are_validated_changed_and_deleted() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         assert!(desk.create_rule(new(" ", None)).await.is_err());
         assert!(desk.create_rule(new("x", Some("Bad ID"))).await.is_err());
         let rule = desk

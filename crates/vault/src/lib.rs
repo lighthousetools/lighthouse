@@ -203,7 +203,7 @@ mod tests {
 
     #[tokio::test]
     async fn stores_reads_replaces_and_deletes() {
-        let vault = Vault::new(fresh_store().await, TenantId::SINGLE, &key(1));
+        let vault = Vault::new(fresh_store().await, TenantId::DEFAULT, &key(1));
         assert!(vault.get("anthropic").await.unwrap().is_none());
         vault.put("anthropic", &secret("first")).await.unwrap();
         vault.put("anthropic", &secret("second")).await.unwrap();
@@ -225,7 +225,7 @@ mod tests {
     #[tokio::test]
     async fn values_are_not_stored_in_plain_text() {
         let store = fresh_store().await;
-        let vault = Vault::new(store.clone(), TenantId::SINGLE, &key(1));
+        let vault = Vault::new(store.clone(), TenantId::DEFAULT, &key(1));
         vault
             .put("anthropic", &secret("very-secret-value"))
             .await
@@ -240,11 +240,11 @@ mod tests {
     #[tokio::test]
     async fn wrong_key_fails_without_leaking() {
         let store = fresh_store().await;
-        Vault::new(store.clone(), TenantId::SINGLE, &key(1))
+        Vault::new(store.clone(), TenantId::DEFAULT, &key(1))
             .put("anthropic", &secret("value"))
             .await
             .unwrap();
-        let error = Vault::new(store, TenantId::SINGLE, &key(2))
+        let error = Vault::new(store, TenantId::DEFAULT, &key(2))
             .get("anthropic")
             .await
             .unwrap_err();
@@ -254,7 +254,7 @@ mod tests {
     #[tokio::test]
     async fn ciphertext_is_bound_to_its_entry() {
         let store = fresh_store().await;
-        let vault = Vault::new(store.clone(), TenantId::SINGLE, &key(1));
+        let vault = Vault::new(store.clone(), TenantId::DEFAULT, &key(1));
         vault.put("anthropic", &secret("value")).await.unwrap();
         sqlx::query("UPDATE credentials SET name = 'openai'")
             .execute(store.pool())

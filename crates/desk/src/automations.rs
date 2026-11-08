@@ -38,7 +38,7 @@ mod tests {
 
     #[tokio::test]
     async fn switches_override_and_change() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         assert!(desk.automation_switches().await.unwrap().is_empty());
         desk.set_automation_enabled("follow-up", false)
             .await

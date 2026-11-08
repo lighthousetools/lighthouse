@@ -160,7 +160,7 @@ async fn vault(config: &Config) -> anyhow::Result<Vault> {
         (None, Some(path)) => MasterKey::from_file(path)?,
         (None, None) => bail!("configure vault.master_key_file or vault.master_key"),
     };
-    Ok(Vault::new(store(config).await?, TenantId::SINGLE, &key))
+    Ok(Vault::new(store(config).await?, TenantId::DEFAULT, &key))
 }
 
 fn read_secret(name: &str) -> anyhow::Result<SecretString> {
@@ -460,7 +460,7 @@ fn print_detail(detail: &RunDetail) {
 }
 
 async fn runs(config: &Config, command: RunsCommand) -> anyhow::Result<()> {
-    let audit = AuditLog::new(store(config).await?, TenantId::SINGLE);
+    let audit = AuditLog::new(store(config).await?, TenantId::DEFAULT);
     match command {
         RunsCommand::List { limit } => {
             for run in audit.list_runs(limit).await? {

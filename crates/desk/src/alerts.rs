@@ -489,7 +489,7 @@ mod tests {
 
     #[tokio::test]
     async fn alerts_keep_their_value_and_a_timeline() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         let failing = || NewAlert {
             value: Some(1.0),
             unit: Some(FAILURES.to_owned()),
@@ -536,7 +536,7 @@ mod tests {
 
     #[tokio::test]
     async fn repeats_count_up_escalate_and_reopen_after_resolution() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         let first = desk
             .raise_alert(problem("connector:linear", Severity::Warning))
             .await
@@ -605,7 +605,7 @@ mod tests {
 
     #[tokio::test]
     async fn views_and_counts_follow_the_status() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         let critical = desk
             .raise_alert(problem("a", Severity::Critical))
             .await

@@ -142,7 +142,7 @@ pub fn node_permission() -> serde_json::Value {
 
 /// Adds the demo data, unless it is there already.
 pub async fn seed(store: &Store, brain_dir: &Path) -> anyhow::Result<Seeded> {
-    let tenant = TenantId::SINGLE;
+    let tenant = TenantId::DEFAULT;
     let sync = SyncStore::new(store.clone(), tenant);
     if !sync.organizations().await?.is_empty() {
         return Ok(Seeded::AlreadyThere);
@@ -518,7 +518,7 @@ mod tests {
             seed(&store, brain.path()).await.unwrap(),
             Seeded::AlreadyThere
         );
-        let desk = Desk::new(store.clone(), TenantId::SINGLE);
+        let desk = Desk::new(store.clone(), TenantId::DEFAULT);
         let today = Utc::now().date_naive();
         assert_eq!(desk.tasks(TaskView::All, today, 50).await.unwrap().len(), 5);
         let alerts = desk.alerts(AlertView::Active, 10).await.unwrap();
@@ -534,9 +534,9 @@ mod tests {
             .map(|event| event.kind.as_str())
             .collect();
         assert_eq!(kinds, ["raised", "seen", "escalated", "acknowledged"]);
-        let sync = SyncStore::new(store.clone(), TenantId::SINGLE);
+        let sync = SyncStore::new(store.clone(), TenantId::DEFAULT);
         assert_eq!(sync.organizations().await.unwrap().len(), 2);
-        let brain = Brain::new(store, TenantId::SINGLE, brain.path().to_path_buf()).unwrap();
+        let brain = Brain::new(store, TenantId::DEFAULT, brain.path().to_path_buf()).unwrap();
         assert_eq!(brain.list(Some("deck"), 5).await.unwrap().len(), 1);
     }
 }

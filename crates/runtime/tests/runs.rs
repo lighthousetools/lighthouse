@@ -101,8 +101,8 @@ struct Fixture {
 
 async fn fixture(script: Vec<ChatResponse>, fail_delivery: bool) -> Fixture {
     let store = fresh_store().await;
-    let audit = AuditLog::new(store.clone(), TenantId::SINGLE);
-    let desk = Desk::new(store, TenantId::SINGLE);
+    let audit = AuditLog::new(store.clone(), TenantId::DEFAULT);
+    let desk = Desk::new(store, TenantId::DEFAULT);
     let provider = Arc::new(MockProvider::new(script));
     let mut router = Router::default();
     let model = ModelConfig {

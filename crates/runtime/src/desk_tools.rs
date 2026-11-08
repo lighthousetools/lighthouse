@@ -247,9 +247,9 @@ mod tests {
     #[tokio::test]
     async fn agents_propose_tasks_and_facts_for_the_owner() {
         let store = fresh_store().await;
-        let desk = Desk::new(store.clone(), TenantId::SINGLE);
+        let desk = Desk::new(store.clone(), TenantId::DEFAULT);
         let run = RunId::new();
-        AuditLog::new(store, TenantId::SINGLE)
+        AuditLog::new(store, TenantId::DEFAULT)
             .start_run(run, "inbox", "manual")
             .await
             .unwrap();
@@ -320,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_run_without_a_record_still_proposes() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         let factory = DeskToolFactory::new(desk.clone(), Arc::new(Nothing));
         let host = factory
             .open(&[PROPOSE_TASK.to_owned()], RunId::new())

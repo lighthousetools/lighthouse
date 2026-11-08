@@ -7,13 +7,26 @@ pub mod proposal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Identifies a tenant. Every table carries this ID, even in single mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Identifies a tenant. Every table carries this ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TenantId(Uuid);
 
 impl TenantId {
-    /// The only tenant in single mode.
-    pub const SINGLE: Self = Self(Uuid::nil());
+    /// The default tenant, created by the first migration. Instances of the
+    /// single-user versions keep all their data here, and the admin token acts
+    /// in it. Request paths never use it directly: they use the tenant of the
+    /// caller's token.
+    pub const DEFAULT: Self = Self(Uuid::nil());
+
+    /// Wraps a stored tenant ID.
+    pub const fn from_uuid(id: Uuid) -> Self {
+        Self(id)
+    }
+
+    /// Creates the ID of a new tenant.
+    pub fn generate() -> Self {
+        Self(Uuid::now_v7())
+    }
 
     /// Returns the underlying UUID.
     pub const fn as_uuid(self) -> Uuid {
@@ -53,8 +66,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn single_tenant_is_stable() {
-        assert_eq!(TenantId::SINGLE.as_uuid(), Uuid::nil());
+    fn the_default_tenant_is_stable() {
+        assert_eq!(TenantId::DEFAULT.as_uuid(), Uuid::nil());
+        let id = TenantId::generate();
+        assert_eq!(TenantId::from_uuid(id.as_uuid()), id);
+        assert_ne!(id, TenantId::DEFAULT);
     }
 
     #[test]

@@ -42,7 +42,7 @@ mod tests {
 
     #[tokio::test]
     async fn settings_are_stored_and_replaced() {
-        let desk = Desk::new(fresh_store().await, TenantId::SINGLE);
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
         assert_eq!(desk.setting::<Value>("budget").await.unwrap(), None);
         desk.set_setting("budget", &json!({"monthly_eur": 20}))
             .await

@@ -29,7 +29,7 @@ flowchart LR
 | `lighthouse-store` | Postgres connection and migrations |
 | `lighthouse-vault` | Encrypted credentials |
 | `lighthouse-audit` | Append-only log of runs and steps, approvals and paused runs |
-| `lighthouse-auth` | Sign-in of the owner and device tokens |
+| `lighthouse-auth` | Users, tenants, memberships, invitations and device tokens |
 | `lighthouse-desk` | The owner's tasks, rules, memory, alerts and briefing documents |
 | `lighthouse-sessions` | Desktop agents, Claude Code sessions and permission requests |
 | `lighthouse-node` | Desktop agent, see [desktop-agent.md](desktop-agent.md) |

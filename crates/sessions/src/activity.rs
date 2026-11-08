@@ -270,7 +270,7 @@ mod tests {
 
     #[tokio::test]
     async fn events_files_todos_and_messages_of_a_session() {
-        let sessions = Sessions::new(fresh_store().await, TenantId::SINGLE);
+        let sessions = Sessions::new(fresh_store().await, TenantId::DEFAULT);
         let node = Uuid::now_v7();
         let report = NodeReport {
             name: "laptop".to_owned(),

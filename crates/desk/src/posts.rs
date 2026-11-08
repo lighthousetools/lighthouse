@@ -948,7 +948,7 @@ mod tests {
     use serde_json::json;
 
     async fn desk() -> Desk {
-        Desk::new(fresh_store().await, TenantId::SINGLE)
+        Desk::new(fresh_store().await, TenantId::DEFAULT)
     }
 
     #[tokio::test]
