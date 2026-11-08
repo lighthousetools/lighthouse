@@ -507,6 +507,10 @@ impl Accounts {
             account.password,
         )
         .await?;
+        sqlx::query("UPDATE users SET verification_required = true WHERE id = $1")
+            .bind(user.id)
+            .execute(&mut *transaction)
+            .await?;
         let tenant = TenantId::from_uuid(Uuid::now_v7());
         sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, $2)")
             .bind(tenant.as_uuid())
@@ -742,6 +746,31 @@ impl Accounts {
         .execute(self.pool())
         .await?;
         Ok(token)
+    }
+
+    /// Whether a user signed up themselves and has not confirmed the email
+    /// address yet. Instances that require confirmed addresses refuse their
+    /// sign-in until then.
+    pub async fn needs_verification(&self, user: Uuid) -> Result<bool, AuthError> {
+        let row: Option<(bool,)> = sqlx::query_as(
+            "SELECT verification_required AND email_verified_at IS NULL FROM users WHERE id = $1",
+        )
+        .bind(user)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(row.is_some_and(|(needed,)| needed))
+    }
+
+    /// Counts a request for a new verification mail, limited like sign-ups
+    /// per key, such as a client address or an email address. Returns whether
+    /// the request may go ahead.
+    pub fn verification_mail_allowed(&self, key: &str) -> bool {
+        let key = format!("verify:{key}");
+        if !self.signups.allowed(&key) {
+            return false;
+        }
+        self.signups.hit(&key);
+        true
     }
 
     /// Confirms an email address with a token from [`Self::email_verification`].
@@ -1198,6 +1227,23 @@ pub(crate) mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn only_people_who_signed_up_need_to_confirm_their_address() {
+        let (accounts, owner) = accounts().await;
+        assert!(!accounts.needs_verification(owner).await.unwrap());
+        assert!(!accounts.needs_verification(Uuid::nil()).await.unwrap());
+        let (sam, _) = signup(&accounts, "sam@example.com").await;
+        assert!(accounts.needs_verification(sam.id).await.unwrap());
+        let token = accounts.email_verification(sam.id).await.unwrap();
+        accounts.verify_email(token.expose_secret()).await.unwrap();
+        assert!(!accounts.needs_verification(sam.id).await.unwrap());
+        for _ in 0..MAX_SIGNUPS {
+            assert!(accounts.verification_mail_allowed("ip:1"));
+        }
+        assert!(!accounts.verification_mail_allowed("ip:1"));
+        assert!(accounts.verification_mail_allowed("ip:2"));
     }
 
     #[tokio::test]

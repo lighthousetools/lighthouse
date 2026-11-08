@@ -1,7 +1,7 @@
 //! HTTP API of the server.
 //!
-//! Only `/health`, `/openapi.json`, sign-in, sign-up, invitations and the OAuth
-//! callback are public. Everything else needs a device token or the admin
+//! Only `/health`, `/openapi.json`, sign-in, sign-up, email verification,
+//! invitations and the OAuth callback are public. Everything else needs a device token or the admin
 //! token, because runs and reports contain private data. A device token
 //! belongs to one user and is bound to one tenant; every request works in that
 //! tenant only. Setting the first password needs the admin token.
@@ -35,6 +35,7 @@ pub use approvals::{BatchDecision, BatchResult, Decision};
 pub use auth::{
     AcceptRequest, AuthStatus, Caller, CredentialValue, InvitationInfo, LinkToken, LoginRequest,
     PasswordChange, SetupRequest, SignupRequest, TENANT_HEADER, TokenIssued, TokenRequest,
+    VerificationRequest,
 };
 pub use automations::{
     AutomationDraftRequest, AutomationDryRun, AutomationInfo, AutomationRuns, AutomationStepInfo,
@@ -193,6 +194,9 @@ pub struct Instance {
     pub admin_token: Option<SecretString>,
     /// Who may create an account.
     pub signup: SignupMode,
+    /// Whether people who signed up themselves must confirm their email
+    /// address before they sign in.
+    pub require_verified_email: bool,
     /// Sends verification and invitation mails, if mail is configured.
     pub mailer: Option<Arc<dyn lighthouse_notify::Mailer>>,
     /// Texts of the verification and invitation mails.
@@ -600,7 +604,7 @@ impl utoipa::Modify for SecurityAddon {
         health, events, list_runs, get_run, run_agent, connect,
         auth::status, auth::setup, auth::login, auth::issue_token, auth::logout,
         auth::devices, auth::revoke_device, auth::signup, auth::verify_email,
-        auth::resend_verification, auth::change_password, auth::invitation, auth::accept,
+        auth::resend_verification, auth::request_verification, auth::change_password, auth::invitation, auth::accept,
         tenants::me, tenants::update_me, tenants::delete_me, tenants::list, tenants::create,
         tenants::switch, tenants::accept, tenants::current, tenants::update, tenants::delete,
         tenants::members, tenants::change_role, tenants::remove_member, tenants::invitations,
@@ -651,7 +655,7 @@ impl utoipa::Modify for SecurityAddon {
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
         AuthStatus, SetupRequest, LoginRequest, TokenRequest, TokenIssued, CredentialValue,
-        Device, DeviceKind, SignupMode, SignupRequest, PasswordChange, LinkToken, InvitationInfo,
+        Device, DeviceKind, SignupMode, SignupRequest, PasswordChange, LinkToken, VerificationRequest, InvitationInfo,
         AcceptRequest, MePatch, Confirmation, NewTenant, SwitchRequest, AcceptInvitation,
         TenantPatch, TenantInfo, RoleChange, InviteRequest, InvitationCreated, Role, Tenant,
         Membership, Member, Invitation, User, Approval, Decision, BatchDecision, BatchResult,
@@ -997,6 +1001,7 @@ pub fn router_with(state: Instance, extensions: Extensions) -> Router {
         .route("/auth/login", post(auth::login))
         .route("/auth/signup", post(auth::signup))
         .route("/auth/verify", post(auth::verify_email))
+        .route("/auth/verify/request", post(auth::request_verification))
         .route("/auth/invitation", post(auth::invitation))
         .route("/auth/accept", post(auth::accept))
         .merge(extensions.public)
@@ -1498,6 +1503,7 @@ mod tests {
             oauth: state.oauth.clone(),
             admin_token: token.map(|token| SecretString::from(token.to_owned())),
             signup,
+            require_verified_email: false,
             mailer,
             mail_templates: Arc::new(hooks::EnglishMails),
             public_url: "https://lighthouse.test".to_owned(),

@@ -113,3 +113,4 @@ path = "brain"
 # signup = "closed"            # closed, invite or open
 # allow_instance_keys = true   # tenants without own provider keys use the instance keys
 # data_dir = "tenants"         # Brain and created files of further tenants
+# require_verified_email = false  # people who sign up confirm their address before they sign in

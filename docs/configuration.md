@@ -116,6 +116,7 @@ Credentials can also be managed through `/credentials`. The API accepts values b
 | `signup` | `closed` | `closed`: nobody signs up and nobody is invited, as in a single-user install. `invite`: owners and admins invite people by email. `open`: anyone signs up and owns a new tenant; invitations work too |
 | `allow_instance_keys` | `true` | Tenants without their own key of a model provider use the instance's key, the one stored in the default tenant's vault (`lht keys set anthropic`). Hosted instances set `false`, so every tenant brings its own key through `PUT /credentials/<provider>` |
 | `data_dir` | `tenants` | One subdirectory per further tenant for its Brain and the agents and automations created in the apps. The default tenant keeps `[brain] path` and the `[paths]` directories |
+| `require_verified_email` | `false` | People who signed up themselves must confirm their email address before they sign in. Sign-up then answers 202 without a token, and `POST /auth/login` answers 403 until the link in the mail was opened; `POST /auth/verify/request` sends a new one. The configured owner and invited people are not affected, and devices signed in before stay signed in. Needs mail; the server does not start without it |
 
 `server.trust_forwarded_for` (default `false`) counts the first address of `X-Forwarded-For` as the client for rate
 limits. Turn it on only behind a reverse proxy that sets this header.

@@ -1206,6 +1206,14 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
 /// Connects everything described by the configuration, with the hooks and
 /// routes of another program.
 pub async fn build_with(config: Config, hooks: Hooks) -> anyhow::Result<App> {
+    if config.tenancy.require_verified_email
+        && hooks.mailer.is_none()
+        && config.delivery.smtp.is_none()
+    {
+        anyhow::bail!(
+            "tenancy.require_verified_email needs mail: configure [delivery.smtp] or pass a mailer"
+        );
+    }
     let config = Arc::new(config);
     let store = Store::connect(config.database.url.expose_secret())
         .await
@@ -1265,6 +1273,7 @@ pub async fn build_with(config: Config, hooks: Hooks) -> anyhow::Result<App> {
         oauth: shared.oauth.clone(),
         admin_token: config.server.admin_token.clone(),
         signup: signup_mode(config.tenancy.signup),
+        require_verified_email: config.tenancy.require_verified_email,
         mailer,
         mail_templates: hooks.mail_templates,
         public_url: config.server.public_url.trim_end_matches('/').to_owned(),
@@ -1289,6 +1298,21 @@ pub async fn build_with(config: Config, hooks: Hooks) -> anyhow::Result<App> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn confirmed_addresses_need_mail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lighthouse.toml");
+        let toml = "[server]\nbind = \"127.0.0.1:0\"\npublic_url = \"https://lighthouse.test\"\n\
+                    [database]\nurl = \"postgres://nowhere.invalid/none\"\n[vault]\n\
+                    [owner]\nname = \"Alex\"\nemail = \"alex@example.com\"\n\
+                    [providers]\n[routing]\n[tenancy]\nrequire_verified_email = true\n";
+        std::fs::write(&path, toml).unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(config.delivery.smtp.is_none());
+        let error = build_with(config, Hooks::default()).await.err().unwrap();
+        assert!(error.to_string().contains("needs mail"), "{error}");
+    }
 
     #[test]
     fn model_routes_come_from_routing_and_providers() {

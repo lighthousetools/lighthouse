@@ -243,7 +243,21 @@ pub struct AuthStatus {
     /// Whether `POST /auth/login` needs an email address because the instance
     /// has several users.
     pub email_required: bool,
+    /// Whether people who signed up must confirm their email address before
+    /// they sign in.
+    #[serde(default)]
+    pub verification_required: bool,
 }
+
+/// A request for a new verification mail, before signing in.
+#[derive(Deserialize, ToSchema)]
+pub struct VerificationRequest {
+    /// The email address of the account.
+    pub email: String,
+}
+
+const CONFIRM_FIRST: &str = "confirm your email address first: open the link in the mail we sent, \
+     or ask for a new one with POST /auth/verify/request";
 
 /// A new password set by an administrator.
 #[derive(Deserialize, ToSchema)]
@@ -362,6 +376,7 @@ pub(crate) async fn status(State(instance): State<Instance>) -> Result<Json<Auth
         setup_required: !set_up && instance.signup != SignupMode::Open,
         signup: instance.signup,
         email_required: users > 1,
+        verification_required: instance.require_verified_email,
     }))
 }
 
@@ -402,7 +417,7 @@ pub(crate) async fn setup(
         (status = 200, body = TokenIssued),
         (status = 400, description = "Email address required"),
         (status = 401, description = "Wrong email or password"),
-        (status = 403, description = "Not a member of the requested tenant"),
+        (status = 403, description = "Not a member of the requested tenant, or the email address is not confirmed yet"),
         (status = 429, description = "Too many failed attempts")
     )
 )]
@@ -423,6 +438,15 @@ pub(crate) async fn login(
         })
         .await
         .map_err(auth_error)?;
+    if instance.require_verified_email
+        && instance
+            .accounts
+            .needs_verification(user.id)
+            .await
+            .map_err(auth_error)?
+    {
+        return Err(ApiError(StatusCode::FORBIDDEN, CONFIRM_FIRST.to_owned()));
+    }
     let tenant = match request.tenant_id {
         Some(tenant) => TenantId::from_uuid(tenant),
         None => instance
@@ -470,7 +494,7 @@ pub(crate) async fn send_verification(instance: &Instance, user: &User) {
     request_body = SignupRequest,
     responses(
         (status = 201, body = TokenIssued),
-        (status = 202, description = "Nothing created yet, for example while the sign-up waits for approval"),
+        (status = 202, description = "No token yet: the sign-up waits for approval, or the account waits for its confirmed email address"),
         (status = 400, description = "Invalid email, name or password"),
         (status = 403, description = "Sign-up is not open"),
         (status = 409, description = "Email address taken"),
@@ -517,6 +541,12 @@ pub(crate) async fn signup(
         .map_err(auth_error)?;
     instance.lifecycle.on_tenant_created(tenant, user.id).await;
     send_verification(&instance, &user).await;
+    if instance.require_verified_email {
+        return Err(ApiError(
+            StatusCode::ACCEPTED,
+            "check your mail and confirm your email address, then sign in".to_owned(),
+        ));
+    }
     let issued = instance
         .accounts
         .issue(user.id, tenant, &request.device_name, request.device_kind)
@@ -569,6 +599,48 @@ pub(crate) async fn resend_verification(
         .map_err(auth_error)?
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "unknown user".to_owned()))?;
     send_verification(&instance, &user).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Sends a new verification mail before signing in. The answer is the same
+/// whether or not the address has an account, so it reveals nothing.
+#[utoipa::path(
+    post,
+    path = "/auth/verify/request",
+    request_body = VerificationRequest,
+    responses((status = 204), (status = 409, description = "No mail is configured"),
+        (status = 429, description = "Too many requests")),
+)]
+pub(crate) async fn request_verification(
+    State(instance): State<Instance>,
+    ClientAddress(client): ClientAddress,
+    Json(request): Json<VerificationRequest>,
+) -> Result<StatusCode, ApiError> {
+    if instance.mailer.is_none() {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "this instance sends no mail".to_owned(),
+        ));
+    }
+    let email = request.email.trim().to_lowercase();
+    if !instance
+        .accounts
+        .verification_mail_allowed(&format!("ip:{client}"))
+        || !instance
+            .accounts
+            .verification_mail_allowed(&format!("email:{email}"))
+    {
+        return Err(auth_error(AuthError::LockedOut));
+    }
+    if let Some(user) = instance
+        .accounts
+        .user_by_email(&email)
+        .await
+        .map_err(auth_error)?
+        && user.email_verified_at.is_none()
+    {
+        send_verification(&instance, &user).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -1524,6 +1524,139 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn people_who_signed_up_confirm_their_address_before_signing_in() {
+        let outbox = Arc::new(Outbox::default());
+        let harness = crate::tests::build_harness_tweaked(
+            Some(TOKEN),
+            None,
+            SignupMode::Open,
+            Some(outbox.clone()),
+            |instance| instance.require_verified_email = true,
+        )
+        .await;
+        let app = &harness.app;
+        let owner = signed_in(app).await;
+        let (_, body) = call(app, "GET", "/auth/status", None).await;
+        assert_eq!(json_of(&body)["verification_required"], true);
+        let (status, body) = send(
+            app,
+            "POST",
+            "/auth/signup",
+            None,
+            Some(
+                json!({"email": "sam@example.com", "name": "Sam", "password": PASSWORD,
+                        "device_name": "web", "device_kind": "web"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        assert!(json_of(&body).get("token").is_none());
+        let first = outbox.0.lock().unwrap().pop().unwrap();
+        assert_eq!(first.0, "sam@example.com");
+
+        let attempt = json!({"email": "sam@example.com", "password": PASSWORD,
+                             "device_name": "web", "device_kind": "web"});
+        let (status, body) = send(app, "POST", "/auth/login", None, Some(attempt.clone())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            json_of(&body)["error"]
+                .as_str()
+                .unwrap()
+                .contains("POST /auth/verify/request")
+        );
+
+        for email in ["SAM@example.com", "nobody@example.com", OWNER_EMAIL] {
+            let (status, _) = send(
+                app,
+                "POST",
+                "/auth/verify/request",
+                None,
+                Some(json!({"email": email})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NO_CONTENT, "{email}");
+        }
+        let sent: Vec<String> = outbox
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|m| m.0.clone())
+            .collect();
+        assert_eq!(sent, ["sam@example.com", OWNER_EMAIL]);
+        let again = outbox.0.lock().unwrap().remove(0);
+        let (status, _) = send(
+            app,
+            "POST",
+            "/auth/verify",
+            None,
+            Some(json!({"token": link_token(&again.1)})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = send(app, "POST", "/auth/login", None, Some(attempt)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (_, created) = invite(app, &owner, "robin@example.com", "member").await;
+        let robin = link_token(&outbox.0.lock().unwrap().pop().unwrap().1);
+        assert!(created["mailed"] == true && !robin.is_empty());
+        let (status, _) = send(
+            app,
+            "POST",
+            "/auth/accept",
+            None,
+            Some(
+                json!({"token": robin, "name": "Robin", "password": PASSWORD,
+                        "device_name": "web", "device_kind": "web"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let attempt = json!({"email": "robin@example.com", "password": PASSWORD,
+                             "device_name": "web", "device_kind": "web"});
+        let (status, _) = send(app, "POST", "/auth/login", None, Some(attempt)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "invited people need no confirmation"
+        );
+
+        for _ in 0..5 {
+            send(
+                app,
+                "POST",
+                "/auth/verify/request",
+                None,
+                Some(json!({"email": "x@example.com"})),
+            )
+            .await;
+        }
+        let (status, _) = send(
+            app,
+            "POST",
+            "/auth/verify/request",
+            None,
+            Some(json!({"email": "x@example.com"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn a_verification_request_needs_mail() {
+        let harness = build_harness_with(Some(TOKEN), None, SignupMode::Open, None).await;
+        let (status, _) = send(
+            &harness.app,
+            "POST",
+            "/auth/verify/request",
+            None,
+            Some(json!({"email": "sam@example.com"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+
     struct Plain;
 
     #[async_trait]

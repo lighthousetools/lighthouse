@@ -3,7 +3,7 @@
 `GET /openapi.json` describes every endpoint with its schemas. This page explains the concepts behind them.
 
 Everything except `/health`, `/openapi.json`, `/oauth/callback` and the public sign-in endpoints (`/auth/status`,
-`/auth/login`, `/auth/signup`, `/auth/verify`, `/auth/invitation` and `/auth/accept`) needs a bearer token: a device
+`/auth/login`, `/auth/signup`, `/auth/verify`, `/auth/verify/request`, `/auth/invitation` and `/auth/accept`) needs a bearer token: a device
 token or the admin token.
 
 ## Users and tenants
@@ -21,12 +21,13 @@ The admin token has no user. It acts as an owner in the default tenant, or in th
 
 | Endpoint | Body | Answer |
 |---|---|---|
-| `GET /auth/status` | | `{setup_required, signup, email_required}`: `signup` is `closed`, `invite` or `open`; `email_required` is true once the instance has more than one user |
-| `POST /auth/login` | `{email?, password, device_name, device_kind, tenant_id?}` | `TokenIssued` `{id, token, tenant_id, user_id}`. `email` may be left out while the instance has exactly one user. Without `tenant_id`, the token is bound to the user's oldest membership |
+| `GET /auth/status` | | `{setup_required, signup, email_required, verification_required}`: `signup` is `closed`, `invite` or `open`; `email_required` is true once the instance has more than one user; `verification_required` is `tenancy.require_verified_email` |
+| `POST /auth/login` | `{email?, password, device_name, device_kind, tenant_id?}` | `TokenIssued` `{id, token, tenant_id, user_id}`. `email` may be left out while the instance has exactly one user. Without `tenant_id`, the token is bound to the user's oldest membership. With `tenancy.require_verified_email`, 403 for a person who signed up and has not confirmed the email address yet |
 | `POST /auth/setup` (admin token) | `{password}` | 204. Sets the password of the first owner of the default tenant and signs out their devices |
-| `POST /auth/signup` | `{email, name, password, tenant_name?, device_name, device_kind}` | 201 with `TokenIssued`. Only while `signup = "open"`; creates the user and a new tenant they own, and sends a verification mail if mail is configured. A server with its own sign-up hook may answer 202 with `{error: <message>}` and create nothing yet, see [architecture.md](architecture.md#extension-points) |
+| `POST /auth/signup` | `{email, name, password, tenant_name?, device_name, device_kind}` | 201 with `TokenIssued`. Only while `signup = "open"`; creates the user and a new tenant they own, and sends a verification mail if mail is configured. A server with its own sign-up hook may answer 202 with `{error: <message>}` and create nothing yet, see [architecture.md](architecture.md#extension-points). With `tenancy.require_verified_email`, the account is created but the answer is 202 with `{error: <message>}` and no token: the person confirms the address, then signs in |
 | `POST /auth/verify` | `{token}` | 204. Confirms the email address with the token from the verification link |
 | `POST /auth/verify/resend` | | 204, or 409 without mail |
+| `POST /auth/verify/request` | `{email}` | 204 whether or not the address has an account. Sends a new verification mail to an account whose address is not confirmed yet, for people who cannot sign in before they confirm it. 409 without mail; limited to five per client address and per email address and hour (429) |
 | `POST /auth/password` | `{current, new}` | 204. Every other device of the user is signed out. A wrong current password is 403, so clients keep the sign-in |
 | `POST /auth/logout` | | 204. Signs out the current device |
 | `GET /auth/devices` | | The user's devices in every tenant, each with its `tenant_id` |

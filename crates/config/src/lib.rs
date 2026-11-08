@@ -137,6 +137,11 @@ pub struct TenancyConfig {
     /// directories of `[paths]` and `[brain]`.
     #[serde(default = "default_tenant_dir")]
     pub data_dir: PathBuf,
+    /// Whether people who signed up themselves must confirm their email
+    /// address before they sign in. Needs a mailer. The configured owner and
+    /// invited people are not affected.
+    #[serde(default)]
+    pub require_verified_email: bool,
 }
 
 fn default_tenant_dir() -> PathBuf {
@@ -149,6 +154,7 @@ impl Default for TenancyConfig {
             signup: SignupMode::Closed,
             allow_instance_keys: true,
             data_dir: default_tenant_dir(),
+            require_verified_email: false,
         }
     }
 }
@@ -753,14 +759,16 @@ mod tests {
             assert_eq!(config.tenancy.signup, SignupMode::Closed);
             assert!(config.tenancy.allow_instance_keys);
             assert_eq!(config.tenancy.data_dir, PathBuf::from("tenants"));
+            assert!(!config.tenancy.require_verified_email);
             assert!(!config.server.trust_forwarded_for);
         });
         let hosted = format!(
             "{EXAMPLE}\n[tenancy]\nsignup = \"open\"\nallow_instance_keys = false\n\
-             data_dir = \"/var/lib/lighthouse/tenants\"\n"
+             data_dir = \"/var/lib/lighthouse/tenants\"\nrequire_verified_email = true\n"
         );
         with_config(&hosted, |config| {
             let tenancy = config.unwrap().tenancy;
+            assert!(tenancy.require_verified_email);
             assert_eq!(tenancy.signup, SignupMode::Open);
             assert!(!tenancy.allow_instance_keys);
         });
