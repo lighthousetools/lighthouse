@@ -10,7 +10,6 @@ use lighthouse_auth::{
     AcceptAs, AuthError, DeviceKind, Invitation, Member, Membership, Role, Tenant,
 };
 use lighthouse_core::TenantId;
-use lighthouse_core::agent::Delivery;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -715,21 +714,11 @@ pub(crate) async fn invite(
         .await
         .map_err(auth_error)?
         .map_or_else(String::new, |tenant| tenant.name);
-    let mut mailed = false;
-    if let Some(mailer) = &instance.mailer {
-        let body = format!(
-            "You are invited to join {tenant_name} on Lighthouse.\n\n\
-             Accept the invitation here:\n\n{link}\n\nThe link is valid for 7 days."
-        );
-        let target = Delivery::Mail(issued.invitation.email.clone());
-        match mailer
-            .deliver(&target, &format!("Join {tenant_name} on Lighthouse"), &body)
-            .await
-        {
-            Ok(()) => mailed = true,
-            Err(error) => tracing::warn!(%error, "cannot mail the invitation"),
-        }
-    }
+    let text = instance
+        .mail_templates
+        .invitation(&issued.invitation, &tenant_name, &link)
+        .await;
+    let mailed = instance.send_mail(&issued.invitation.email, text).await;
     Ok((
         StatusCode::CREATED,
         Json(InvitationCreated {
@@ -773,31 +762,22 @@ mod tests {
     use crate::{SignupMode, TokenIssued};
     use async_trait::async_trait;
     use axum::http::StatusCode;
-    use lighthouse_core::agent::Delivery;
-    use lighthouse_notify::{Notifier, NotifyError};
+    use lighthouse_notify::{Mail, Mailer, NotifyError};
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
 
     const PASSWORD: &str = "a long enough password";
 
     #[derive(Default)]
-    struct Outbox(Mutex<Vec<(String, String)>>);
+    pub(crate) struct Outbox(pub(crate) Mutex<Vec<(String, String)>>);
 
     #[async_trait]
-    impl Notifier for Outbox {
-        async fn deliver(
-            &self,
-            target: &Delivery,
-            _subject: &str,
-            markdown: &str,
-        ) -> Result<(), NotifyError> {
-            let Delivery::Mail(address) = target else {
-                panic!("account mails go by mail");
-            };
+    impl Mailer for Outbox {
+        async fn send(&self, mail: &Mail) -> Result<(), NotifyError> {
             self.0
                 .lock()
                 .unwrap()
-                .push((address.clone(), markdown.to_owned()));
+                .push((mail.to.clone(), mail.text.clone()));
             Ok(())
         }
     }
@@ -1229,6 +1209,45 @@ mod tests {
         let robin = accept_new(app, &mail.1).await;
         let (_, body) = call(app, "GET", "/me", Some(&robin.token)).await;
         assert_eq!(json_of(&body)["role"], "admin");
+    }
+
+    struct Plain;
+
+    #[async_trait]
+    impl crate::hooks::MailTemplates for Plain {
+        async fn invitation(
+            &self,
+            _invitation: &lighthouse_auth::Invitation,
+            tenant_name: &str,
+            link: &str,
+        ) -> crate::hooks::MailText {
+            crate::hooks::MailText {
+                subject: format!("Willkommen bei {tenant_name}"),
+                text: format!("Hier entlang: {link}"),
+                html: Some("<p>Hier</p>".to_owned()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mail_templates_replace_the_texts_they_override() {
+        let outbox = Arc::new(Outbox::default());
+        let harness = crate::tests::build_harness_tweaked(
+            Some(TOKEN),
+            None,
+            SignupMode::Open,
+            Some(outbox.clone()),
+            |instance| instance.mail_templates = Arc::new(Plain),
+        )
+        .await;
+        let app = &harness.app;
+        let owner = signed_in(app).await;
+        invite(app, &owner, "robin@example.com", "member").await;
+        let (_, text) = outbox.0.lock().unwrap().pop().unwrap();
+        assert!(text.starts_with("Hier entlang: https://lighthouse.test/#/invite?token="));
+        sign_up(app, "sam@example.com", "Studio").await;
+        let (_, text) = outbox.0.lock().unwrap().pop().unwrap();
+        assert!(text.starts_with("Hello Sam"), "the English default stays");
     }
 
     #[tokio::test]

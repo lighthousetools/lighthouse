@@ -120,7 +120,8 @@ Credentials can also be managed through `/credentials`. The API accepts values b
 `server.trust_forwarded_for` (default `false`) counts the first address of `X-Forwarded-For` as the client for rate
 limits. Turn it on only behind a reverse proxy that sets this header.
 
-Verification and invitation mails go through `[delivery.smtp]` with the `smtp` password of the default tenant's vault.
+Verification and invitation mails go through `[delivery.smtp]` with the `smtp` password of the default tenant's vault,
+or through the mailer of a program built on the crates (see [architecture.md](architecture.md#extension-points)).
 Without SMTP, no verification mail is sent, and `POST /tenant/invitations` returns the accept link to the inviting
 admin instead, to pass on in another way.
 

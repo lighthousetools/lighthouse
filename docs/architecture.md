@@ -143,6 +143,8 @@ with `lighthouse_server::build_with(config, hooks)` and serve the returned route
 |---|---|---|---|
 | `lifecycle` | `lighthouse_api::hooks::Lifecycle` | `NoHooks` | `on_signup` before an account is created; it may allow, reject (403) or hold the sign-up (202, nothing created). `on_tenant_created` after sign-up and `POST /tenants`, `on_tenant_deleted` after a tenant is deleted |
 | `entitlements` | `lighthouse_api::hooks::Entitlements` | `AllowAll` | Before a user creates another tenant, before an invitation, and before every agent run, by hand, from a task, from Talk or on a schedule. A refusal answers 403, or 409 for runs; scheduled runs are skipped and logged |
+| `mailer` | `lighthouse_notify::Mailer` | `SmtpMailer` from `[delivery.smtp]`, or none | Every mail of the server goes through it: email verification, invitations and reports delivered to `mail:` targets. A `Mail` has a recipient, a subject, a plain text body and an optional HTML body |
+| `mail_templates` | `lighthouse_api::hooks::MailTemplates` | `EnglishMails` | Writes the subject and bodies of the verification and invitation mails. Every method has an English default, so an implementation overrides only the mails it changes, for example to translate them |
 | `routes` | `lighthouse_api::Extensions` | none | `public` routes are merged as they are; `signed_in` routes sit behind the sign-in and can extract `Caller` (user, tenant, role) and `Scoped` (the tenant's state), with `Instance` (accounts and the store) as router state |
 
 The defaults allow everything, which is how `lighthouse-server` runs.

@@ -931,6 +931,20 @@ impl lighthouse_api::hooks::Entitlements for Gate {
     }
 }
 
+#[derive(Default)]
+struct Outbox(std::sync::Mutex<Vec<lighthouse_notify::Mail>>);
+
+#[async_trait::async_trait]
+impl lighthouse_notify::Mailer for Outbox {
+    async fn send(
+        &self,
+        mail: &lighthouse_notify::Mail,
+    ) -> Result<(), lighthouse_notify::NotifyError> {
+        self.0.lock().unwrap().push(mail.clone());
+        Ok(())
+    }
+}
+
 async fn whoami(caller: lighthouse_api::Caller) -> String {
     caller.tenant.as_uuid().to_string()
 }
@@ -942,10 +956,13 @@ async fn another_program_adds_hooks_limits_and_routes() {
         public: axum::Router::new().route("/ext/ping", route_get(|| async { "pong" })),
         signed_in: axum::Router::new().route("/ext/whoami", route_get(whoami)),
     };
+    let outbox = Arc::new(Outbox::default());
     let hooks = lighthouse_server::Hooks {
         lifecycle: Arc::new(Gate),
         entitlements: Arc::new(Gate),
         routes,
+        mailer: Some(outbox.clone()),
+        ..lighthouse_server::Hooks::default()
     };
     let (base, _dir, _database) = start_with_hooks(
         "[tenancy]\nsignup = \"open\"\ndata_dir = \"{dir}/tenants\"\n",
@@ -971,6 +988,9 @@ async fn another_program_adds_hooks_limits_and_routes() {
         .await
         .unwrap();
     let token = issued["token"].as_str().unwrap();
+    let verification = outbox.0.lock().unwrap().pop().unwrap();
+    assert_eq!(verification.to, "sam@example.com");
+    assert!(verification.text.contains("/#/verify?token="));
 
     let ping = client.get(format!("{base}/ext/ping")).send().await.unwrap();
     assert_eq!(ping.text().await.unwrap(), "pong");

@@ -4,7 +4,9 @@ use anyhow::Context;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
-use lighthouse_api::hooks::{Action, AllowAll, Entitlements, Lifecycle, NoHooks};
+use lighthouse_api::hooks::{
+    Action, AllowAll, EnglishMails, Entitlements, Lifecycle, MailTemplates, NoHooks,
+};
 use lighthouse_api::{
     AgentChangeError, AgentInfo, AgentTool, ApiState, AskAnswer, Assistant, Catalog, ConnectorInfo,
     Extensions, Instance, ModelRoute, RunTrigger, SignupMode, SkillInfo, TriggerError,
@@ -17,7 +19,7 @@ use lighthouse_core::agent::{AgentDefinition, Delivery, ToolLevel, Trigger, pars
 use lighthouse_core::{RunId, TenantId};
 use lighthouse_desk::Desk;
 use lighthouse_mcp::{McpConnector, OAuthFlows, ToolHostFactory, ToolPolicy};
-use lighthouse_notify::{ChannelNotifier, EventBus};
+use lighthouse_notify::{ChannelNotifier, EventBus, Mailer, SmtpMailer};
 use lighthouse_router::media::OpenAiMedia;
 use lighthouse_runtime::{
     AgentRegistry, AutomationRegistry, DeskToolFactory, LoadedAgent, RegistryError, Runtime,
@@ -675,6 +677,8 @@ struct Shared {
     /// One set of OAuth flows serves every tenant, so the callback finds each flow.
     oauth: Arc<OAuthFlows>,
     entitlements: Arc<dyn Entitlements>,
+    /// Sends every mail of the instance, if mail is configured.
+    mailer: Option<Arc<dyn Mailer>>,
 }
 
 impl Shared {
@@ -987,8 +991,9 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
     }
     let desk = Desk::new(store.clone(), tenant);
     let events = EventBus::new();
+    // Mail goes through the instance's mailer, so SMTP is not set up again here.
     let delivery = lighthouse_config::DeliveryConfig {
-        smtp: config.delivery.smtp.clone(),
+        smtp: None,
         slack_channels: config.delivery.slack_channels.clone(),
     };
     let brain = open_brain(shared, tenant, paths.brain, &vault)?;
@@ -1015,11 +1020,17 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         policy: ToolPolicy::new(&config.connectors),
         skills: SkillLibrary::load(&config.paths.skills)?,
         audit: audit.clone(),
-        notifier: Arc::new(ChannelNotifier::with_vaults(
-            delivery,
-            vault.clone(),
-            shared.vault(TenantId::DEFAULT),
-        )?),
+        notifier: Arc::new({
+            let notifier = ChannelNotifier::with_vaults(
+                delivery,
+                vault.clone(),
+                shared.vault(TenantId::DEFAULT),
+            )?;
+            match &shared.mailer {
+                Some(mailer) => notifier.with_mailer(mailer.clone()),
+                None => notifier,
+            }
+        }),
         owner_context: owner_context(&owner),
         owner_email: owner.email.clone(),
         zone,
@@ -1162,6 +1173,11 @@ pub struct Hooks {
     pub entitlements: Arc<dyn Entitlements>,
     /// Extra routes, public and behind the sign-in.
     pub routes: Extensions,
+    /// Sends every mail of the server: verification, invitations and reports
+    /// to `mail:` targets. Without one, `[delivery.smtp]` is used if set.
+    pub mailer: Option<Arc<dyn Mailer>>,
+    /// Texts of the verification and invitation mails.
+    pub mail_templates: Arc<dyn MailTemplates>,
 }
 
 impl Default for Hooks {
@@ -1170,6 +1186,8 @@ impl Default for Hooks {
             lifecycle: Arc::new(NoHooks),
             entitlements: Arc::new(AllowAll),
             routes: Extensions::default(),
+            mailer: None,
+            mail_templates: Arc::new(EnglishMails),
         }
     }
 }
@@ -1201,8 +1219,17 @@ pub async fn build_with(config: Config, hooks: Hooks) -> anyhow::Result<App> {
         .await
         .context("cannot create the first user from the configured owner")?;
     let policy = ToolPolicy::new(&config.connectors);
+    let key = master_key(&config)?;
+    let mailer: Option<Arc<dyn Mailer>> = match (hooks.mailer, &config.delivery.smtp) {
+        (Some(mailer), _) => Some(mailer),
+        (None, Some(smtp)) => Some(Arc::new(SmtpMailer::from_config(
+            smtp.clone(),
+            Vault::new(store.clone(), TenantId::DEFAULT, &key),
+        )?)),
+        (None, None) => None,
+    };
     let shared = Arc::new(Shared {
-        key: master_key(&config)?,
+        key,
         config: config.clone(),
         store,
         zone,
@@ -1213,6 +1240,7 @@ pub async fn build_with(config: Config, hooks: Hooks) -> anyhow::Result<App> {
             &config.server.public_url,
         )),
         entitlements: hooks.entitlements.clone(),
+        mailer: mailer.clone(),
     });
     let configured_owner = shared.owner(TenantId::DEFAULT).await?;
     resolve_sources(&config, &shared.policy, &configured_owner)?;
@@ -1225,16 +1253,6 @@ pub async fn build_with(config: Config, hooks: Hooks) -> anyhow::Result<App> {
         .open(TenantId::DEFAULT)
         .await
         .context("cannot open the default tenant")?;
-    let mailer: Option<Arc<dyn lighthouse_notify::Notifier>> = match &config.delivery.smtp {
-        Some(smtp) => Some(Arc::new(ChannelNotifier::from_config(
-            lighthouse_config::DeliveryConfig {
-                smtp: Some(smtp.clone()),
-                slack_channels: Vec::new(),
-            },
-            shared.vault(TenantId::DEFAULT),
-        )?)),
-        None => None,
-    };
     let router = lighthouse_api::router_with(
         Instance {
             accounts,
@@ -1243,6 +1261,7 @@ pub async fn build_with(config: Config, hooks: Hooks) -> anyhow::Result<App> {
             admin_token: config.server.admin_token.clone(),
             signup: signup_mode(config.tenancy.signup),
             mailer,
+            mail_templates: hooks.mail_templates,
             public_url: config.server.public_url.trim_end_matches('/').to_owned(),
             trust_forwarded_for: config.server.trust_forwarded_for,
             lifecycle: hooks.lifecycle,

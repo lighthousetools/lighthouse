@@ -91,7 +91,7 @@ use lighthouse_desk::{
     NewTask, Origin, Rule, RulePatch, SourceLink, Task, TaskPatch, TaskStatus, TaskView,
 };
 use lighthouse_mcp::{McpError, OAuthFlows};
-use lighthouse_notify::{EventBus, Notifier};
+use lighthouse_notify::EventBus;
 use lighthouse_sessions::{
     NewPermission, Node, NodeReport, NodeState, Permission, Session, SessionReport, Sessions,
 };
@@ -194,7 +194,9 @@ pub struct Instance {
     /// Who may create an account.
     pub signup: SignupMode,
     /// Sends verification and invitation mails, if mail is configured.
-    pub mailer: Option<Arc<dyn Notifier>>,
+    pub mailer: Option<Arc<dyn lighthouse_notify::Mailer>>,
+    /// Texts of the verification and invitation mails.
+    pub mail_templates: Arc<dyn hooks::MailTemplates>,
     /// Public base URL of the apps, for links in mails.
     pub public_url: String,
     /// Whether the first address in `X-Forwarded-For` is the client, behind a
@@ -204,6 +206,29 @@ pub struct Instance {
     pub lifecycle: Arc<dyn hooks::Lifecycle>,
     /// Limits of tenants.
     pub entitlements: Arc<dyn hooks::Entitlements>,
+}
+
+impl Instance {
+    /// Sends a mail written by the templates through the mailer. Returns
+    /// whether it went out; without a mailer, nothing is sent.
+    pub async fn send_mail(&self, to: &str, text: hooks::MailText) -> bool {
+        let Some(mailer) = &self.mailer else {
+            return false;
+        };
+        let mail = lighthouse_notify::Mail {
+            to: to.to_owned(),
+            subject: text.subject,
+            text: text.text,
+            html: text.html,
+        };
+        match mailer.send(&mail).await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%error, "cannot send a mail");
+                false
+            }
+        }
+    }
 }
 
 /// The state of the caller's tenant, as the authentication put it into the
@@ -1427,7 +1452,19 @@ mod tests {
         token: Option<&str>,
         talk_agent: Option<String>,
         signup: SignupMode,
-        mailer: Option<Arc<dyn Notifier>>,
+        mailer: Option<Arc<dyn lighthouse_notify::Mailer>>,
+    ) -> Harness {
+        build_harness_tweaked(token, talk_agent, signup, mailer, |_| {}).await
+    }
+
+    /// A harness whose instance a test changes before the router is built,
+    /// for example to install hooks.
+    pub(crate) async fn build_harness_tweaked(
+        token: Option<&str>,
+        talk_agent: Option<String>,
+        signup: SignupMode,
+        mailer: Option<Arc<dyn lighthouse_notify::Mailer>>,
+        tweak: impl FnOnce(&mut Instance),
     ) -> Harness {
         let resumed = Arc::new(Mutex::new(Vec::new()));
         let store = fresh_store().await;
@@ -1442,18 +1479,20 @@ mod tests {
             )])),
             forgotten: Mutex::default(),
         });
-        let instance = Instance {
+        let mut instance = Instance {
             accounts: accounts.clone(),
             tenants: tenants.clone(),
             oauth: state.oauth.clone(),
             admin_token: token.map(|token| SecretString::from(token.to_owned())),
             signup,
             mailer,
+            mail_templates: Arc::new(hooks::EnglishMails),
             public_url: "https://lighthouse.test".to_owned(),
             trust_forwarded_for: true,
             lifecycle: Arc::new(hooks::NoHooks),
             entitlements: Arc::new(hooks::AllowAll),
         };
+        tweak(&mut instance);
         Harness {
             app: router(instance),
             audit: state.audit.clone(),

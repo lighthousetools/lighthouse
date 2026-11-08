@@ -12,7 +12,6 @@ use lighthouse_auth::{
     AcceptAs, AuthError, Credentials, Device, DeviceKind, IssuedToken, NewAccount, Role, User,
 };
 use lighthouse_core::TenantId;
-use lighthouse_core::agent::Delivery;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -444,9 +443,9 @@ pub(crate) async fn login(
 
 /// Sends the link that confirms an email address, if mail is configured.
 pub(crate) async fn send_verification(instance: &Instance, user: &User) {
-    let Some(mailer) = &instance.mailer else {
+    if instance.mailer.is_none() {
         return;
-    };
+    }
     let token = match instance.accounts.email_verification(user.id).await {
         Ok(token) => token,
         Err(error) => {
@@ -459,18 +458,8 @@ pub(crate) async fn send_verification(instance: &Instance, user: &User) {
         instance.public_url,
         token.expose_secret()
     );
-    let body = format!(
-        "Hello {},\n\nplease confirm your email address for Lighthouse:\n\n{link}\n\n\
-         The link is valid for 48 hours.",
-        user.name
-    );
-    let target = Delivery::Mail(user.email.clone());
-    if let Err(error) = mailer
-        .deliver(&target, "Confirm your email address", &body)
-        .await
-    {
-        tracing::warn!(%error, "cannot send the email verification");
-    }
+    let text = instance.mail_templates.verification(user, &link).await;
+    instance.send_mail(&user.email, text).await;
 }
 
 /// Creates an account with its own tenant, while sign-up is open.
