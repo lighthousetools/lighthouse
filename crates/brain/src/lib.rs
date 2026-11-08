@@ -289,8 +289,9 @@ impl Brain {
         .bind(entry.updated)
         .execute(&mut *transaction)
         .await?;
-        sqlx::query("DELETE FROM brain_chunks WHERE entry_id = $1")
+        sqlx::query("DELETE FROM brain_chunks WHERE entry_id = $1 AND tenant_id = $2")
             .bind(entry.id)
+            .bind(self.tenant.as_uuid())
             .execute(&mut *transaction)
             .await?;
         for (seq, part) in parts.iter().enumerate() {
@@ -344,11 +345,12 @@ impl Brain {
                 let id: Uuid = row.get(0);
                 sqlx::query(
                     "UPDATE brain_chunks SET embedding = $1::text::vector, embedding_model = $2 \
-                     WHERE id = $3",
+                     WHERE id = $3 AND tenant_id = $4",
                 )
                 .bind(vector_literal(vector))
                 .bind(&model)
                 .bind(id)
+                .bind(self.tenant.as_uuid())
                 .execute(self.store.pool())
                 .await?;
             }
@@ -522,8 +524,9 @@ impl Brain {
             tokio::fs::remove_dir_all(&original).await?;
         }
         let mut transaction = self.store.pool().begin().await?;
-        sqlx::query("DELETE FROM brain_entries WHERE id = $1")
+        sqlx::query("DELETE FROM brain_entries WHERE id = $1 AND tenant_id = $2")
             .bind(id)
+            .bind(self.tenant.as_uuid())
             .execute(&mut *transaction)
             .await?;
         sqlx::query("INSERT INTO brain_deletions (entry_id, tenant_id) VALUES ($1, $2)")

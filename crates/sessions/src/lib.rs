@@ -287,9 +287,10 @@ impl Sessions {
         if paused && result.rows_affected() > 0 {
             sqlx::query(
                 "UPDATE permission_requests SET status = 'denied', decided_at = now() \
-                 WHERE node_id = $1 AND status = 'pending'",
+                 WHERE node_id = $1 AND tenant_id = $2 AND status = 'pending'",
             )
             .bind(node)
+            .bind(self.tenant.as_uuid())
             .execute(&mut *transaction)
             .await?;
         }
@@ -333,11 +334,13 @@ impl Sessions {
     ) -> Result<Option<Permission>, SessionError> {
         self.expire().await?;
         let query = format!(
-            "SELECT {REQUEST_COLUMNS} FROM permission_requests WHERE id = $1 AND node_id = $2"
+            "SELECT {REQUEST_COLUMNS} FROM permission_requests WHERE id = $1 AND node_id = $2 \
+             AND tenant_id = $3"
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(id)
             .bind(node)
+            .bind(self.tenant.as_uuid())
             .fetch_optional(self.store.pool())
             .await?)
     }

@@ -110,3 +110,22 @@ first owner. Members bring no mail or calendar of their own yet.
 
 Cost accounting is per tenant (`runs.tenant_id`, `run_steps.tenant_id` and the monthly budget) and per user through
 `runs.user_id` and the nodes behind Claude Code usage.
+
+### Isolation
+
+Each repository (`Desk`, `AuditLog`, `Sessions`, `SyncStore`, `Vault`, `Brain`, the scheduler) is created for one
+tenant and binds its `tenant_id` into every statement. Two checks keep it that way:
+
+- **A guard over the code:** `crates/store/tests/tenant_guard.rs` reads every SQL statement in the library code and
+  fails when one reads or writes a table with a `tenant_id` column without naming `tenant_id`. The tables come from
+  the migrations, so new tables are covered without changes. The few exceptions are listed in the test with their
+  reason, such as device tokens, which are instance-wide and found by their hash.
+- **Cross-tenant tests:** `crates/server/tests/isolation.rs` creates rows in one tenant and tries to read, change and
+  delete them by ID through the repositories of another. Every attempt must find nothing.
+
+Postgres row-level security with `SET LOCAL app.tenant_id` per transaction was considered and not chosen for now:
+the repositories run single statements on the shared pool rather than transactions, so every query would have to be
+wrapped, and background work that legitimately spans tenants (opening workspaces, deleting a tenant, the accounts
+layer) would need a second, privileged role. The guard and the tests give the same protection against the likely
+mistake, a statement that forgets its tenant, without that rewrite. Row-level security stays a later step for
+defence in depth.

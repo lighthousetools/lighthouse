@@ -324,12 +324,13 @@ impl AuditLog {
         .await?;
         sqlx::query(
             "UPDATE runs SET input_tokens = input_tokens + $1, output_tokens = output_tokens + $2,
-                             cost_eur = cost_eur + $3 WHERE id = $4",
+                             cost_eur = cost_eur + $3 WHERE id = $4 AND tenant_id = $5",
         )
         .bind(step.input_tokens as i64)
         .bind(step.output_tokens as i64)
         .bind(step.cost_eur)
         .bind(run.as_uuid())
+        .bind(self.tenant.as_uuid())
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
@@ -338,13 +339,17 @@ impl AuditLog {
 
     /// Records the end of a run.
     pub async fn finish_run(&self, run: RunId, end: RunEnd<'_>) -> Result<(), AuditError> {
-        sqlx::query("UPDATE runs SET status = $1, reason = $2, report = $3, finished_at = now() WHERE id = $4")
-            .bind(end.status.as_str())
-            .bind(end.reason)
-            .bind(end.report)
-            .bind(run.as_uuid())
-            .execute(self.store.pool())
-            .await?;
+        sqlx::query(
+            "UPDATE runs SET status = $1, reason = $2, report = $3, finished_at = now() \
+             WHERE id = $4 AND tenant_id = $5",
+        )
+        .bind(end.status.as_str())
+        .bind(end.reason)
+        .bind(end.report)
+        .bind(run.as_uuid())
+        .bind(self.tenant.as_uuid())
+        .execute(self.store.pool())
+        .await?;
         Ok(())
     }
 
@@ -530,9 +535,10 @@ impl AuditLog {
         let Some(run) = run else { return Ok(None) };
         let steps = sqlx::query_as(
             "SELECT seq, kind, name, status, detail, input_tokens, output_tokens, cost_eur, duration_ms, created_at
-             FROM run_steps WHERE run_id = $1 ORDER BY seq",
+             FROM run_steps WHERE run_id = $1 AND tenant_id = $2 ORDER BY seq",
         )
         .bind(id)
+        .bind(self.tenant.as_uuid())
         .fetch_all(self.store.pool())
         .await?;
         Ok(Some(RunDetail { run, steps }))

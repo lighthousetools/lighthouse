@@ -129,9 +129,10 @@ impl AuditLog {
             .execute(&mut *transaction)
             .await?;
         }
-        sqlx::query("UPDATE runs SET status = $1 WHERE id = $2")
+        sqlx::query("UPDATE runs SET status = $1 WHERE id = $2 AND tenant_id = $3")
             .bind(RunStatus::Waiting.as_str())
             .bind(run.as_uuid())
+            .bind(self.tenant.as_uuid())
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await?;
@@ -294,9 +295,10 @@ impl AuditLog {
         .fetch_optional(self.store.pool())
         .await?;
         if row.is_some() {
-            sqlx::query("UPDATE runs SET status = $1 WHERE id = $2")
+            sqlx::query("UPDATE runs SET status = $1 WHERE id = $2 AND tenant_id = $3")
                 .bind(RunStatus::Running.as_str())
                 .bind(run)
+                .bind(self.tenant.as_uuid())
                 .execute(self.store.pool())
                 .await?;
         }
