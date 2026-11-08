@@ -105,6 +105,10 @@ automations work for the tenant's first owner, the person whose accounts the age
 such a run reads from mail and calendar therefore stays in that person's Ready feed, briefs and recaps. Proposals a run
 makes into shared areas, such as tasks, facts or posts, are shared once they exist.
 
+Removing a member deletes their conversations, desktop agents and mail and calendar items in that tenant and signs
+out their devices there; their runs stay in the audit log. Deleting an account deletes all of this in every tenant.
+Live events go to the members of the tenant they happened in and carry IDs only, never content.
+
 Connected sources sync with the tenant's connector tokens, and their mail and calendar items belong to the tenant's
 first owner. Members bring no mail or calendar of their own yet.
 

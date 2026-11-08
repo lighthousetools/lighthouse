@@ -828,27 +828,49 @@ impl Drop for Workspace {
 /// each tenant runs in its own tasks: one failing tenant does not stop others.
 pub struct Workspaces {
     shared: Arc<Shared>,
-    open: tokio::sync::Mutex<HashMap<TenantId, Arc<Workspace>>>,
+    /// One cell per tenant, so opening one tenant does not hold up requests
+    /// to the others. A cell stays empty while opening fails.
+    open: std::sync::Mutex<HashMap<TenantId, Arc<tokio::sync::OnceCell<Arc<Workspace>>>>>,
     background: AtomicBool,
 }
 
 impl Workspaces {
     /// Returns an open tenant, or opens it. `None` if the tenant does not exist.
     pub async fn open(&self, tenant: TenantId) -> anyhow::Result<Option<Arc<Workspace>>> {
-        let mut open = self.open.lock().await;
-        if let Some(workspace) = open.get(&tenant) {
+        let cell = self
+            .open
+            .lock()
+            .expect("workspaces lock")
+            .entry(tenant)
+            .or_default()
+            .clone();
+        if let Some(workspace) = cell.get() {
             return Ok(Some(workspace.clone()));
         }
         if self.shared.accounts.tenant(tenant).await?.is_none() {
+            self.open.lock().expect("workspaces lock").remove(&tenant);
             return Ok(None);
         }
-        let workspace = Arc::new(open_tenant(&self.shared, tenant).await?);
-        if self.background.load(Ordering::SeqCst) {
-            workspace.start();
-        }
-        open.insert(tenant, workspace.clone());
-        tracing::info!(tenant = %tenant.as_uuid(), "tenant open");
-        Ok(Some(workspace))
+        let workspace = cell
+            .get_or_try_init(|| async {
+                let workspace = Arc::new(open_tenant(&self.shared, tenant).await?);
+                if self.background.load(Ordering::SeqCst) {
+                    workspace.start();
+                }
+                tracing::info!(tenant = %tenant.as_uuid(), "tenant open");
+                Ok::<_, anyhow::Error>(workspace)
+            })
+            .await?;
+        Ok(Some(workspace.clone()))
+    }
+
+    fn opened_workspaces(&self) -> Vec<Arc<Workspace>> {
+        self.open
+            .lock()
+            .expect("workspaces lock")
+            .values()
+            .filter_map(|cell| cell.get().cloned())
+            .collect()
     }
 
     /// Opens every tenant of the instance. A tenant that fails to open is
@@ -866,7 +888,7 @@ impl Workspaces {
     /// picks up new tenants once a minute.
     pub async fn run(self: Arc<Self>) {
         self.background.store(true, Ordering::SeqCst);
-        for workspace in self.open.lock().await.values() {
+        for workspace in self.opened_workspaces() {
             workspace.start();
         }
         let mut ticker = tokio::time::interval(MAINTENANCE_INTERVAL);
@@ -880,7 +902,11 @@ impl Workspaces {
 
     /// The tenants that are open now.
     pub async fn opened(&self) -> Vec<TenantId> {
-        let mut tenants: Vec<TenantId> = self.open.lock().await.keys().copied().collect();
+        let mut tenants: Vec<TenantId> = self
+            .opened_workspaces()
+            .iter()
+            .map(|workspace| workspace.tenant)
+            .collect();
         tenants.sort();
         tenants
     }
@@ -896,7 +922,8 @@ impl lighthouse_api::Tenants for Workspaces {
     }
 
     async fn forget(&self, tenant: TenantId) {
-        if let Some(workspace) = self.open.lock().await.remove(&tenant) {
+        let cell = self.open.lock().expect("workspaces lock").remove(&tenant);
+        if let Some(workspace) = cell.as_ref().and_then(|cell| cell.get()) {
             workspace.stop();
         }
         if tenant != TenantId::DEFAULT {
@@ -1139,7 +1166,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
     resolve_sources(&config, &shared.policy, &configured_owner)?;
     let workspaces = Arc::new(Workspaces {
         shared: shared.clone(),
-        open: tokio::sync::Mutex::default(),
+        open: std::sync::Mutex::default(),
         background: AtomicBool::new(false),
     });
     workspaces

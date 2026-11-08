@@ -229,14 +229,21 @@ impl Accounts {
             .bind(user)
             .execute(&mut *transaction)
             .await?;
-        sqlx::query(
+        // Their personal data in this tenant leaves with them. Runs stay in
+        // the audit log, visible to nobody but the admin token.
+        for statement in [
             "UPDATE device_tokens SET revoked_at = now() \
              WHERE tenant_id = $1 AND user_id = $2 AND revoked_at IS NULL",
-        )
-        .bind(tenant.as_uuid())
-        .bind(user)
-        .execute(&mut *transaction)
-        .await?;
+            "DELETE FROM talk_threads WHERE tenant_id = $1 AND user_id = $2",
+            "DELETE FROM nodes WHERE tenant_id = $1 AND user_id = $2",
+            "DELETE FROM synced_items WHERE tenant_id = $1 AND user_id = $2",
+        ] {
+            sqlx::query(statement)
+                .bind(tenant.as_uuid())
+                .bind(user)
+                .execute(&mut *transaction)
+                .await?;
+        }
         transaction.commit().await?;
         Ok(())
     }
@@ -328,6 +335,15 @@ mod tests {
             .issue(sam.id, own, "web", DeviceKind::Web)
             .await
             .unwrap();
+        sqlx::query(
+            "INSERT INTO talk_threads (id, tenant_id, title, user_id) VALUES ($1, $2, 'mine', $3)",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind(TenantId::DEFAULT.as_uuid())
+        .bind(sam.id)
+        .execute(accounts.pool())
+        .await
+        .unwrap();
         accounts
             .remove_member(TenantId::DEFAULT, sam.id)
             .await
@@ -350,6 +366,11 @@ mod tests {
             accounts.role(TenantId::DEFAULT, sam.id).await.unwrap(),
             None
         );
+        let (left,): (i64,) = sqlx::query_as("SELECT count(*) FROM talk_threads")
+            .fetch_one(accounts.pool())
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "their conversations leave with them");
         assert_eq!(
             accounts.members(TenantId::DEFAULT).await.unwrap()[0].user_id,
             owner
