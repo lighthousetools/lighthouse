@@ -13,6 +13,10 @@ use uuid::Uuid;
 
 const MAX_MESSAGE: usize = 20_000;
 const THREAD_COLUMNS: &str = "id, title, pinned, created_at, updated_at";
+/// Threads of the viewer, the third parameter; every thread without a viewer.
+const OWN: &str = "($3::uuid IS NULL OR user_id = $3)";
+/// The same with the viewer as the fifth parameter.
+const OWN5: &str = "($5::uuid IS NULL OR user_id = $5)";
 const MESSAGE_COLUMNS: &str = "id, thread_id, role, text, status, run_id, sources, created_at";
 
 /// A conversation.
@@ -56,12 +60,14 @@ impl Desk {
     pub async fn create_thread(&self, title: &str) -> Result<TalkThread, DeskError> {
         let title = required_text("title", title, 200)?;
         let query = format!(
-            "INSERT INTO talk_threads (id, tenant_id, title) VALUES ($1, $2, $3) RETURNING {THREAD_COLUMNS}"
+            "INSERT INTO talk_threads (id, tenant_id, title, user_id) VALUES ($1, $2, $3, $4) \
+             RETURNING {THREAD_COLUMNS}"
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(Uuid::now_v7())
             .bind(self.tenant())
             .bind(title)
+            .bind(self.viewer())
             .fetch_one(self.pool())
             .await?)
     }
@@ -69,23 +75,26 @@ impl Desk {
     /// Lists threads: pinned ones first, then by last message.
     pub async fn threads(&self, limit: i64) -> Result<Vec<TalkThread>, DeskError> {
         let query = format!(
-            "SELECT {THREAD_COLUMNS} FROM talk_threads WHERE tenant_id = $1 \
+            "SELECT {THREAD_COLUMNS} FROM talk_threads WHERE tenant_id = $1 AND {OWN} \
              ORDER BY pinned DESC, updated_at DESC LIMIT $2"
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant())
             .bind(limit)
+            .bind(self.viewer())
             .fetch_all(self.pool())
             .await?)
     }
 
     /// Returns a thread.
     pub async fn thread(&self, id: Uuid) -> Result<Option<TalkThread>, DeskError> {
-        let query =
-            format!("SELECT {THREAD_COLUMNS} FROM talk_threads WHERE tenant_id = $1 AND id = $2");
+        let query = format!(
+            "SELECT {THREAD_COLUMNS} FROM talk_threads WHERE tenant_id = $1 AND id = $2 AND {OWN}"
+        );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant())
             .bind(id)
+            .bind(self.viewer())
             .fetch_optional(self.pool())
             .await?)
     }
@@ -102,22 +111,25 @@ impl Desk {
             .transpose()?;
         let query = format!(
             "UPDATE talk_threads SET title = coalesce($3, title), pinned = coalesce($4, pinned) \
-             WHERE tenant_id = $1 AND id = $2 RETURNING {THREAD_COLUMNS}"
+             WHERE tenant_id = $1 AND id = $2 AND {OWN5} RETURNING {THREAD_COLUMNS}"
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant())
             .bind(id)
             .bind(title)
             .bind(pinned)
+            .bind(self.viewer())
             .fetch_optional(self.pool())
             .await?)
     }
 
     /// Deletes a thread with its messages. Returns whether it existed.
     pub async fn delete_thread(&self, id: Uuid) -> Result<bool, DeskError> {
-        let result = sqlx::query("DELETE FROM talk_threads WHERE tenant_id = $1 AND id = $2")
+        let query = format!("DELETE FROM talk_threads WHERE tenant_id = $1 AND id = $2 AND {OWN}");
+        let result = sqlx::query(sqlx::AssertSqlSafe(query))
             .bind(self.tenant())
             .bind(id)
+            .bind(self.viewer())
             .execute(self.pool())
             .await?;
         Ok(result.rows_affected() > 0)
@@ -289,6 +301,40 @@ mod tests {
             (message.status.as_str(), message.text.as_str()),
             ("failed", "it broke")
         );
+    }
+
+    #[tokio::test]
+    async fn conversations_are_personal() {
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
+        let mut users = Vec::new();
+        for email in ["alex@example.com", "sam@example.com"] {
+            let id = Uuid::now_v7();
+            sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, 'u')")
+                .bind(id)
+                .bind(email)
+                .execute(desk.pool())
+                .await
+                .unwrap();
+            users.push(desk.for_user(Some(id)));
+        }
+        let thread = users[0].create_thread("Mine").await.unwrap();
+        assert_eq!(users[0].threads(10).await.unwrap().len(), 1);
+        assert!(users[1].threads(10).await.unwrap().is_empty());
+        assert!(users[1].thread(thread.id).await.unwrap().is_none());
+        assert!(
+            users[1]
+                .update_thread(thread.id, Some("Taken"), None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(!users[1].delete_thread(thread.id).await.unwrap());
+        assert_eq!(
+            desk.threads(10).await.unwrap().len(),
+            1,
+            "no viewer sees all"
+        );
+        assert!(users[0].delete_thread(thread.id).await.unwrap());
     }
 
     #[tokio::test]

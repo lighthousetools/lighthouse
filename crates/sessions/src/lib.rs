@@ -152,24 +152,48 @@ pub struct Permission {
 pub struct Sessions {
     store: Store,
     tenant: TenantId,
+    viewer: Option<Uuid>,
 }
+
+/// Matches nodes the viewer may see: their own, or every node without a viewer.
+const OWN_NODE: &str = "($V::uuid IS NULL OR n.user_id = $V)";
 
 impl Sessions {
     /// Creates the storage for a tenant.
     pub fn new(store: Store, tenant: TenantId) -> Self {
-        Self { store, tenant }
+        Self {
+            store,
+            tenant,
+            viewer: None,
+        }
+    }
+
+    /// The storage as one user sees it. Desktop agents, their sessions and
+    /// permission requests are personal: a user sees only the agents signed
+    /// in with their own tokens. `None` sees every agent of the tenant.
+    pub fn for_user(&self, user: Option<Uuid>) -> Self {
+        Self {
+            viewer: user,
+            ..self.clone()
+        }
+    }
+
+    fn own_node(parameter: u8) -> String {
+        OWN_NODE.replace("$V", &format!("${parameter}"))
     }
 
     /// Stores a report of a node and returns its state.
     pub async fn report(&self, node: Uuid, report: &NodeReport) -> Result<NodeState, SessionError> {
         let mut transaction = self.store.pool().begin().await?;
         let (paused,): (bool,) = sqlx::query_as(
-            "INSERT INTO nodes (id, tenant_id, name) VALUES ($1, $2, $3) \
-             ON CONFLICT (id) DO UPDATE SET name = $3, last_seen_at = now() RETURNING paused",
+            "INSERT INTO nodes (id, tenant_id, name, user_id) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (id) DO UPDATE SET name = $3, last_seen_at = now(), \
+             user_id = coalesce(nodes.user_id, $4) RETURNING paused",
         )
         .bind(node)
         .bind(self.tenant.as_uuid())
         .bind(&report.name)
+        .bind(self.viewer)
         .fetch_one(&mut *transaction)
         .await?;
         for session in &report.sessions {
@@ -196,57 +220,71 @@ impl Sessions {
 
     /// Lists nodes by name.
     pub async fn nodes(&self) -> Result<Vec<Node>, SessionError> {
-        Ok(sqlx::query_as(
+        let query = format!(
             "SELECT id, name, paused, last_seen_at, \
              last_seen_at > now() - make_interval(secs => $2) AS online \
-             FROM nodes WHERE tenant_id = $1 ORDER BY name",
-        )
-        .bind(self.tenant.as_uuid())
-        .bind(ONLINE_SECONDS as f64)
-        .fetch_all(self.store.pool())
-        .await?)
+             FROM nodes n WHERE tenant_id = $1 AND {} ORDER BY name",
+            Self::own_node(3)
+        );
+        Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant.as_uuid())
+            .bind(ONLINE_SECONDS as f64)
+            .bind(self.viewer)
+            .fetch_all(self.store.pool())
+            .await?)
     }
 
     /// Lists sessions, latest first.
     pub async fn sessions(&self, limit: i64) -> Result<Vec<Session>, SessionError> {
-        Ok(sqlx::query_as(
+        let query = format!(
             "SELECT s.id, s.node_id, n.name AS node_name, s.project, s.branch, s.status, \
              s.summary, s.cost_eur, s.started_at, s.updated_at \
              FROM sessions s JOIN nodes n ON n.id = s.node_id \
-             WHERE s.tenant_id = $1 ORDER BY s.updated_at DESC LIMIT $2",
-        )
-        .bind(self.tenant.as_uuid())
-        .bind(limit)
-        .fetch_all(self.store.pool())
-        .await?)
+             WHERE s.tenant_id = $1 AND {} ORDER BY s.updated_at DESC LIMIT $2",
+            Self::own_node(3)
+        );
+        Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant.as_uuid())
+            .bind(limit)
+            .bind(self.viewer)
+            .fetch_all(self.store.pool())
+            .await?)
     }
 
     /// Returns one session.
     pub async fn session(&self, node: Uuid, id: &str) -> Result<Option<Session>, SessionError> {
-        Ok(sqlx::query_as(
+        let query = format!(
             "SELECT s.id, s.node_id, n.name AS node_name, s.project, s.branch, s.status, \
              s.summary, s.cost_eur, s.started_at, s.updated_at \
              FROM sessions s JOIN nodes n ON n.id = s.node_id \
-             WHERE s.tenant_id = $1 AND s.node_id = $2 AND s.id = $3",
-        )
-        .bind(self.tenant.as_uuid())
-        .bind(node)
-        .bind(id)
-        .fetch_optional(self.store.pool())
-        .await?)
+             WHERE s.tenant_id = $1 AND s.node_id = $2 AND s.id = $3 AND {}",
+            Self::own_node(4)
+        );
+        Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant.as_uuid())
+            .bind(node)
+            .bind(id)
+            .bind(self.viewer)
+            .fetch_optional(self.store.pool())
+            .await?)
     }
 
     /// Pauses a node or lets it continue. Pausing denies its open requests,
     /// so a kill switch leaves nothing waiting. Returns whether the node exists.
     pub async fn set_paused(&self, node: Uuid, paused: bool) -> Result<bool, SessionError> {
         let mut transaction = self.store.pool().begin().await?;
-        let result = sqlx::query("UPDATE nodes SET paused = $1 WHERE id = $2 AND tenant_id = $3")
+        let query = format!(
+            "UPDATE nodes n SET paused = $1 WHERE id = $2 AND tenant_id = $3 AND {}",
+            Self::own_node(4)
+        );
+        let result = sqlx::query(sqlx::AssertSqlSafe(query))
             .bind(paused)
             .bind(node)
             .bind(self.tenant.as_uuid())
+            .bind(self.viewer)
             .execute(&mut *transaction)
             .await?;
-        if paused {
+        if paused && result.rows_affected() > 0 {
             sqlx::query(
                 "UPDATE permission_requests SET status = 'denied', decided_at = now() \
                  WHERE node_id = $1 AND status = 'pending'",
@@ -271,7 +309,7 @@ impl Sessions {
              input, status, expires_at, decided_at) \
              SELECT $1, $2, $3, $4, $5, $6, $7, \
              CASE WHEN n.paused THEN 'denied' ELSE 'pending' END, $8, \
-             CASE WHEN n.paused THEN now() END FROM nodes n WHERE n.id = $3 \
+             CASE WHEN n.paused THEN now() END FROM nodes n WHERE n.id = $3 AND n.tenant_id = $2 \
              RETURNING {REQUEST_COLUMNS}"
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
@@ -324,12 +362,16 @@ impl Sessions {
         self.expire().await?;
         let query = format!(
             "SELECT {REQUEST_COLUMNS} FROM permission_requests WHERE tenant_id = $1 \
-             AND ($2::text IS NULL OR status = $2) ORDER BY created_at DESC LIMIT $3"
+             AND ($2::text IS NULL OR status = $2) \
+             AND node_id IN (SELECT n.id FROM nodes n WHERE n.tenant_id = $1 AND {}) \
+             ORDER BY created_at DESC LIMIT $3",
+            Self::own_node(4)
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant.as_uuid())
             .bind(status)
             .bind(limit)
+            .bind(self.viewer)
             .fetch_all(self.store.pool())
             .await?)
     }
@@ -339,12 +381,15 @@ impl Sessions {
         let query = format!(
             "UPDATE permission_requests SET status = $1, decided_at = now() \
              WHERE id = $2 AND tenant_id = $3 AND status = 'pending' AND expires_at > now() \
-             RETURNING {REQUEST_COLUMNS}"
+             AND node_id IN (SELECT n.id FROM nodes n WHERE n.tenant_id = $3 AND {}) \
+             RETURNING {REQUEST_COLUMNS}",
+            Self::own_node(4)
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(if allow { "allowed" } else { "denied" })
             .bind(id)
             .bind(self.tenant.as_uuid())
+            .bind(self.viewer)
             .fetch_optional(self.store.pool())
             .await?)
     }
@@ -384,6 +429,57 @@ mod tests {
         let node = Uuid::now_v7();
         sessions.report(node, &report("running")).await.unwrap();
         (sessions, node)
+    }
+
+    async fn user(sessions: &Sessions, email: &str) -> Uuid {
+        let id = Uuid::now_v7();
+        sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, 'u')")
+            .bind(id)
+            .bind(email)
+            .execute(sessions.store.pool())
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn each_user_sees_only_their_own_desktop_agents() {
+        let shared = Sessions::new(fresh_store().await, TenantId::DEFAULT);
+        let alex = shared.for_user(Some(user(&shared, "alex@example.com").await));
+        let sam = shared.for_user(Some(user(&shared, "sam@example.com").await));
+        let alex_node = Uuid::now_v7();
+        alex.report(alex_node, &report("running")).await.unwrap();
+        let sam_node = Uuid::now_v7();
+        sam.report(sam_node, &report("waiting")).await.unwrap();
+        let request = alex.request(alex_node, &permission()).await.unwrap();
+
+        assert_eq!(alex.nodes().await.unwrap().len(), 1);
+        assert_eq!(sam.sessions(10).await.unwrap()[0].node_id, sam_node);
+        assert_eq!(shared.nodes().await.unwrap().len(), 2, "no viewer sees all");
+        assert!(sam.session(alex_node, "s1").await.unwrap().is_none());
+        assert!(alex.session(alex_node, "s1").await.unwrap().is_some());
+        assert!(sam.requests(None, 10).await.unwrap().is_empty());
+        assert!(sam.decide(request.id, true).await.unwrap().is_none());
+        assert!(!sam.set_paused(alex_node, true).await.unwrap());
+        assert!(
+            sam.send_message(alex_node, "s1", "hi")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(alex.requests(None, 10).await.unwrap().len(), 1);
+        assert!(alex.decide(request.id, true).await.unwrap().is_some());
+        assert!(
+            alex.send_message(alex_node, "s1", "hi")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        sam.report(alex_node, &report("running")).await.unwrap();
+        assert!(
+            sam.session(alex_node, "s1").await.unwrap().is_none(),
+            "a node keeps its first owner"
+        );
     }
 
     #[tokio::test]

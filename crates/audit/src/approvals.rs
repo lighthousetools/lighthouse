@@ -1,6 +1,6 @@
 //! Approvals for tools with external effect, and the saved state of paused runs.
 
-use crate::{AuditError, AuditLog, RunStatus};
+use crate::{AuditError, AuditLog, RunStatus, own_approval};
 use chrono::{DateTime, Duration, Utc};
 use lighthouse_core::RunId;
 use serde::{Deserialize, Serialize};
@@ -146,12 +146,14 @@ impl AuditLog {
     ) -> Result<Vec<Approval>, AuditError> {
         let query = format!(
             "SELECT {COLUMNS} FROM approvals WHERE tenant_id = $1 \
-             AND ($2::text IS NULL OR status = $2) ORDER BY created_at DESC LIMIT $3"
+             AND ($2::text IS NULL OR status = $2) AND {} ORDER BY created_at DESC LIMIT $3",
+            own_approval(4)
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant.as_uuid())
             .bind(status)
             .bind(limit)
+            .bind(self.viewer())
             .fetch_all(self.store.pool())
             .await?)
     }
@@ -159,12 +161,14 @@ impl AuditLog {
     /// Returns the approvals of a run, oldest first.
     pub async fn run_approvals(&self, run: Uuid) -> Result<Vec<Approval>, AuditError> {
         let query = format!(
-            "SELECT {COLUMNS} FROM approvals WHERE tenant_id = $1 AND run_id = $2 \
-             ORDER BY created_at, id"
+            "SELECT {COLUMNS} FROM approvals WHERE tenant_id = $1 AND run_id = $2 AND {} \
+             ORDER BY created_at, id",
+            own_approval(3)
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant.as_uuid())
             .bind(run)
+            .bind(self.viewer())
             .fetch_all(self.store.pool())
             .await?)
     }
@@ -182,13 +186,15 @@ impl AuditLog {
              edited = edited OR ($2::jsonb IS NOT NULL AND $2::jsonb <> input), \
              input = COALESCE($2, input) \
              WHERE id = $3 AND tenant_id = $4 AND status = 'pending' AND expires_at > now() \
-             RETURNING {COLUMNS}"
+             AND {} RETURNING {COLUMNS}",
+            own_approval(5)
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(if approve { "approved" } else { "denied" })
             .bind(edited_input)
             .bind(id)
             .bind(self.tenant.as_uuid())
+            .bind(self.viewer())
             .fetch_optional(self.store.pool())
             .await?)
     }
@@ -203,12 +209,14 @@ impl AuditLog {
         let query = format!(
             "UPDATE approvals SET input = $1, edited = true \
              WHERE id = $2 AND tenant_id = $3 AND status = 'pending' AND expires_at > now() \
-             RETURNING {COLUMNS}"
+             AND {} RETURNING {COLUMNS}",
+            own_approval(4)
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(input)
             .bind(id)
             .bind(self.tenant.as_uuid())
+            .bind(self.viewer())
             .fetch_optional(self.store.pool())
             .await?)
     }

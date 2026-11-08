@@ -168,6 +168,19 @@ pub struct Stored {
 pub struct SyncStore {
     store: Store,
     tenant: TenantId,
+    viewer: Option<Uuid>,
+}
+
+/// Domains whose items belong to one person: their mail and their calendar.
+/// Items of other domains, such as issues, deals or bank accounts, are shared
+/// in the tenant.
+pub const PERSONAL_DOMAINS: [&str; 2] = ["mail", "calendar"];
+
+/// Whether the viewer, given as parameter `$n`, may see an item.
+fn visible(parameter: u8) -> String {
+    format!(
+        "(domain NOT IN ('mail', 'calendar') OR ${parameter}::uuid IS NULL OR user_id = ${parameter})"
+    )
 }
 
 fn closed_states() -> Vec<String> {
@@ -180,7 +193,21 @@ fn closed_states() -> Vec<String> {
 impl SyncStore {
     /// Creates the cache.
     pub fn new(store: Store, tenant: TenantId) -> Self {
-        Self { store, tenant }
+        Self {
+            store,
+            tenant,
+            viewer: None,
+        }
+    }
+
+    /// The cache as one user sees it: their own mail and calendar, and the
+    /// shared items of the tenant. `None` sees everything, for agents and
+    /// refreshes.
+    pub fn for_user(&self, user: Option<Uuid>) -> Self {
+        Self {
+            viewer: user,
+            ..self.clone()
+        }
     }
 
     pub(crate) fn pool(&self) -> &sqlx::PgPool {
@@ -231,9 +258,10 @@ impl SyncStore {
             let (id,): (Uuid,) = sqlx::query_as(
                 "INSERT INTO synced_items (id, tenant_id, source, domain, kind, external_id, parent_id, \
                  title, summary, author, assignee, state, url, flags, importance, occurred_at, \
-                 starts_at, ends_at, data, raw, amount, currency) \
+                 starts_at, ends_at, data, raw, amount, currency, user_id) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
-                 $18, $19, $20, $21, $22) \
+                 $18, $19, $20, $21, $22, \
+                 CASE WHEN $4 IN ('mail', 'calendar') THEN coalesce($23, tenant_primary_user($2)) END) \
                  ON CONFLICT (tenant_id, source, kind, external_id) DO UPDATE SET \
                  parent_id = EXCLUDED.parent_id, title = EXCLUDED.title, summary = EXCLUDED.summary, \
                  author = EXCLUDED.author, assignee = EXCLUDED.assignee, state = EXCLUDED.state, \
@@ -266,6 +294,7 @@ impl SyncStore {
             .bind(&item.raw)
             .bind(item.amount)
             .bind(&item.currency)
+            .bind(self.viewer)
             .fetch_one(&mut *transaction)
             .await?;
             stored.push(Stored {
@@ -352,14 +381,17 @@ impl SyncStore {
         id: Uuid,
         until: Option<DateTime<Utc>>,
     ) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query(
-            "UPDATE synced_items SET snoozed_until = $3 WHERE tenant_id = $1 AND id = $2",
-        )
-        .bind(self.tenant.as_uuid())
-        .bind(id)
-        .bind(until)
-        .execute(self.pool())
-        .await?;
+        let query = format!(
+            "UPDATE synced_items SET snoozed_until = $3 WHERE tenant_id = $1 AND id = $2 AND {}",
+            visible(4)
+        );
+        let result = sqlx::query(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant.as_uuid())
+            .bind(id)
+            .bind(until)
+            .bind(self.viewer)
+            .execute(self.pool())
+            .await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -427,7 +459,8 @@ impl SyncStore {
              AND ($13::timestamptz IS NULL OR coalesce(starts_at, occurred_at) < $13) \
              AND ($16::text IS NULL OR source IN (SELECT unnest(o.sources) FROM organizations o \
                   WHERE o.tenant_id = $1 AND o.id = $16)) \
-             AND ($17 OR snoozed_until IS NULL OR snoozed_until <= now())";
+             AND ($17 OR snoozed_until IS NULL OR snoozed_until <= now()) \
+             AND (domain NOT IN ('mail', 'calendar') OR $18::uuid IS NULL OR user_id = $18)";
         let order = match filter.order {
             Order::Recent => "occurred_at DESC NULLS LAST, synced_at DESC, id",
             Order::Importance => "importance DESC, occurred_at DESC NULLS LAST, id",
@@ -465,6 +498,7 @@ impl SyncStore {
                     .bind(filter.offset)
                     .bind(&filter.org)
                     .bind(filter.include_snoozed)
+                    .bind(self.viewer)
             };
         }
         let items: Vec<SyncedItem> = bind_page!(sqlx::query_as(sqlx::AssertSqlSafe(select)))
@@ -483,10 +517,14 @@ impl SyncStore {
 
     /// Returns an item.
     pub async fn item(&self, id: Uuid) -> Result<Option<SyncedItem>, sqlx::Error> {
-        let query = format!("SELECT {COLUMNS} FROM synced_items WHERE tenant_id = $1 AND id = $2");
+        let query = format!(
+            "SELECT {COLUMNS} FROM synced_items WHERE tenant_id = $1 AND id = $2 AND {}",
+            visible(3)
+        );
         sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant.as_uuid())
             .bind(id)
+            .bind(self.viewer)
             .fetch_optional(self.pool())
             .await
     }
@@ -500,13 +538,15 @@ impl SyncStore {
     ) -> Result<Option<SyncedItem>, sqlx::Error> {
         let query = format!(
             "SELECT {COLUMNS} FROM synced_items WHERE tenant_id = $1 AND source = $2 AND kind = $3 \
-             AND external_id = $4"
+             AND external_id = $4 AND {}",
+            visible(5)
         );
         sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant.as_uuid())
             .bind(source)
             .bind(kind)
             .bind(external_id)
+            .bind(self.viewer)
             .fetch_optional(self.pool())
             .await
     }
@@ -547,12 +587,15 @@ impl SyncStore {
     ) -> Result<Option<SyncedItem>, sqlx::Error> {
         let query = format!(
             "SELECT {COLUMNS} FROM synced_items WHERE tenant_id = $1 AND external_id = $2 \
-             AND ($3::text IS NULL OR source = $3) ORDER BY occurred_at DESC NULLS LAST LIMIT 1"
+             AND ($3::text IS NULL OR source = $3) AND {} \
+             ORDER BY occurred_at DESC NULLS LAST LIMIT 1",
+            visible(4)
         );
         sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant.as_uuid())
             .bind(external_id)
             .bind(source)
+            .bind(self.viewer)
             .fetch_optional(self.pool())
             .await
     }
@@ -592,12 +635,16 @@ impl SyncStore {
 
     /// Returns the item as the tool returned it.
     pub async fn raw(&self, id: Uuid) -> Result<Option<Value>, sqlx::Error> {
-        let row: Option<(Option<Value>,)> =
-            sqlx::query_as("SELECT raw FROM synced_items WHERE tenant_id = $1 AND id = $2")
-                .bind(self.tenant.as_uuid())
-                .bind(id)
-                .fetch_optional(self.pool())
-                .await?;
+        let query = format!(
+            "SELECT raw FROM synced_items WHERE tenant_id = $1 AND id = $2 AND {}",
+            visible(3)
+        );
+        let row: Option<(Option<Value>,)> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant.as_uuid())
+            .bind(id)
+            .bind(self.viewer)
+            .fetch_optional(self.pool())
+            .await?;
         Ok(row.and_then(|(raw,)| raw))
     }
 
@@ -605,12 +652,14 @@ impl SyncStore {
     pub async fn children(&self, item: &SyncedItem) -> Result<Vec<SyncedItem>, sqlx::Error> {
         let query = format!(
             "SELECT {COLUMNS} FROM synced_items WHERE tenant_id = $1 AND source = $2 AND parent_id = $3 \
-             ORDER BY kind, occurred_at NULLS LAST, external_id"
+             AND {} ORDER BY kind, occurred_at NULLS LAST, external_id",
+            visible(4)
         );
         sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant.as_uuid())
             .bind(&item.source)
             .bind(&item.external_id)
+            .bind(self.viewer)
             .fetch_all(self.pool())
             .await
     }
@@ -697,6 +746,7 @@ impl SyncStore {
         let rows: Vec<(DateTime<Utc>, DateTime<Utc>)> = sqlx::query_as(
             "SELECT starts_at, coalesce(ends_at, starts_at) FROM synced_items \
              WHERE tenant_id = $1 AND domain = 'calendar' AND kind = 'event' \
+             AND ($4::uuid IS NULL OR user_id = $4) \
              AND starts_at IS NOT NULL AND starts_at < $3 AND coalesce(ends_at, starts_at) > $2 \
              AND (state IS NULL OR lower(state) NOT IN ('cancelled', 'canceled', 'declined', 'free')) \
              AND NOT flags @> ARRAY['free'] ORDER BY starts_at",
@@ -704,6 +754,7 @@ impl SyncStore {
         .bind(self.tenant.as_uuid())
         .bind(from)
         .bind(to)
+        .bind(self.viewer)
         .fetch_all(self.pool())
         .await?;
         let mut merged: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::new();

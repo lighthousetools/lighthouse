@@ -266,6 +266,9 @@ impl ApiState {
     pub fn for_user(&self, user: Option<Uuid>) -> Self {
         Self {
             audit: self.audit.for_user(user),
+            desk: self.desk.for_user(user),
+            sessions: self.sessions.for_user(user),
+            sync: self.sync.for_user(user),
             ..self.clone()
         }
     }

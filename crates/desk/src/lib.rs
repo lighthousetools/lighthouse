@@ -153,12 +153,31 @@ pub(crate) fn required_text(name: &str, value: &str, max: usize) -> Result<Strin
 pub struct Desk {
     store: Store,
     tenant: TenantId,
+    viewer: Option<uuid::Uuid>,
 }
 
 impl Desk {
     /// Creates the desk.
     pub fn new(store: Store, tenant: TenantId) -> Self {
-        Self { store, tenant }
+        Self {
+            store,
+            tenant,
+            viewer: None,
+        }
+    }
+
+    /// The desk as one user sees it. Conversations are personal; tasks, rules,
+    /// memory, alerts, documents and posts are shared in the tenant. `None`
+    /// sees everything, for agents and background work.
+    pub fn for_user(&self, user: Option<uuid::Uuid>) -> Self {
+        Self {
+            viewer: user,
+            ..self.clone()
+        }
+    }
+
+    fn viewer(&self) -> Option<uuid::Uuid> {
+        self.viewer
     }
 
     fn pool(&self) -> &sqlx::PgPool {

@@ -1434,4 +1434,50 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
     }
+
+    #[tokio::test]
+    async fn personal_data_stays_with_its_user_and_shared_data_is_shared() {
+        let harness = build_harness_with(Some(TOKEN), None, SignupMode::Invite, None).await;
+        let app = &harness.app;
+        let owner = signed_in(app).await;
+        let (_, created) = invite(app, &owner, "robin@example.com", "member").await;
+        let robin = accept_new(app, created["accept_url"].as_str().unwrap()).await;
+        let (status, body) = send(
+            app,
+            "POST",
+            "/talk/threads",
+            Some(&owner),
+            Some(json!({"title": "Private"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let thread = json_of(&body)["id"].as_str().unwrap().to_owned();
+        let (status, _) = send(
+            app,
+            "POST",
+            "/tasks",
+            Some(&owner),
+            Some(json!({"title": "Shared task"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (_, threads) = call(app, "GET", "/talk/threads", Some(&robin.token)).await;
+        assert!(!threads.contains("Private"));
+        assert_eq!(
+            call(
+                app,
+                "GET",
+                &format!("/talk/threads/{thread}"),
+                Some(&robin.token)
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        let (_, threads) = call(app, "GET", "/talk/threads", Some(&owner)).await;
+        assert!(threads.contains("Private"));
+        let (_, tasks) = call(app, "GET", "/tasks?view=all", Some(&robin.token)).await;
+        assert!(tasks.contains("Shared task"));
+    }
 }

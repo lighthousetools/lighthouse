@@ -195,8 +195,10 @@ impl Sessions {
         let query = format!(
             "INSERT INTO session_messages (id, tenant_id, node_id, session_id, text, status) \
              SELECT $1, $2, $3, $4, $5, 'pending' WHERE EXISTS \
-             (SELECT 1 FROM sessions WHERE tenant_id = $2 AND node_id = $3 AND id = $4) \
-             RETURNING {MESSAGE_COLUMNS}"
+             (SELECT 1 FROM sessions s JOIN nodes n ON n.id = s.node_id \
+              WHERE s.tenant_id = $2 AND s.node_id = $3 AND s.id = $4 AND {}) \
+             RETURNING {MESSAGE_COLUMNS}",
+            Self::own_node(6)
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(Uuid::now_v7())
@@ -204,6 +206,7 @@ impl Sessions {
             .bind(node)
             .bind(session)
             .bind(text)
+            .bind(self.viewer)
             .fetch_optional(self.store.pool())
             .await?)
     }

@@ -333,6 +333,16 @@ impl From<DocumentRow> for BriefingDocument {
     }
 }
 
+/// Documents the viewer, given as parameter `$n`, may see: those of their own
+/// runs and of runs for nobody in particular. Briefs and recaps read the mail
+/// and calendar of the person a run works for, so they are personal.
+fn own_document(parameter: u8) -> String {
+    format!(
+        "(${parameter}::uuid IS NULL OR run_id IN (SELECT r.id FROM runs r \
+         WHERE r.tenant_id = run_documents.tenant_id AND (r.user_id IS NULL OR r.user_id = ${parameter})))"
+    )
+}
+
 impl Desk {
     /// Stores the document of a run. A second one for the same run replaces it.
     pub async fn save_document(
@@ -371,12 +381,15 @@ impl Desk {
     ) -> Result<Vec<BriefingDocument>, DeskError> {
         let query = format!(
             "SELECT {COLUMNS} FROM run_documents WHERE tenant_id = $1 \
-             AND ($2::text IS NULL OR kind = $2) ORDER BY period DESC, created_at DESC LIMIT $3"
+             AND ($2::text IS NULL OR kind = $2) AND {} \
+             ORDER BY period DESC, created_at DESC LIMIT $3",
+            own_document(4)
         );
         let rows: Vec<DocumentRow> = sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant())
             .bind(kind)
             .bind(limit)
+            .bind(self.viewer())
             .fetch_all(self.pool())
             .await?;
         Ok(rows.into_iter().map(Into::into).collect())
@@ -395,12 +408,14 @@ impl Desk {
     ) -> Result<Option<BriefingDocument>, DeskError> {
         let query = format!(
             "SELECT {COLUMNS} FROM run_documents WHERE tenant_id = $1 AND kind = $2 \
-             AND period = $3 ORDER BY created_at DESC LIMIT 1"
+             AND period = $3 AND {} ORDER BY created_at DESC LIMIT 1",
+            own_document(4)
         );
         let row: Option<DocumentRow> = sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant())
             .bind(kind)
             .bind(period)
+            .bind(self.viewer())
             .fetch_optional(self.pool())
             .await?;
         Ok(row.map(Into::into))
@@ -428,11 +443,14 @@ impl Desk {
 
     /// Returns the document of a run.
     pub async fn run_document(&self, run: Uuid) -> Result<Option<BriefingDocument>, DeskError> {
-        let query =
-            format!("SELECT {COLUMNS} FROM run_documents WHERE tenant_id = $1 AND run_id = $2");
+        let query = format!(
+            "SELECT {COLUMNS} FROM run_documents WHERE tenant_id = $1 AND run_id = $2 AND {}",
+            own_document(3)
+        );
         let row: Option<DocumentRow> = sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant())
             .bind(run)
+            .bind(self.viewer())
             .fetch_optional(self.pool())
             .await?;
         Ok(row.map(Into::into))
@@ -578,5 +596,53 @@ mod tests {
         let mut bad = content.clone();
         bad.kind = "BAD".to_owned();
         assert!(desk.save_document(runs[0], "x", "p", &bad).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn documents_of_a_run_belong_to_the_user_it_ran_for() {
+        let store = fresh_store().await;
+        let desk = Desk::new(store.clone(), TenantId::DEFAULT);
+        let content = extract_document(&report(BLOCK)).1.unwrap().unwrap();
+        let (owner, sam) = (Uuid::now_v7(), Uuid::now_v7());
+        for (user, email) in [(owner, "alex@example.com"), (sam, "sam@example.com")] {
+            sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, 'u')")
+                .bind(user)
+                .bind(email)
+                .execute(store.pool())
+                .await
+                .unwrap();
+        }
+        let run = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO runs (id, tenant_id, agent_id, trigger, status, user_id) \
+             VALUES ($1, $2, 'weekly-report', 'cron', 'succeeded', $3)",
+        )
+        .bind(run)
+        .bind(TenantId::DEFAULT.as_uuid())
+        .bind(owner)
+        .execute(store.pool())
+        .await
+        .unwrap();
+        desk.save_document(run, "weekly-report", "2026-W45", &content)
+            .await
+            .unwrap();
+        let mine = desk.for_user(Some(owner));
+        let theirs = desk.for_user(Some(sam));
+        assert_eq!(mine.documents(None, 10).await.unwrap().len(), 1);
+        assert!(theirs.documents(None, 10).await.unwrap().is_empty());
+        assert!(theirs.run_document(run).await.unwrap().is_none());
+        assert!(
+            theirs
+                .document_for(WEEKLY_RECAP, "2026-W45")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mine.document_for(WEEKLY_RECAP, "2026-W45")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

@@ -25,7 +25,7 @@ pub use numbers::{
 pub use orgs::{Organization, OrganizationError, OrganizationInput};
 pub use sources::{DOMAINS, PRESETS, Source, SourceError, preset, resolve};
 pub use splits::{Split, SplitFilter, SplitInput};
-pub use store::{ItemFilter, ItemPage, Order, SyncStatus, SyncStore, SyncedItem};
+pub use store::{ItemFilter, ItemPage, Order, PERSONAL_DOMAINS, SyncStatus, SyncStore, SyncedItem};
 
 #[cfg(test)]
 mod tests;

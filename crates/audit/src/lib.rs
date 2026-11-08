@@ -230,6 +230,20 @@ pub mod acting_user {
     }
 }
 
+/// Runs the viewer, given as parameter `$n`, may see: their own and those of
+/// nobody in particular. Without a viewer, every run.
+pub(crate) fn own_run(parameter: u8) -> String {
+    format!("(${parameter}::uuid IS NULL OR user_id IS NULL OR user_id = ${parameter})")
+}
+
+/// Approvals of runs the viewer may see.
+pub(crate) fn own_approval(parameter: u8) -> String {
+    format!(
+        "(${parameter}::uuid IS NULL OR run_id IN (SELECT r.id FROM runs r WHERE r.tenant_id = approvals.tenant_id \
+         AND (r.user_id IS NULL OR r.user_id = ${parameter})))"
+    )
+}
+
 const RUN_COLUMNS: &str = "id, agent_id, trigger, status, reason, report, input_tokens, output_tokens, \
                            cost_eur, started_at, finished_at, \
                            (SELECT name FROM run_steps s WHERE s.run_id = runs.id \
@@ -256,6 +270,10 @@ impl AuditLog {
     /// The tenant of the log.
     pub fn tenant(&self) -> TenantId {
         self.tenant
+    }
+
+    pub(crate) fn viewer(&self) -> Option<Uuid> {
+        self.viewer
     }
 
     /// Records the start of a run.
@@ -367,18 +385,22 @@ impl AuditLog {
         since: DateTime<Utc>,
         limit: i64,
     ) -> Result<Vec<ToolCall>, AuditError> {
-        Ok(sqlx::query_as(
+        let query = format!(
             "SELECT s.id, s.run_id, r.agent_id, s.name AS tool, s.detail, s.created_at \
              FROM run_steps s JOIN runs r ON r.id = s.run_id \
              WHERE s.tenant_id = $1 AND s.kind = 'tool' AND s.status = 'ok' \
-             AND s.name = ANY($2) AND s.created_at >= $3 ORDER BY s.created_at DESC LIMIT $4",
-        )
-        .bind(self.tenant.as_uuid())
-        .bind(tools)
-        .bind(since)
-        .bind(limit)
-        .fetch_all(self.store.pool())
-        .await?)
+             AND s.name = ANY($2) AND s.created_at >= $3 AND {} \
+             ORDER BY s.created_at DESC LIMIT $4",
+            own_run(5).replace("user_id", "r.user_id")
+        );
+        Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(self.tenant.as_uuid())
+            .bind(tools)
+            .bind(since)
+            .bind(limit)
+            .bind(self.viewer)
+            .fetch_all(self.store.pool())
+            .await?)
     }
 
     /// Counts runs, failed runs and their cost per day of the time zone, oldest
@@ -465,13 +487,15 @@ impl AuditLog {
         limit: i64,
     ) -> Result<Vec<RunRecord>, AuditError> {
         let query = format!(
-            "SELECT {RUN_COLUMNS} FROM runs WHERE tenant_id = $1 AND agent_id = $2 \
-             ORDER BY started_at DESC LIMIT $3"
+            "SELECT {RUN_COLUMNS} FROM runs WHERE tenant_id = $1 AND agent_id = $2 AND {} \
+             ORDER BY started_at DESC LIMIT $3",
+            own_run(4)
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant.as_uuid())
             .bind(agent)
             .bind(limit)
+            .bind(self.viewer)
             .fetch_all(self.store.pool())
             .await?)
     }
@@ -479,21 +503,28 @@ impl AuditLog {
     /// Lists the latest runs.
     pub async fn list_runs(&self, limit: i64) -> Result<Vec<RunRecord>, AuditError> {
         let query = format!(
-            "SELECT {RUN_COLUMNS} FROM runs WHERE tenant_id = $1 ORDER BY started_at DESC LIMIT $2"
+            "SELECT {RUN_COLUMNS} FROM runs WHERE tenant_id = $1 AND {} \
+             ORDER BY started_at DESC LIMIT $2",
+            own_run(3)
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant.as_uuid())
             .bind(limit)
+            .bind(self.viewer)
             .fetch_all(self.store.pool())
             .await?)
     }
 
     /// Returns a run with its steps.
     pub async fn run_detail(&self, id: Uuid) -> Result<Option<RunDetail>, AuditError> {
-        let query = format!("SELECT {RUN_COLUMNS} FROM runs WHERE tenant_id = $1 AND id = $2");
+        let query = format!(
+            "SELECT {RUN_COLUMNS} FROM runs WHERE tenant_id = $1 AND id = $2 AND {}",
+            own_run(3)
+        );
         let run: Option<RunRecord> = sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant.as_uuid())
             .bind(id)
+            .bind(self.viewer)
             .fetch_optional(self.store.pool())
             .await?;
         let Some(run) = run else { return Ok(None) };
@@ -528,6 +559,121 @@ mod tests {
             cost_eur: cost,
             ..NewStep::default()
         }
+    }
+
+    async fn member(store: &Store, email: &str, role: &str) -> Uuid {
+        let id = Uuid::now_v7();
+        sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, 'u')")
+            .bind(id)
+            .bind(email)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, $3)")
+            .bind(TenantId::DEFAULT.as_uuid())
+            .bind(id)
+            .bind(role)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn runs_and_their_approvals_belong_to_the_user_they_ran_for() {
+        let (log, store) = log().await;
+        let owner = member(&store, "alex@example.com", "owner").await;
+        let sam = member(&store, "sam@example.com", "member").await;
+        let as_owner = log.for_user(Some(owner));
+        let as_sam = log.for_user(Some(sam));
+
+        let scheduled = RunId::new();
+        log.start_run(scheduled, "brief", "cron").await.unwrap();
+        let manual = RunId::new();
+        acting_user::scope(Some(sam), log.start_run(manual, "brief", "manual"))
+            .await
+            .unwrap();
+        let approval = crate::NewApproval {
+            id: Uuid::now_v7(),
+            tool: "mail.send".to_owned(),
+            input: serde_json::json!({}),
+            quotes_external: false,
+            reason: None,
+            consulted: Vec::new(),
+        };
+        log.pause_run(
+            scheduled,
+            "brief",
+            &serde_json::json!({}),
+            std::slice::from_ref(&approval),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            as_owner.list_runs(10).await.unwrap().len(),
+            1,
+            "schedules work for the owner"
+        );
+        assert_eq!(as_sam.list_runs(10).await.unwrap()[0].id, manual.as_uuid());
+        assert_eq!(log.list_runs(10).await.unwrap().len(), 2);
+        assert!(
+            as_sam
+                .run_detail(scheduled.as_uuid())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            as_owner
+                .run_detail(scheduled.as_uuid())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(as_sam.list_agent_runs("brief", 10).await.unwrap().len() == 1);
+        assert!(as_sam.list_approvals(None, 10).await.unwrap().is_empty());
+        assert!(
+            as_sam
+                .run_approvals(scheduled.as_uuid())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            as_sam
+                .edit_approval(approval.id, &serde_json::json!({"x": 1}))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            as_sam
+                .decide_approval(approval.id, true, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(as_owner.list_approvals(None, 10).await.unwrap().len(), 1);
+        assert!(
+            as_owner
+                .decide_approval(approval.id, true, None)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            as_sam
+                .tool_calls(
+                    &["mail.send".to_owned()],
+                    Utc::now() - chrono::Duration::days(1),
+                    10
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(acting_user::current(), None);
     }
 
     #[tokio::test]

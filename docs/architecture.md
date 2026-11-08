@@ -84,3 +84,29 @@ others. At start, and once a minute after, the server opens every tenant, so bac
 The **default tenant** (the nil UUID) is the one a single-user install has always used. The configured `[owner]`
 becomes its first owner, the admin token acts in it, and it cannot be deleted. Deleting another tenant removes every
 row with its `tenant_id` in one transaction, its files and its background work.
+
+### Personal and shared data
+
+Within a tenant, most data is shared by its members. Some is personal: it belongs to one user and other members never
+see it, whatever their role. The admin token, agents and background work see everything of the tenant.
+
+| Data | Visibility | How |
+|---|---|---|
+| Device tokens | Personal | `device_tokens.user_id` |
+| Desktop agents (nodes), their Claude Code sessions, events, messages, usage and permission requests | Personal | `nodes.user_id`, set from the token that reports |
+| Conversations (Talk) | Personal | `talk_threads.user_id` |
+| Mail and calendar (connected items of the `mail` and `calendar` domains) | Personal | `synced_items.user_id` |
+| Runs, their steps and approvals (decisions in Ready), drafts, briefs and recaps | Personal to the user a run works for | `runs.user_id` |
+| Brain, tasks, rules, memory (facts), alerts, automations, agents, organizations, issues, pull requests, deals, invoices, bank accounts, posts, decks, contracts, branding, settings and budget | Shared in the tenant | `tenant_id` only |
+| Model provider keys and connector tokens (the vault) | Shared in the tenant; only owners and admins change them | `credentials.tenant_id` |
+
+A run works for the user who started it, through the API, Talk or a delegated task. Runs from schedules and
+automations work for the tenant's first owner, the person whose accounts the agents use (`tenant_primary_user`). What
+such a run reads from mail and calendar therefore stays in that person's Ready feed, briefs and recaps. Proposals a run
+makes into shared areas, such as tasks, facts or posts, are shared once they exist.
+
+Connected sources sync with the tenant's connector tokens, and their mail and calendar items belong to the tenant's
+first owner. Members bring no mail or calendar of their own yet.
+
+Cost accounting is per tenant (`runs.tenant_id`, `run_steps.tenant_id` and the monthly budget) and per user through
+`runs.user_id` and the nodes behind Claude Code usage.

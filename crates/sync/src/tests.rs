@@ -765,3 +765,75 @@ fn periods_start_at_the_first_of_a_month() {
         "2025-10-01T00:00:00+00:00"
     );
 }
+
+#[tokio::test]
+async fn mail_and_calendar_are_personal_and_other_domains_shared() {
+    let store = SyncStore::new(fresh_store().await, TenantId::DEFAULT);
+    let mut users = Vec::new();
+    for (email, role) in [("alex@example.com", "owner"), ("sam@example.com", "member")] {
+        let id = uuid::Uuid::now_v7();
+        lighthouse_store::sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, 'u')")
+            .bind(id)
+            .bind(email)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        lighthouse_store::sqlx::query(
+            "INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, $3)",
+        )
+        .bind(TenantId::DEFAULT.as_uuid())
+        .bind(id)
+        .bind(role)
+        .execute(store.pool())
+        .await
+        .unwrap();
+        users.push(id);
+    }
+    let item = |id: &str| MappedItem {
+        external_id: id.to_owned(),
+        title: Some(format!("Item {id}")),
+        starts_at: Some(Utc::now()),
+        ends_at: Some(Utc::now() + chrono::Duration::hours(1)),
+        ..MappedItem::default()
+    };
+    let mail = store
+        .upsert("mail", "mail", "thread", &[item("m1")], &[])
+        .await
+        .unwrap();
+    store
+        .upsert("cal", "calendar", "event", &[item("e1")], &[])
+        .await
+        .unwrap();
+    store
+        .upsert("issues", "issues", "issue", &[item("i1")], &[])
+        .await
+        .unwrap();
+    let owner = store.for_user(Some(users[0]));
+    let member = store.for_user(Some(users[1]));
+    let all = ItemFilter {
+        limit: 50,
+        ..ItemFilter::default()
+    };
+    assert_eq!(owner.items(&all).await.unwrap().total, 3);
+    assert_eq!(member.items(&all).await.unwrap().total, 1, "only the issue");
+    assert_eq!(store.items(&all).await.unwrap().total, 3, "agents see all");
+    let mail_id = mail[0].id;
+    assert!(member.item(mail_id).await.unwrap().is_none());
+    assert!(member.raw(mail_id).await.unwrap().is_none());
+    assert!(owner.item(mail_id).await.unwrap().is_some());
+    assert!(!member.snooze(mail_id, None).await.unwrap());
+    assert!(
+        member
+            .item_by_external("mail", "thread", "m1")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(member.find_external("m1", None).await.unwrap().is_none());
+    let (from, to) = (
+        Utc::now() - chrono::Duration::hours(2),
+        Utc::now() + chrono::Duration::hours(2),
+    );
+    assert_eq!(owner.busy(from, to).await.unwrap().len(), 1);
+    assert!(member.busy(from, to).await.unwrap().is_empty());
+}
