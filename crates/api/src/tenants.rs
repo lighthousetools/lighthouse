@@ -1479,5 +1479,27 @@ mod tests {
         assert!(threads.contains("Private"));
         let (_, tasks) = call(app, "GET", "/tasks?view=all", Some(&robin.token)).await;
         assert!(tasks.contains("Shared task"));
+        let run = lighthouse_core::RunId::new();
+        lighthouse_audit::acting_user::scope(
+            Some(robin.user_id),
+            harness.audit.start_run(run, "brief", "manual"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            call(app, "GET", "/costs/users", Some(&robin.token)).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, body) = call(app, "GET", "/costs/users?days=7", Some(&owner)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_of(&body)[0]["user_id"], json!(robin.user_id));
+        assert_eq!(json_of(&body)[0]["runs"], 1);
+        let (_, runs) = call(app, "GET", "/runs", Some(&owner)).await;
+        assert!(
+            !runs.contains(&run.as_uuid().to_string()),
+            "the member's run is theirs"
+        );
+        let (_, runs) = call(app, "GET", "/runs", Some(&robin.token)).await;
+        assert!(runs.contains(&run.as_uuid().to_string()));
     }
 }

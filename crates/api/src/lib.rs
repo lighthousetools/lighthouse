@@ -557,7 +557,7 @@ impl utoipa::Modify for SecurityAddon {
         brain::delete, brain::upload, brain::download,
         catalog::agents, catalog::agent, catalog::agent_runs, catalog::draft_agent,
         catalog::save_agent, catalog::delete_agent, catalog::connectors, catalog::skills,
-        catalog::costs,
+        catalog::costs, catalog::user_costs,
         sessions::report, sessions::request, sessions::await_decision, sessions::nodes,
         sessions::update_node, sessions::sessions, sessions::permissions, sessions::decide,
         sessions::record_events, sessions::take_messages, sessions::session, sessions::send_message,
@@ -604,6 +604,7 @@ impl utoipa::Modify for SecurityAddon {
         Entry, EntryDetail, EntryPatch, EntrySummary, NewEntry, SearchHit, Source,
         AskRequest, AskAnswer, ResolvedEntry,
         AgentInfo, AgentTool, ConnectorInfo, SkillInfo, AgentDraftRequest, AgentSource, DailyCost,
+        lighthouse_audit::UserCost,
         Node, NodeChange, NodeReport, NodeState, NewPermission, Permission, PermissionDecision,
         Session, SessionReport, SessionEvents, NewSessionMessage, SessionDetail,
         lighthouse_sessions::NewSessionEvent, lighthouse_sessions::SessionEvent,
@@ -727,6 +728,7 @@ pub fn router(state: Instance) -> Router {
         .route("/connectors", get(catalog::connectors))
         .route("/skills", get(catalog::skills))
         .route("/costs", get(catalog::costs))
+        .route("/costs/users", get(catalog::user_costs))
         .route("/connectors/{id}/connect", post(connect))
         .route("/auth/tokens", post(auth::issue_token))
         .route("/auth/logout", post(auth::logout))

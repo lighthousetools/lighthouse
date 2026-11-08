@@ -68,6 +68,7 @@ role, remove owners or delete the tenant. A tenant always keeps at least one own
 | `POST /tenant/invitations` | `{email, role}` | 201 `{invitation, mailed, accept_url}`. With mail configured, the invitation goes out by mail and `accept_url` is null. Without mail, `accept_url` is the link to pass on yourself |
 | `DELETE /tenant/invitations/{id}` | | 204 |
 | `PUT`, `DELETE /credentials/{name}` | `{value}` | Tenant keys, such as a model provider key (`anthropic`). Owner and admin only |
+| `GET /costs/users?days=30` | | Run costs per user of the tenant: `{user_id, runs, cost_eur, input_tokens, output_tokens}`, highest first. Owner and admin only. `GET /costs` stays the tenant's cost per day and provider |
 
 Invitations need `signup = "invite"` or `"open"` and are valid for seven days. The links point to the web app:
 `<public_url>/#/invite?token=<token>` and `<public_url>/#/verify?token=<token>`. To accept, the web app calls

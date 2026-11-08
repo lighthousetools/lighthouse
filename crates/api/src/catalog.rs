@@ -363,6 +363,27 @@ pub(crate) async fn costs(
     Ok(Json(state.audit.daily_costs(days).await.map_err(internal)?))
 }
 
+/// Sums the cost of runs per user of the tenant. Needs the owner or admin role.
+#[utoipa::path(
+    get,
+    path = "/costs/users",
+    params(("days" = Option<i32>, Query, description = "Days to look back")),
+    responses((status = 200, body = Vec<lighthouse_audit::UserCost>),
+        (status = 403, description = "Needs the owner or admin role")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn user_costs(
+    Scoped(state): Scoped,
+    caller: crate::Caller,
+    Query(query): Query<CostQuery>,
+) -> Result<Json<Vec<lighthouse_audit::UserCost>>, ApiError> {
+    caller.require_manager()?;
+    let days = query.days.unwrap_or(DEFAULT_COST_DAYS).clamp(1, 366);
+    Ok(Json(
+        state.audit.costs_by_user(days).await.map_err(internal)?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -186,6 +186,21 @@ pub struct RunEnd<'a> {
     pub report: Option<&'a str>,
 }
 
+/// Run costs of one user.
+#[derive(Clone, Debug, Serialize, FromRow, ToSchema)]
+pub struct UserCost {
+    /// The user the runs worked for.
+    pub user_id: Option<Uuid>,
+    /// Number of runs.
+    pub runs: i64,
+    /// Costs in EUR.
+    pub cost_eur: f64,
+    /// Input tokens.
+    pub input_tokens: i64,
+    /// Output tokens.
+    pub output_tokens: i64,
+}
+
 /// Model costs of one day and provider.
 #[derive(Clone, Debug, Serialize, FromRow, ToSchema)]
 pub struct DailyCost {
@@ -363,6 +378,21 @@ impl AuditLog {
              FROM run_steps WHERE tenant_id = $1 AND kind = 'model' \
              AND created_at > now() - make_interval(days => $2) \
              GROUP BY 1, 2 ORDER BY 1 DESC, 2",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(days)
+        .fetch_all(self.store.pool())
+        .await?)
+    }
+
+    /// Sums the cost of runs per user over the last days, highest first. Runs
+    /// of nobody in particular have no user.
+    pub async fn costs_by_user(&self, days: i32) -> Result<Vec<UserCost>, AuditError> {
+        Ok(sqlx::query_as(
+            "SELECT user_id, count(*) AS runs, SUM(cost_eur) AS cost_eur, \
+             SUM(input_tokens)::bigint AS input_tokens, SUM(output_tokens)::bigint AS output_tokens \
+             FROM runs WHERE tenant_id = $1 AND started_at > now() - make_interval(days => $2) \
+             GROUP BY user_id ORDER BY 3 DESC, 1",
         )
         .bind(self.tenant.as_uuid())
         .bind(days)
