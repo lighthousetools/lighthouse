@@ -88,6 +88,9 @@ lht runs list
 
 See [configuration](docs/configuration.md), [agent files](docs/agents.md) and [architecture](docs/architecture.md).
 
+A signed image with the server, `lht` and the web app is published for every release, see
+[release image](docs/release-image.md).
+
 ## Development
 
 You need stable Rust and a local Postgres for the integration tests.

@@ -72,7 +72,7 @@ Other endpoints: `/agents`, `/connectors`, `/skills` and `/costs`. See [api.md](
 other parts of the owner's desk.
 
 To serve the web app from the same address, build `lighthousetools/lighthouse-web` and set `paths.web` to its `dist`
-directory.
+directory. The [release image](release-image.md) already contains the web app and sets `paths.web` for you.
 
 ## Sign-in
 
