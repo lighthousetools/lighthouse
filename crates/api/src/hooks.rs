@@ -39,6 +39,13 @@ pub trait Lifecycle: Send + Sync {
 
     /// Runs after a tenant and all its data were deleted.
     async fn on_tenant_deleted(&self, _tenant: TenantId) {}
+
+    /// Runs after someone accepted an invitation, as a new or an existing
+    /// user, and is now a member of the tenant with this role.
+    async fn on_invitation_accepted(&self, _user: &User, _tenant: TenantId, _role: Role) {}
+
+    /// Runs after a member was removed from a tenant or left it.
+    async fn on_member_removed(&self, _tenant: TenantId, _user: Uuid) {}
 }
 
 /// Hooks that do nothing.
@@ -149,6 +156,9 @@ mod tests {
             .on_tenant_created(TenantId::DEFAULT, Uuid::nil())
             .await;
         NoHooks.on_tenant_deleted(TenantId::DEFAULT).await;
+        NoHooks
+            .on_member_removed(TenantId::DEFAULT, Uuid::nil())
+            .await;
         let action = Action::RunAgent {
             agent_id: "brief".to_owned(),
         };

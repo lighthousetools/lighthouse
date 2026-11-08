@@ -803,6 +803,10 @@ pub(crate) async fn accept(
         )
         .await
         .map_err(auth_error)?;
+    instance
+        .lifecycle
+        .on_invitation_accepted(&accepted.user, accepted.tenant, accepted.role)
+        .await;
     send_verification(&instance, &accepted.user).await;
     let issued = instance
         .accounts

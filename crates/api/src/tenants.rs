@@ -508,6 +508,10 @@ pub(crate) async fn accept(
         .accept_invitation(request.token.expose_secret(), AcceptAs::Existing(user))
         .await
         .map_err(auth_error)?;
+    instance
+        .lifecycle
+        .on_invitation_accepted(&accepted.user, accepted.tenant, accepted.role)
+        .await;
     let issued = instance
         .accounts
         .issue(
@@ -710,6 +714,10 @@ pub(crate) async fn remove_member(
         .remove_member(caller.tenant, user)
         .await
         .map_err(auth_error)?;
+    instance
+        .lifecycle
+        .on_member_removed(caller.tenant, user)
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1294,6 +1302,22 @@ mod tests {
         async fn on_tenant_deleted(&self, _tenant: TenantId) {
             self.0.lock().unwrap().push("deleted".to_owned());
         }
+
+        async fn on_invitation_accepted(
+            &self,
+            user: &lighthouse_auth::User,
+            _: TenantId,
+            role: Role,
+        ) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("accepted {} {}", user.email, role.as_str()));
+        }
+
+        async fn on_member_removed(&self, _tenant: TenantId, _user: uuid::Uuid) {
+            self.0.lock().unwrap().push("removed".to_owned());
+        }
     }
 
     async fn recorded(signup: SignupMode) -> (crate::tests::Harness, Arc<Recorder>, Arc<Outbox>) {
@@ -1334,6 +1358,7 @@ mod tests {
 
         let robin = accept_new(&harness.app, &sent.accept_url).await;
         assert_eq!(robin.tenant_id, tenant.as_uuid());
+        assert_eq!(recorder.take(), ["accepted robin@example.com owner"]);
         let (_, body) = call(&harness.app, "GET", "/me", Some(&robin.token)).await;
         assert_eq!(json_of(&body)["role"], "owner");
         assert!(matches!(
@@ -1372,6 +1397,31 @@ mod tests {
             instance.delete_tenant(TenantId::DEFAULT).await,
             Err(AuthError::DefaultTenant)
         ));
+    }
+
+    #[tokio::test]
+    async fn hooks_hear_of_joining_and_leaving_members() {
+        let (harness, recorder, outbox) = recorded(SignupMode::Open).await;
+        let app = &harness.app;
+        let owner = signed_in(app).await;
+        let sam = sign_up(app, "sam@example.com", "Studio").await;
+        recorder.take();
+        invite(app, &owner, "sam@example.com", "admin").await;
+        let token = link_token(&outbox.0.lock().unwrap().pop().unwrap().1);
+        let (status, body) = send(
+            app,
+            "POST",
+            "/tenants/accept",
+            Some(&sam.token),
+            Some(json!({"token": token})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(recorder.take(), ["accepted sam@example.com admin"]);
+        let path = format!("/tenant/members/{}", sam.user_id);
+        let (status, _) = call(app, "DELETE", &path, Some(&owner)).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(recorder.take(), ["removed"]);
     }
 
     struct Plain;
