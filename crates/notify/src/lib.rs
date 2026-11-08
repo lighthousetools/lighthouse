@@ -46,6 +46,28 @@ pub trait Notifier: Send + Sync {
     ) -> Result<(), NotifyError>;
 }
 
+/// An email to send.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mail {
+    /// Recipient address.
+    pub to: String,
+    /// Subject line.
+    pub subject: String,
+    /// Plain text body.
+    pub text: String,
+    /// HTML body, sent as an alternative to the text if present.
+    pub html: Option<String>,
+}
+
+/// Sends email. The server sends every mail through one mailer: verification,
+/// invitations and reports delivered to `mail:` targets. [`SmtpMailer`] is the
+/// default; programs built on these crates can supply their own.
+#[async_trait]
+pub trait Mailer: Send + Sync {
+    /// Sends one mail. Errors never contain passwords.
+    async fn send(&self, mail: &Mail) -> Result<(), NotifyError>;
+}
+
 /// Sends a built email.
 #[async_trait]
 pub trait MailSender: Send + Sync {
@@ -84,9 +106,72 @@ impl MailSender for SmtpSender {
     }
 }
 
+/// Sends mail over SMTP from a fixed sender address, the default [`Mailer`].
+pub struct SmtpMailer {
+    from: Mailbox,
+    sender: Arc<dyn MailSender>,
+}
+
+impl std::fmt::Debug for SmtpMailer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpMailer")
+            .field("from", &self.from.to_string())
+            .finish_non_exhaustive()
+    }
+}
+
+impl SmtpMailer {
+    /// Sends through the configured SMTP server, with the password stored in
+    /// the vault as `smtp`.
+    pub fn from_config(
+        settings: lighthouse_config::SmtpConfig,
+        vault: Vault,
+    ) -> Result<Self, NotifyError> {
+        let from = settings
+            .from
+            .parse()
+            .map_err(|_| NotifyError::NotConfigured("smtp sender".to_owned()))?;
+        Ok(Self::new(from, Arc::new(SmtpSender { settings, vault })))
+    }
+
+    /// Sends through another transport, for example in tests.
+    pub fn new(from: Mailbox, sender: Arc<dyn MailSender>) -> Self {
+        Self { from, sender }
+    }
+}
+
+#[async_trait]
+impl Mailer for SmtpMailer {
+    async fn send(&self, mail: &Mail) -> Result<(), NotifyError> {
+        let failed = |detail: String| NotifyError::Send {
+            target: format!("mail:{}", mail.to),
+            detail,
+        };
+        let to: Mailbox = mail
+            .to
+            .parse()
+            .map_err(|_| failed("invalid address".to_owned()))?;
+        let builder = Message::builder()
+            .from(self.from.clone())
+            .to(to)
+            .subject(mail.subject.as_str());
+        let message = match &mail.html {
+            Some(html) => builder.multipart(MultiPart::alternative_plain_html(
+                mail.text.clone(),
+                html.clone(),
+            )),
+            None => builder
+                .header(lettre::message::header::ContentType::TEXT_PLAIN)
+                .body(mail.text.clone()),
+        }
+        .map_err(|error| failed(error.to_string()))?;
+        self.sender.send(message).await.map_err(failed)
+    }
+}
+
 /// Delivers through the configured channels.
 pub struct ChannelNotifier {
-    mail: Option<(Mailbox, Arc<dyn MailSender>)>,
+    mail: Option<Arc<dyn Mailer>>,
     slack_aliases: Vec<String>,
     vault: Vault,
     http: reqwest::Client,
@@ -125,15 +210,8 @@ impl ChannelNotifier {
         let mail = config
             .smtp
             .map(|settings| {
-                let from = settings
-                    .from
-                    .parse()
-                    .map_err(|_| NotifyError::NotConfigured("smtp sender".to_owned()))?;
-                let sender: Arc<dyn MailSender> = Arc::new(SmtpSender {
-                    settings,
-                    vault: mail_vault,
-                });
-                Ok::<_, NotifyError>((from, sender))
+                SmtpMailer::from_config(settings, mail_vault)
+                    .map(|mailer| Arc::new(mailer) as Arc<dyn Mailer>)
             })
             .transpose()?;
         Ok(Self {
@@ -145,33 +223,29 @@ impl ChannelNotifier {
     }
 
     /// Replaces the mail transport.
-    pub fn with_mail_sender(mut self, from: Mailbox, sender: Arc<dyn MailSender>) -> Self {
-        self.mail = Some((from, sender));
+    pub fn with_mail_sender(self, from: Mailbox, sender: Arc<dyn MailSender>) -> Self {
+        self.with_mailer(Arc::new(SmtpMailer::new(from, sender)))
+    }
+
+    /// Sends mail through another mailer instead of the configured SMTP server.
+    pub fn with_mailer(mut self, mailer: Arc<dyn Mailer>) -> Self {
+        self.mail = Some(mailer);
         self
     }
 
     async fn mail(&self, address: &str, subject: &str, markdown: &str) -> Result<(), NotifyError> {
-        let failed = |detail: String| NotifyError::Send {
-            target: format!("mail:{address}"),
-            detail,
-        };
-        let (from, sender) = self
+        let mailer = self
             .mail
             .as_ref()
             .ok_or_else(|| NotifyError::NotConfigured("smtp".to_owned()))?;
-        let to: Mailbox = address
-            .parse()
-            .map_err(|_| failed("invalid address".to_owned()))?;
-        let message = Message::builder()
-            .from(from.clone())
-            .to(to)
-            .subject(subject)
-            .multipart(MultiPart::alternative_plain_html(
-                markdown.to_owned(),
-                to_html(markdown),
-            ))
-            .map_err(|error| failed(error.to_string()))?;
-        sender.send(message).await.map_err(failed)
+        mailer
+            .send(&Mail {
+                to: address.to_owned(),
+                subject: subject.to_owned(),
+                text: markdown.to_owned(),
+                html: Some(to_html(markdown)),
+            })
+            .await
     }
 
     async fn slack(&self, alias: &str, subject: &str, markdown: &str) -> Result<(), NotifyError> {
@@ -297,6 +371,78 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, NotifyError::Send { .. }));
+    }
+
+    #[derive(Default)]
+    struct RecordingMailer {
+        sent: Mutex<Vec<Mail>>,
+    }
+
+    #[async_trait]
+    impl Mailer for RecordingMailer {
+        async fn send(&self, mail: &Mail) -> Result<(), NotifyError> {
+            self.sent.lock().unwrap().push(mail.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn another_mailer_replaces_smtp() {
+        let mailer = Arc::new(RecordingMailer::default());
+        let notifier = ChannelNotifier::from_config(config(&[]), vault().await)
+            .unwrap()
+            .with_mailer(mailer.clone());
+        notifier
+            .deliver(
+                &Delivery::Mail("to@example.com".to_owned()),
+                "Brief",
+                "*hi*",
+            )
+            .await
+            .unwrap();
+        let sent = mailer.sent.lock().unwrap();
+        assert_eq!(sent[0].to, "to@example.com");
+        assert_eq!(sent[0].text, "*hi*");
+        assert!(sent[0].html.as_deref().unwrap().contains("<em>hi</em>"));
+    }
+
+    #[tokio::test]
+    async fn smtp_sends_plain_text_alone_without_html() {
+        let sender = Arc::new(RecordingSender::default());
+        let mailer = SmtpMailer::new("from@example.com".parse().unwrap(), sender.clone());
+        assert!(format!("{mailer:?}").contains("from@example.com"));
+        let mail = Mail {
+            to: "to@example.com".to_owned(),
+            subject: "Hello".to_owned(),
+            text: "Just text".to_owned(),
+            html: None,
+        };
+        mailer.send(&mail).await.unwrap();
+        let sent = sender.sent.lock().unwrap()[0].clone();
+        assert!(sent.contains("text/plain") && !sent.contains("text/html"));
+        assert!(sent.contains("Just text"));
+        let wrong = Mail {
+            to: "nobody".to_owned(),
+            ..mail
+        };
+        assert!(matches!(
+            mailer.send(&wrong).await,
+            Err(NotifyError::Send { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn smtp_needs_a_valid_sender() {
+        let settings = lighthouse_config::SmtpConfig {
+            host: "localhost".to_owned(),
+            port: 587,
+            username: "user".to_owned(),
+            from: "not an address".to_owned(),
+        };
+        assert!(matches!(
+            SmtpMailer::from_config(settings, vault().await),
+            Err(NotifyError::NotConfigured(_))
+        ));
     }
 
     #[tokio::test]
