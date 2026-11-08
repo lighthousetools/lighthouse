@@ -2,6 +2,9 @@
 //!
 //! Values come from `lighthouse.toml` and can be overridden by environment
 //! variables with the prefix `LIGHTHOUSE_`, where `__` separates nesting levels.
+//! Only variables that name a known section count, so other programs may use
+//! the prefix for their own variables. Programs built on these crates keep
+//! their own settings under `[extensions.<name>]`, which the core ignores.
 //! Secrets such as API keys live in the vault, not here. The only exception is
 //! the admin token, which should be set through the environment.
 
@@ -15,6 +18,7 @@ use figment::Figment;
 use figment::providers::{Env, Format, Toml};
 use secrecy::SecretString;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -75,7 +79,33 @@ pub struct Config {
     /// Users, tenants and sign-up.
     #[serde(default)]
     pub tenancy: TenancyConfig,
+    /// Settings of programs built on these crates, by program name. The core
+    /// ignores them; see [`Config::extension`].
+    #[serde(default)]
+    pub extensions: BTreeMap<String, serde_json::Value>,
 }
+
+/// The top-level sections of [`Config`]. Environment variables whose first
+/// segment names none of them are ignored.
+const SECTIONS: &[&str] = &[
+    "server",
+    "database",
+    "vault",
+    "owner",
+    "paths",
+    "providers",
+    "routing",
+    "connectors",
+    "delivery",
+    "brain",
+    "notifications",
+    "sources",
+    "publishing",
+    "talk",
+    "weather",
+    "tenancy",
+    "extensions",
+];
 
 /// Who may create an account.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -475,14 +505,39 @@ fn default_smtp_port() -> u16 {
     587
 }
 
+/// Whether an environment key, with `.` between its levels, belongs to a
+/// known section.
+fn is_section_key(key: &str) -> bool {
+    key.split_once('.').is_some_and(|(section, _)| {
+        SECTIONS
+            .iter()
+            .any(|known| section.eq_ignore_ascii_case(known))
+    })
+}
+
 impl Config {
     /// Loads the configuration from a file and the environment.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         Self::from_figment(
-            Figment::new()
-                .merge(Toml::file_exact(path))
-                .merge(Env::prefixed("LIGHTHOUSE_").ignore(&["CONFIG"]).split("__")),
+            Figment::new().merge(Toml::file_exact(path)).merge(
+                Env::prefixed("LIGHTHOUSE_")
+                    .split("__")
+                    .filter(|key| is_section_key(key.as_str())),
+            ),
         )
+    }
+
+    /// The settings under `[extensions.<name>]`, read into the program's own
+    /// type. `None` if the table is missing.
+    pub fn extension<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>, ConfigError> {
+        self.extensions
+            .get(name)
+            .map(|value| {
+                T::deserialize(value).map_err(|error| {
+                    ConfigError::Inconsistent(format!("extensions.{name}: {error}"))
+                })
+            })
+            .transpose()
     }
 
     fn from_figment(figment: Figment) -> Result<Self, ConfigError> {
@@ -626,6 +681,47 @@ mod tests {
             jail.set_env("LIGHTHOUSE_CONFIG", "lighthouse.toml");
             Config::load(Path::new("lighthouse.toml")).unwrap();
             Ok(())
+        });
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)]
+    fn variables_of_other_programs_are_ignored() {
+        Jail::expect_with(|jail| {
+            jail.create_file("lighthouse.toml", EXAMPLE)?;
+            jail.set_env("LIGHTHOUSE_OTHER_KEY", "x");
+            jail.set_env("LIGHTHOUSE_SOMETHING__ELSE", "y");
+            jail.set_env("LIGHTHOUSE_EXTENSIONS__ACME__LIMIT", "7");
+            let config = Config::load(Path::new("lighthouse.toml")).unwrap();
+            assert_eq!(config.extensions["acme"]["limit"], 7);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn extensions_are_kept_for_other_programs() {
+        #[derive(Deserialize)]
+        struct Acme {
+            limit: u32,
+            #[serde(default)]
+            names: Vec<String>,
+        }
+        with_config(EXAMPLE, |config| {
+            let config = config.unwrap();
+            assert!(config.extensions.is_empty());
+            assert!(config.extension::<Acme>("acme").unwrap().is_none());
+        });
+        let with = format!(
+            "{EXAMPLE}\n[extensions.acme]\nlimit = 3\nnames = [\"a\"]\n\
+             [extensions.other.nested]\nanything = true\n"
+        );
+        with_config(&with, |config| {
+            let config = config.unwrap();
+            let acme: Acme = config.extension("acme").unwrap().unwrap();
+            assert_eq!((acme.limit, acme.names.len()), (3, 1));
+            assert_eq!(config.extensions["other"]["nested"]["anything"], true);
+            let error = config.extension::<Acme>("other").err().unwrap();
+            assert!(error.to_string().contains("extensions.other"), "{error}");
         });
     }
 

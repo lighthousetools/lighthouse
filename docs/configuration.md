@@ -4,7 +4,21 @@ Lighthouse reads `lighthouse.toml`, or the file named by `LIGHTHOUSE_CONFIG`. Se
 [`lighthouse.example.toml`](../lighthouse.example.toml) for a complete example.
 
 Any value can be overridden with an environment variable: `LIGHTHOUSE_<SECTION>__<KEY>`, for example
-`LIGHTHOUSE_DATABASE__URL`.
+`LIGHTHOUSE_DATABASE__URL`. Only variables whose first part names a section of the file count; others with the
+`LIGHTHOUSE_` prefix, such as `LIGHTHOUSE_CONFIG`, are ignored.
+
+### Extensions
+
+Programs built on the crates (see [architecture.md](architecture.md#extension-points)) keep their own settings under
+`[extensions.<name>]`. Lighthouse ignores these tables and passes them on as they are:
+
+```toml
+[extensions.example]
+limit = 3
+```
+
+The program reads them with `config.extension::<T>("example")` into its own type, or as raw values from
+`config.extensions`. Environment variables reach them too, for example `LIGHTHOUSE_EXTENSIONS__EXAMPLE__LIMIT=5`.
 
 ## Secrets
 
