@@ -27,14 +27,14 @@ The admin token has no user. It acts as an owner in the default tenant, or in th
 | `POST /auth/signup` | `{email, name, password, tenant_name?, device_name, device_kind}` | 201 with `TokenIssued`. Only while `signup = "open"`; creates the user and a new tenant they own, and sends a verification mail if mail is configured. A server with its own sign-up hook may answer 202 with `{error: <message>}` and create nothing yet, see [architecture.md](architecture.md#extension-points) |
 | `POST /auth/verify` | `{token}` | 204. Confirms the email address with the token from the verification link |
 | `POST /auth/verify/resend` | | 204, or 409 without mail |
-| `POST /auth/password` | `{current, new}` | 204. Every other device of the user is signed out |
+| `POST /auth/password` | `{current, new}` | 204. Every other device of the user is signed out. A wrong current password is 403, so clients keep the sign-in |
 | `POST /auth/logout` | | 204. Signs out the current device |
 | `GET /auth/devices` | | The user's devices in every tenant, each with its `tenant_id` |
 | `DELETE /auth/devices/{id}` | | 204, or 404 for a device of somebody else |
 | `POST /auth/tokens` | `{name, kind}` | `TokenIssued` for the same user and tenant, for a desktop agent or a script |
 
 Failed sign-ins are limited per client address and per email address: after five failures, sign-in pauses for a
-minute. Sign-ups are limited to five per client address and hour. Behind a reverse proxy, set
+minute (429 with `Retry-After`). Sign-ups are limited to five per client address and hour. Behind a reverse proxy, set
 `server.trust_forwarded_for` so the limits count the real client.
 
 `device_kind` is `web`, `mac`, `ios`, `node` (desktop agent) or `api`.
@@ -53,7 +53,7 @@ minute. Sign-ups are limited to five per client address and hour. Behind a rever
 
 ### Administering a tenant
 
-Reading works for every member. Changes need the `owner` or `admin` role; only owners grant or take away the owner
+Reading the tenant and its members works for every member; the list of invitations and all changes need the `owner` or `admin` role; only owners grant or take away the owner
 role, remove owners or delete the tenant. A tenant always keeps at least one owner (409 otherwise).
 
 | Endpoint | Body | Answer |

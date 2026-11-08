@@ -324,7 +324,16 @@ struct ApiError(StatusCode, String);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.0, Json(json!({"error": self.1}))).into_response()
+        let mut response = (self.0, Json(json!({"error": self.1}))).into_response();
+        if self.0 == StatusCode::TOO_MANY_REQUESTS {
+            // Every limiter in the server works in windows of at most a minute
+            // for sign-in; clients wait at least this long before retrying.
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("60"),
+            );
+        }
+        response
     }
 }
 
@@ -1744,6 +1753,20 @@ mod tests {
         assert_eq!(
             call(&app, "GET", "/runs", Some(&token)).await.0,
             StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[test]
+    fn too_many_requests_tells_the_client_when_to_retry() {
+        let limited =
+            ApiError(StatusCode::TOO_MANY_REQUESTS, "slow down".to_owned()).into_response();
+        assert_eq!(limited.headers()[axum::http::header::RETRY_AFTER], "60");
+        let other = ApiError(StatusCode::BAD_REQUEST, "bad".to_owned()).into_response();
+        assert!(
+            other
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .is_none()
         );
     }
 

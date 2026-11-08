@@ -1417,7 +1417,7 @@ mod tests {
             send(app, "POST", "/auth/password", Some(&first), Some(change))
                 .await
                 .0,
-            StatusCode::UNAUTHORIZED
+            StatusCode::FORBIDDEN
         );
         let change = json!({"current": PASSWORD, "new": "short"});
         assert_eq!(

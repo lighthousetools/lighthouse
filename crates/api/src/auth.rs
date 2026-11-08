@@ -625,7 +625,7 @@ pub(crate) async fn issue_token(
     path = "/auth/password",
     request_body = PasswordChange,
     responses((status = 204), (status = 400, description = "New password too short"),
-        (status = 401, description = "Wrong current password")),
+        (status = 403, description = "Wrong current password")),
     security(("bearer" = []))
 )]
 pub(crate) async fn change_password(
@@ -638,7 +638,13 @@ pub(crate) async fn change_password(
         .accounts
         .change_password(user, &request.current, &request.new, caller.device)
         .await
-        .map_err(auth_error)?;
+        .map_err(|error| match error {
+            // 401 would read as "token expired" and sign the client out.
+            AuthError::WrongPassword => {
+                ApiError(StatusCode::FORBIDDEN, "wrong current password".to_owned())
+            }
+            other => auth_error(other),
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
