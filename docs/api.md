@@ -24,7 +24,7 @@ The admin token has no user. It acts as an owner in the default tenant, or in th
 | `GET /auth/status` | | `{setup_required, signup, email_required}`: `signup` is `closed`, `invite` or `open`; `email_required` is true once the instance has more than one user |
 | `POST /auth/login` | `{email?, password, device_name, device_kind, tenant_id?}` | `TokenIssued` `{id, token, tenant_id, user_id}`. `email` may be left out while the instance has exactly one user. Without `tenant_id`, the token is bound to the user's oldest membership |
 | `POST /auth/setup` (admin token) | `{password}` | 204. Sets the password of the first owner of the default tenant and signs out their devices |
-| `POST /auth/signup` | `{email, name, password, tenant_name?, device_name, device_kind}` | 201 with `TokenIssued`. Only while `signup = "open"`; creates the user and a new tenant they own, and sends a verification mail if mail is configured |
+| `POST /auth/signup` | `{email, name, password, tenant_name?, device_name, device_kind}` | 201 with `TokenIssued`. Only while `signup = "open"`; creates the user and a new tenant they own, and sends a verification mail if mail is configured. A server with its own sign-up hook may answer 202 with `{error: <message>}` and create nothing yet, see [architecture.md](architecture.md#extension-points) |
 | `POST /auth/verify` | `{token}` | 204. Confirms the email address with the token from the verification link |
 | `POST /auth/verify/resend` | | 204, or 409 without mail |
 | `POST /auth/password` | `{current, new}` | 204. Every other device of the user is signed out |
@@ -88,8 +88,8 @@ these changes:
 - `GET /me` has more fields: `user_id`, `email`, `email_verified`, `tenant_id`, `tenant_name` and `role`. `name` is
   the user's name, no longer always the configured owner.
 - `Device` (in `GET /auth/devices`) has a `tenant_id`. The list holds the devices of the signed-in user only.
-- `PUT` and `DELETE /credentials/{name}` and `POST /connectors/{id}/connect` need the `owner` or `admin` role (403
-  for members).
+- `PUT` and `DELETE /credentials/{name}`, `POST /connectors/{id}/connect` and `PUT /settings/budget` need the
+  `owner` or `admin` role (403 for members).
 - Personal data is narrowed to its user: see [architecture.md](architecture.md#tenancy) for which lists now differ
   between members of the same tenant.
 - New endpoints: everything in [Users and tenants](#users-and-tenants).
@@ -287,7 +287,8 @@ and the severity can only go up. After it is resolved, the next occurrence opens
 
 ## Settings
 
-Lighthouse is a personal assistant with one owner, so there are no members, roles or invitations to manage.
+Settings belong to the tenant. Members read them; changing the budget needs the `owner` or `admin` role. Members,
+roles and invitations are managed under [Users and tenants](#users-and-tenants).
 
 | Endpoint | Purpose |
 |---|---|

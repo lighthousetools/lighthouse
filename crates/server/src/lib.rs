@@ -4,9 +4,10 @@ use anyhow::Context;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
+use lighthouse_api::hooks::{Action, AllowAll, Entitlements, Lifecycle, NoHooks};
 use lighthouse_api::{
     AgentChangeError, AgentInfo, AgentTool, ApiState, AskAnswer, Assistant, Catalog, ConnectorInfo,
-    Instance, ModelRoute, RunTrigger, SignupMode, SkillInfo, TriggerError,
+    Extensions, Instance, ModelRoute, RunTrigger, SignupMode, SkillInfo, TriggerError,
 };
 use lighthouse_audit::{AuditError, AuditLog, RunEnd, RunStatus};
 use lighthouse_auth::Accounts;
@@ -66,6 +67,8 @@ pub fn master_key(config: &Config) -> anyhow::Result<MasterKey> {
 
 /// Starts runs of the loaded agents in the background.
 pub struct AgentPool {
+    tenant: TenantId,
+    entitlements: Arc<dyn Entitlements>,
     desk: Desk,
     runtime: Arc<Runtime>,
     agents: Arc<AgentRegistry>,
@@ -85,6 +88,17 @@ async fn after_run(outcomes: &Outcomes, engine: &Arc<AutomationEngine>, run: Run
 }
 
 impl AgentPool {
+    /// Asks the entitlements whether the agent may start a run now.
+    async fn allowed(&self, agent_id: &str) -> Result<(), TriggerError> {
+        let action = Action::RunAgent {
+            agent_id: agent_id.to_owned(),
+        };
+        self.entitlements
+            .check(self.tenant, &action)
+            .await
+            .map_err(TriggerError::Refused)
+    }
+
     async fn spawn(&self, agent: Arc<AgentDefinition>, trigger: &str) -> Result<RunId, AuditError> {
         self.spawn_with(agent, trigger, None).await
     }
@@ -217,6 +231,7 @@ impl RunTrigger for AgentPool {
             .agents
             .get(agent_id)
             .ok_or_else(|| TriggerError::UnknownAgent(agent_id.to_owned()))?;
+        self.allowed(agent_id).await?;
         let run = self
             .spawn(known.agent, "manual")
             .await
@@ -233,6 +248,7 @@ impl RunTrigger for AgentPool {
             .agents
             .get(agent_id)
             .ok_or_else(|| TriggerError::UnknownAgent(agent_id.to_owned()))?;
+        self.allowed(agent_id).await?;
         let run = self
             .spawn_with(known.agent, "task", Some(context.to_owned()))
             .await
@@ -254,9 +270,14 @@ impl AgentRunner for AgentPool {
             self.engine.start_scheduled(agent_id).await;
             return;
         }
-        if let Some(known) = self.agents.get(agent_id)
-            && let Err(error) = self.spawn(known.agent, trigger).await
-        {
+        let Some(known) = self.agents.get(agent_id) else {
+            return;
+        };
+        if let Err(error) = self.allowed(agent_id).await {
+            tracing::warn!(agent = %agent_id, %error, "run not allowed");
+            return;
+        }
+        if let Err(error) = self.spawn(known.agent, trigger).await {
             tracing::error!(agent = %agent_id, %error, "cannot start run");
         }
     }
@@ -653,6 +674,7 @@ struct Shared {
     policy: ToolPolicy,
     /// One set of OAuth flows serves every tenant, so the callback finds each flow.
     oauth: Arc<OAuthFlows>,
+    entitlements: Arc<dyn Entitlements>,
 }
 
 impl Shared {
@@ -1058,6 +1080,8 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         config.publishing.clone(),
     ));
     let pool = Arc::new(AgentPool {
+        tenant,
+        entitlements: shared.entitlements.clone(),
         desk: desk.clone(),
         runtime,
         agents: agents.clone(),
@@ -1129,8 +1153,35 @@ fn signup_mode(mode: lighthouse_config::SignupMode) -> SignupMode {
     }
 }
 
+/// What a program built on this crate adds to the server.
+pub struct Hooks {
+    /// Hooks around sign-ups and tenants.
+    pub lifecycle: Arc<dyn Lifecycle>,
+    /// Limits of tenants, consulted before tenants are created, members
+    /// invited and agents run.
+    pub entitlements: Arc<dyn Entitlements>,
+    /// Extra routes, public and behind the sign-in.
+    pub routes: Extensions,
+}
+
+impl Default for Hooks {
+    fn default() -> Self {
+        Self {
+            lifecycle: Arc::new(NoHooks),
+            entitlements: Arc::new(AllowAll),
+            routes: Extensions::default(),
+        }
+    }
+}
+
 /// Connects everything described by the configuration.
 pub async fn build(config: Config) -> anyhow::Result<App> {
+    build_with(config, Hooks::default()).await
+}
+
+/// Connects everything described by the configuration, with the hooks and
+/// routes of another program.
+pub async fn build_with(config: Config, hooks: Hooks) -> anyhow::Result<App> {
     let config = Arc::new(config);
     let store = Store::connect(config.database.url.expose_secret())
         .await
@@ -1161,6 +1212,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
             config.connectors.clone(),
             &config.server.public_url,
         )),
+        entitlements: hooks.entitlements.clone(),
     });
     let configured_owner = shared.owner(TenantId::DEFAULT).await?;
     resolve_sources(&config, &shared.policy, &configured_owner)?;
@@ -1183,16 +1235,21 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         )?)),
         None => None,
     };
-    let router = lighthouse_api::router(Instance {
-        accounts,
-        tenants: workspaces.clone(),
-        oauth: shared.oauth.clone(),
-        admin_token: config.server.admin_token.clone(),
-        signup: signup_mode(config.tenancy.signup),
-        mailer,
-        public_url: config.server.public_url.trim_end_matches('/').to_owned(),
-        trust_forwarded_for: config.server.trust_forwarded_for,
-    });
+    let router = lighthouse_api::router_with(
+        Instance {
+            accounts,
+            tenants: workspaces.clone(),
+            oauth: shared.oauth.clone(),
+            admin_token: config.server.admin_token.clone(),
+            signup: signup_mode(config.tenancy.signup),
+            mailer,
+            public_url: config.server.public_url.trim_end_matches('/').to_owned(),
+            trust_forwarded_for: config.server.trust_forwarded_for,
+            lifecycle: hooks.lifecycle,
+            entitlements: hooks.entitlements,
+        },
+        hooks.routes,
+    );
     let router = match &config.paths.web {
         Some(directory) => lighthouse_api::with_web_app(router, directory),
         None => router,

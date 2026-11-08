@@ -90,6 +90,6 @@ remain.
 
 ## Limits
 
-- Scope is always `personal`, since an instance has one owner.
+- Scope is always `personal`. The Brain is shared by the members of a tenant; each tenant has its own.
 - Vector search scans all chunks, which is fine for a personal Brain of up to some 100,000 chunks.
 - Duplicates and contradictions are not detected yet.

@@ -1,6 +1,7 @@
 //! The signed-in user, their tenants and the administration of a tenant.
 
 use crate::auth::{Caller, TokenIssued, acting_user, auth_error};
+use crate::hooks::Action;
 use crate::{ApiError, Instance, Scoped, SignupMode};
 use axum::Json;
 use axum::extract::{Path, State};
@@ -275,6 +276,7 @@ pub(crate) async fn delete_me(
         .map_err(auth_error)?;
     for tenant in purged {
         instance.tenants.forget(tenant).await;
+        instance.lifecycle.on_tenant_deleted(tenant).await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -337,11 +339,17 @@ pub(crate) async fn create(
             "new tenants need open sign-up".to_owned(),
         ));
     }
+    instance
+        .entitlements
+        .check(caller.tenant, &Action::CreateTenant { user })
+        .await
+        .map_err(|message| ApiError(StatusCode::FORBIDDEN, message))?;
     let tenant = instance
         .accounts
         .create_tenant(user, &new.name)
         .await
         .map_err(auth_error)?;
+    instance.lifecycle.on_tenant_created(tenant, user).await;
     let issued = instance
         .accounts
         .issue(user, tenant, &new.device_name, new.device_kind)
@@ -517,6 +525,7 @@ pub(crate) async fn delete(
         .await
         .map_err(auth_error)?;
     instance.tenants.forget(caller.tenant).await;
+    instance.lifecycle.on_tenant_deleted(caller.tenant).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -683,6 +692,17 @@ pub(crate) async fn invite(
             "this person is a member already".to_owned(),
         ));
     }
+    let members = instance
+        .accounts
+        .members(caller.tenant)
+        .await
+        .map_err(auth_error)?
+        .len();
+    instance
+        .entitlements
+        .check(caller.tenant, &Action::InviteMember { members })
+        .await
+        .map_err(|message| ApiError(StatusCode::FORBIDDEN, message))?;
     let issued = instance
         .accounts
         .invite(caller.tenant, &request.email, request.role, caller.user)
@@ -1038,6 +1058,18 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
+        let budget = json!({"monthly_eur": 10.0});
+        let (status, _) = send(
+            app,
+            "PUT",
+            "/settings/budget",
+            Some(&robin.token),
+            Some(budget.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = send(app, "PUT", "/settings/budget", Some(&owner), Some(budget)).await;
+        assert_eq!(status, StatusCode::OK);
         assert_eq!(
             call(app, "DELETE", "/credentials/anthropic", Some(&robin.token))
                 .await

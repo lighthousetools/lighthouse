@@ -1,5 +1,6 @@
 //! Sign-in, sign-up, devices and credentials.
 
+use crate::hooks::SignupDecision;
 use crate::{ApiError, Instance, Scoped, SignupMode, bearer_token, internal};
 use axum::Json;
 use axum::extract::{ConnectInfo, FromRequestParts, Path, Request, State};
@@ -479,6 +480,7 @@ pub(crate) async fn send_verification(instance: &Instance, user: &User) {
     request_body = SignupRequest,
     responses(
         (status = 201, body = TokenIssued),
+        (status = 202, description = "Nothing created yet, for example while the sign-up waits for approval"),
         (status = 400, description = "Invalid email, name or password"),
         (status = 403, description = "Sign-up is not open"),
         (status = 409, description = "Email address taken"),
@@ -495,6 +497,15 @@ pub(crate) async fn signup(
             StatusCode::FORBIDDEN,
             "sign-up is not open on this instance".to_owned(),
         ));
+    }
+    match instance
+        .lifecycle
+        .on_signup(request.email.trim(), &client)
+        .await
+    {
+        SignupDecision::Allow => {}
+        SignupDecision::Reject(message) => return Err(ApiError(StatusCode::FORBIDDEN, message)),
+        SignupDecision::Pending(message) => return Err(ApiError(StatusCode::ACCEPTED, message)),
     }
     let tenant_name = request
         .tenant_name
@@ -514,6 +525,7 @@ pub(crate) async fn signup(
         )
         .await
         .map_err(auth_error)?;
+    instance.lifecycle.on_tenant_created(tenant, user.id).await;
     send_verification(&instance, &user).await;
     let issued = instance
         .accounts

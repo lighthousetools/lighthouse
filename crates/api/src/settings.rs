@@ -119,13 +119,16 @@ pub(crate) async fn get_budget(Scoped(state): Scoped) -> Result<Json<BudgetView>
     operation_id = "set_budget",
     path = "/settings/budget",
     request_body = Budget,
-    responses((status = 200, body = BudgetView), (status = 400, description = "Invalid budget")),
+    responses((status = 200, body = BudgetView), (status = 400, description = "Invalid budget"),
+        (status = 403, description = "Needs the owner or admin role")),
     security(("bearer" = []))
 )]
 pub(crate) async fn set_budget(
     Scoped(state): Scoped,
+    caller: crate::Caller,
     Json(budget): Json<Budget>,
 ) -> Result<Json<BudgetView>, ApiError> {
+    caller.require_manager()?;
     if budget
         .monthly_eur
         .is_some_and(|limit| !limit.is_finite() || limit < 0.0)

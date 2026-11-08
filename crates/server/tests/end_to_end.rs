@@ -55,6 +55,13 @@ async fn start() -> (String, tempfile::TempDir, lighthouse_store::Store) {
 }
 
 async fn start_with(extra: &str) -> (String, tempfile::TempDir, lighthouse_store::Store) {
+    start_with_hooks(extra, lighthouse_server::Hooks::default()).await
+}
+
+async fn start_with_hooks(
+    extra: &str,
+    hooks: lighthouse_server::Hooks,
+) -> (String, tempfile::TempDir, lighthouse_store::Store) {
     let database = lighthouse_store::testing::fresh_store().await;
     let url: (String,) = lighthouse_store::sqlx::query_as("SELECT current_database()::text")
         .fetch_one(database.pool())
@@ -151,7 +158,7 @@ path = "{brain}"
     );
     let path = dir.path().join("lighthouse.toml");
     std::fs::write(&path, toml).unwrap();
-    let app = lighthouse_server::build(Config::load(&path).unwrap())
+    let app = lighthouse_server::build_with(Config::load(&path).unwrap(), hooks)
         .await
         .unwrap();
     (serve(app.router).await, dir, database)
@@ -891,4 +898,109 @@ async fn a_signed_up_tenant_works_on_its_own_and_can_be_deleted() {
         .await
         .unwrap();
     assert_eq!(after.status(), 401);
+}
+
+struct Gate;
+
+#[async_trait::async_trait]
+impl lighthouse_api::hooks::Lifecycle for Gate {
+    async fn on_signup(&self, email: &str, _client: &str) -> lighthouse_api::hooks::SignupDecision {
+        if email.starts_with("wait") {
+            lighthouse_api::hooks::SignupDecision::Pending("we will be in touch".to_owned())
+        } else if email.starts_with("no") {
+            lighthouse_api::hooks::SignupDecision::Reject("not today".to_owned())
+        } else {
+            lighthouse_api::hooks::SignupDecision::Allow
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl lighthouse_api::hooks::Entitlements for Gate {
+    async fn check(
+        &self,
+        tenant: TenantId,
+        action: &lighthouse_api::hooks::Action,
+    ) -> Result<(), String> {
+        match action {
+            lighthouse_api::hooks::Action::RunAgent { .. } if tenant != TenantId::DEFAULT => {
+                Err("runs are not included".to_owned())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+async fn whoami(caller: lighthouse_api::Caller) -> String {
+    caller.tenant.as_uuid().to_string()
+}
+
+#[tokio::test]
+async fn another_program_adds_hooks_limits_and_routes() {
+    use axum::routing::get as route_get;
+    let routes = lighthouse_api::Extensions {
+        public: axum::Router::new().route("/ext/ping", route_get(|| async { "pong" })),
+        signed_in: axum::Router::new().route("/ext/whoami", route_get(whoami)),
+    };
+    let hooks = lighthouse_server::Hooks {
+        lifecycle: Arc::new(Gate),
+        entitlements: Arc::new(Gate),
+        routes,
+    };
+    let (base, _dir, _database) = start_with_hooks(
+        "[tenancy]\nsignup = \"open\"\ndata_dir = \"{dir}/tenants\"\n",
+        hooks,
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let signup = |email: &str| {
+        client
+            .post(format!("{base}/auth/signup"))
+            .json(
+                &json!({"email": email, "name": "Sam", "password": "a long enough password",
+                          "device_name": "web", "device_kind": "web"}),
+            )
+            .send()
+    };
+    assert_eq!(signup("wait@example.com").await.unwrap().status(), 202);
+    assert_eq!(signup("no@example.com").await.unwrap().status(), 403);
+    let issued: Value = signup("sam@example.com")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = issued["token"].as_str().unwrap();
+
+    let ping = client.get(format!("{base}/ext/ping")).send().await.unwrap();
+    assert_eq!(ping.text().await.unwrap(), "pong");
+    let anonymous = client
+        .get(format!("{base}/ext/whoami"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401);
+    let whoami = client
+        .get(format!("{base}/ext/whoami"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(whoami, issued["tenant_id"].as_str().unwrap());
+
+    let refused = client
+        .post(format!("{base}/agents/reader/run"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 409);
+    assert!(refused.text().await.unwrap().contains("not included"));
+    assert_eq!(
+        run_to_end(&base, "reader").await["run"]["status"],
+        "succeeded"
+    );
 }

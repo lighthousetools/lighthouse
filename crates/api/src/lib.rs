@@ -17,6 +17,7 @@ mod contracts;
 mod decks;
 mod documents;
 mod holdings;
+pub mod hooks;
 mod memory;
 mod organizations;
 mod pipeline;
@@ -199,25 +200,32 @@ pub struct Instance {
     /// Whether the first address in `X-Forwarded-For` is the client, behind a
     /// trusted reverse proxy.
     pub trust_forwarded_for: bool,
+    /// Hooks around sign-ups and tenants.
+    pub lifecycle: Arc<dyn hooks::Lifecycle>,
+    /// Limits of tenants.
+    pub entitlements: Arc<dyn hooks::Entitlements>,
 }
 
 /// The state of the caller's tenant, as the authentication put it into the
-/// request. Personal data in it is narrowed to the calling user.
-pub(crate) struct Scoped(pub ApiState);
+/// request. Personal data in it is narrowed to the calling user. Extra routes
+/// of [`Extensions::signed_in`] can extract it, like [`Caller`].
+pub struct Scoped(pub ApiState);
 
 impl<S: Send + Sync> FromRequestParts<S> for Scoped {
-    type Rejection = ApiError;
+    type Rejection = Response;
 
     async fn from_request_parts(
         parts: &mut axum::http::request::Parts,
         _: &S,
-    ) -> Result<Self, ApiError> {
+    ) -> Result<Self, Response> {
         parts
             .extensions
             .get::<ApiState>()
             .cloned()
             .map(Self)
-            .ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "sign-in required".to_owned()))
+            .ok_or_else(|| {
+                ApiError(StatusCode::UNAUTHORIZED, "sign-in required".to_owned()).into_response()
+            })
     }
 }
 
@@ -659,8 +667,23 @@ pub fn with_web_app(router: Router, directory: &std::path::Path) -> Router {
     router.fallback_service(tower_http::services::ServeDir::new(directory))
 }
 
+/// Routes another program adds to the API.
+#[derive(Default)]
+pub struct Extensions {
+    /// Routes anyone may call.
+    pub public: Router<Instance>,
+    /// Routes behind the sign-in. Handlers can extract [`Caller`] and
+    /// [`Scoped`], and [`Instance`] as state.
+    pub signed_in: Router<Instance>,
+}
+
 /// Builds the router.
 pub fn router(state: Instance) -> Router {
+    router_with(state, Extensions::default())
+}
+
+/// Builds the router with extra routes.
+pub fn router_with(state: Instance, extensions: Extensions) -> Router {
     let signed_in = Router::new()
         .route(
             "/me",
@@ -912,6 +935,7 @@ pub fn router(state: Instance) -> Router {
             "/credentials/{name}",
             put(auth::put_credential).delete(auth::delete_credential),
         )
+        .merge(extensions.signed_in)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
@@ -929,6 +953,7 @@ pub fn router(state: Instance) -> Router {
         .route("/auth/verify", post(auth::verify_email))
         .route("/auth/invitation", post(auth::invitation))
         .route("/auth/accept", post(auth::accept))
+        .merge(extensions.public)
         .merge(signed_in)
         .merge(admin)
         .with_state(state)
@@ -1417,6 +1442,8 @@ mod tests {
             mailer,
             public_url: "https://lighthouse.test".to_owned(),
             trust_forwarded_for: true,
+            lifecycle: Arc::new(hooks::NoHooks),
+            entitlements: Arc::new(hooks::AllowAll),
         };
         Harness {
             app: router(instance),

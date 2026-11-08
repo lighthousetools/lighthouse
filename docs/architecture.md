@@ -133,3 +133,16 @@ wrapped, and background work that legitimately spans tenants (opening workspaces
 layer) would need a second, privileged role. The guard and the tests give the same protection against the likely
 mistake, a statement that forgets its tenant, without that rewrite. Row-level security stays a later step for
 defence in depth.
+
+## Extension points
+
+`lighthouse-server` is a library with a thin binary. Another program can build its own server on the public crates
+with `lighthouse_server::build_with(config, hooks)` and serve the returned router the same way. `Hooks` holds:
+
+| Field | Trait or type | Default | Consulted |
+|---|---|---|---|
+| `lifecycle` | `lighthouse_api::hooks::Lifecycle` | `NoHooks` | `on_signup` before an account is created; it may allow, reject (403) or hold the sign-up (202, nothing created). `on_tenant_created` after sign-up and `POST /tenants`, `on_tenant_deleted` after a tenant is deleted |
+| `entitlements` | `lighthouse_api::hooks::Entitlements` | `AllowAll` | Before a user creates another tenant, before an invitation, and before every agent run, by hand, from a task, from Talk or on a schedule. A refusal answers 403, or 409 for runs; scheduled runs are skipped and logged |
+| `routes` | `lighthouse_api::Extensions` | none | `public` routes are merged as they are; `signed_in` routes sit behind the sign-in and can extract `Caller` (user, tenant, role) and `Scoped` (the tenant's state), with `Instance` (accounts and the store) as router state |
+
+The defaults allow everything, which is how `lighthouse-server` runs.
