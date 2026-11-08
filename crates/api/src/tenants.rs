@@ -776,9 +776,22 @@ pub(crate) async fn invite(
         .await
         .map_err(auth_error)?
         .len();
+    let pending = instance
+        .accounts
+        .invitations(caller.tenant)
+        .await
+        .map_err(auth_error)?
+        .iter()
+        .filter(|open| !open.email.eq_ignore_ascii_case(request.email.trim()))
+        .count();
+    let action = Action::InviteMember {
+        members,
+        pending,
+        role: request.role,
+    };
     instance
         .entitlements
-        .check(caller.tenant, &Action::InviteMember { members })
+        .check(caller.tenant, &action)
         .await
         .map_err(|message| ApiError(StatusCode::FORBIDDEN, message))?;
     let sent = instance
@@ -1422,6 +1435,93 @@ mod tests {
         let (status, _) = call(app, "DELETE", &path, Some(&owner)).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         assert_eq!(recorder.take(), ["removed"]);
+    }
+
+    /// Entitlements that allow one open invitation and no questions.
+    #[derive(Default)]
+    struct Strict(Mutex<Vec<crate::hooks::Action>>);
+
+    #[async_trait]
+    impl crate::hooks::Entitlements for Strict {
+        async fn check(&self, _: TenantId, action: &crate::hooks::Action) -> Result<(), String> {
+            self.0.lock().unwrap().push(action.clone());
+            match action {
+                crate::hooks::Action::InviteMember { pending, .. } if *pending > 0 => {
+                    Err("one open invitation at a time".to_owned())
+                }
+                crate::hooks::Action::Ask { .. } => Err("questions are not included".to_owned()),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn entitlements_see_open_invitations_and_questions() {
+        let strict = Arc::new(Strict::default());
+        let limits = strict.clone();
+        let harness = crate::tests::build_harness_tweaked(
+            Some(TOKEN),
+            None,
+            SignupMode::Invite,
+            None,
+            |instance| instance.entitlements = limits,
+        )
+        .await;
+        let app = &harness.app;
+        let owner = signed_in(app).await;
+        let (status, _) = invite(app, &owner, "robin@example.com", "admin").await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, _) = invite(app, &owner, "ROBIN@example.com", "member").await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "a new invitation replaces the open one"
+        );
+        let (status, body) = invite(app, &owner, "kim@example.com", "member").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"], "one open invitation at a time");
+        let seen = strict.0.lock().unwrap().clone();
+        assert_eq!(
+            seen[..2],
+            [
+                crate::hooks::Action::InviteMember {
+                    members: 1,
+                    pending: 0,
+                    role: Role::Admin
+                },
+                crate::hooks::Action::InviteMember {
+                    members: 1,
+                    pending: 0,
+                    role: Role::Member
+                }
+            ]
+        );
+
+        let question = json!({"question": "What is new?"});
+        for path in ["/brain/ask", "/brain/ask/stream"] {
+            let (status, body) =
+                send(app, "POST", path, Some(&owner), Some(question.clone())).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{path}");
+            assert!(body.contains("not included"), "{body}");
+        }
+        let (_, body) = send(app, "POST", "/talk/threads", Some(&owner), Some(json!({}))).await;
+        let thread = json_of(&body)["id"].as_str().unwrap().to_owned();
+        let messages = format!("/talk/threads/{thread}/messages");
+        let (status, _) = send(
+            app,
+            "POST",
+            &messages,
+            Some(&owner),
+            Some(json!({"text": "Hi"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (_, body) = call(app, "GET", &format!("/talk/threads/{thread}"), Some(&owner)).await;
+        assert_eq!(json_of(&body)["messages"], json!([]), "nothing was stored");
+        assert!(matches!(
+            strict.0.lock().unwrap().last(),
+            Some(crate::hooks::Action::Ask { user: Some(_) })
+        ));
     }
 
     struct Plain;

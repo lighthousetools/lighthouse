@@ -1044,6 +1044,69 @@ async fn another_program_adds_hooks_limits_and_routes() {
         .unwrap();
     assert_eq!(refused.status(), 409);
     assert!(refused.text().await.unwrap().contains("not included"));
+
+    let thread: Value = client
+        .post(format!("{base}/talk/threads"))
+        .bearer_auth(token)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let talk = client
+        .post(format!(
+            "{base}/talk/threads/{}/messages",
+            thread["id"].as_str().unwrap()
+        ))
+        .bearer_auth(token)
+        .json(&json!({"text": "Hello"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(talk.status(), 409, "the Talk agent may not run either");
+
+    let source = "---\nname: Gated\ntrigger:\n  webhook: true\nsteps:\n  - agent: reader\n---\n";
+    let saved = client
+        .post(format!("{base}/automations"))
+        .bearer_auth(token)
+        .json(&json!({"source": source}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), 200);
+    let started: Value = client
+        .post(format!("{base}/automations/gated/run"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let run = started["id"].as_str().unwrap().to_owned();
+    let mut detail = Value::Null;
+    for _ in 0..200 {
+        detail = client
+            .get(format!("{base}/runs/{run}"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if detail["run"]["status"] != "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(detail["run"]["status"], "failed", "{detail}");
+    assert!(
+        detail.to_string().contains("not included"),
+        "the agent step was refused: {detail}"
+    );
     assert_eq!(
         run_to_end(&base, "reader").await["run"]["status"],
         "succeeded"

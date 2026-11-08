@@ -1,8 +1,9 @@
 //! Talk: conversations with the assistant.
 
-use crate::{ApiError, ApiState, Scoped, desk_error, internal, not_found};
+use crate::auth::Caller;
+use crate::{ApiError, ApiState, Instance, Scoped, desk_error, may_ask, not_found, trigger_error};
 use axum::Json;
-use axum::extract::Path;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use lighthouse_desk::{TalkMessage, TalkThread, transcript};
 use serde::{Deserialize, Serialize};
@@ -179,11 +180,14 @@ pub(crate) async fn delete(
         (status = 200, body = Exchange),
         (status = 202, body = Exchange),
         (status = 400, description = "Empty message"),
-        (status = 404, description = "Unknown thread")
+        (status = 404, description = "Unknown thread"),
+        (status = 409, description = "The entitlements refuse the run or the question")
     ),
     security(("bearer" = []))
 )]
 pub(crate) async fn send(
+    State(instance): State<Instance>,
+    caller: Caller,
     Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(message): Json<NewMessage>,
@@ -195,6 +199,28 @@ pub(crate) async fn send(
         .map_err(desk_error)?
         .ok_or_else(|| not_found("thread"))?;
     let history = state.desk.messages(id).await.map_err(desk_error)?;
+    let earlier = transcript(&history, HISTORY);
+    // A refused run or question leaves the conversation as it was.
+    let run = match &state.talk_agent {
+        Some(agent) => {
+            let context = format!(
+                "This run answers the owner in a conversation. Answer the latest message.\n\n\
+                 Conversation so far:\n{earlier}\n\nLatest message from the owner:\n{}",
+                message.text
+            );
+            Some(
+                state
+                    .trigger
+                    .trigger_with_context(agent, &context)
+                    .await
+                    .map_err(trigger_error)?,
+            )
+        }
+        None => {
+            may_ask(&instance, &caller).await?;
+            None
+        }
+    };
     let question = state
         .desk
         .add_message(id, "owner", &message.text, "done", None, json!([]))
@@ -208,19 +234,8 @@ pub(crate) async fn send(
             .await
             .map_err(desk_error)?;
     }
-    let earlier = transcript(&history, HISTORY);
-    let (status, answer) = match &state.talk_agent {
-        Some(agent) => {
-            let context = format!(
-                "This run answers the owner in a conversation. Answer the latest message.\n\n\
-                 Conversation so far:\n{earlier}\n\nLatest message from the owner:\n{}",
-                message.text
-            );
-            let run = state
-                .trigger
-                .trigger_with_context(agent, &context)
-                .await
-                .map_err(internal)?;
+    let (status, answer) = match run {
+        Some(run) => {
             let answer = state
                 .desk
                 .add_message(id, "assistant", "", "pending", Some(run), json!([]))

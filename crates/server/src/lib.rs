@@ -1063,13 +1063,16 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         paths.created_automations,
     )?);
     tracing::info!(count = automation_files.list().len(), "automations loaded");
-    let engine = Arc::new(AutomationEngine::new(
-        runtime.clone(),
-        agents.clone(),
-        automation_files,
-        outcomes.clone(),
-        desk.clone(),
-    ));
+    let engine = Arc::new(
+        AutomationEngine::new(
+            runtime.clone(),
+            agents.clone(),
+            automation_files,
+            outcomes.clone(),
+            desk.clone(),
+        )
+        .with_entitlements(tenant, shared.entitlements.clone()),
+    );
     let sources = resolve_sources(config, &shared.policy, &owner)?;
     tracing::info!(count = sources.len(), "connected sources loaded");
     let sync_store = lighthouse_sync::SyncStore::new(store.clone(), tenant);

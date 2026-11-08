@@ -54,23 +54,37 @@ pub struct NoHooks;
 
 impl Lifecycle for NoHooks {}
 
-/// Something a tenant or user wants to do that may be limited.
+/// Something a tenant or user wants to do that may be limited. New kinds of
+/// actions may be added, so match with a catch-all arm.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Action {
     /// A user creates another tenant.
     CreateTenant {
         /// The user.
         user: Uuid,
     },
-    /// An owner or admin invites someone; `members` is the current count.
+    /// An owner or admin invites someone.
     InviteMember {
         /// Members of the tenant now.
         members: usize,
+        /// Open invitations of the tenant now. One for the same address is
+        /// not counted, since the new invitation replaces it.
+        pending: usize,
+        /// Role of the new member.
+        role: Role,
     },
-    /// An agent starts a run, by hand, on a schedule or from an automation.
+    /// An agent starts a run: by hand, from a task, from Talk, on a schedule
+    /// or as a step of an automation.
     RunAgent {
         /// The agent.
         agent_id: String,
+    },
+    /// Someone asks the Second Brain, through `/brain/ask` or in a
+    /// conversation that no Talk agent answers.
+    Ask {
+        /// The user, absent for the admin token.
+        user: Option<Uuid>,
     },
 }
 

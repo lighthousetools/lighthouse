@@ -4,16 +4,17 @@ use crate::outcomes::Outcomes;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
+use lighthouse_api::hooks::{Action, Entitlements};
 use lighthouse_api::{
     AgentChangeError, AutomationDryRun, AutomationInfo, AutomationStepInfo, AutomationTriggerInfo,
     Automations, DryRunRequest, PlannedStep, TriggerError,
 };
 use lighthouse_audit::{AuditError, RunRecord};
-use lighthouse_core::RunId;
 use lighthouse_core::agent::{ToolLevel, parse_cron};
 use lighthouse_core::automation::{
     Automation, AutomationStep, AutomationTrigger, Condition, RUN_PREFIX, matches,
 };
+use lighthouse_core::{RunId, TenantId};
 use lighthouse_desk::Desk;
 use lighthouse_runtime::{
     AgentOutcome, AgentRegistry, AgentSteps, AutomationRegistry, LoadedAutomation, RegistryError,
@@ -32,6 +33,7 @@ pub struct AutomationEngine {
     automations: Arc<AutomationRegistry>,
     outcomes: Arc<Outcomes>,
     desk: Desk,
+    limits: Option<(TenantId, Arc<dyn Entitlements>)>,
 }
 
 impl std::fmt::Debug for AutomationEngine {
@@ -64,7 +66,19 @@ impl AutomationEngine {
             automations,
             outcomes,
             desk,
+            limits: None,
         }
+    }
+
+    /// Asks the entitlements of the tenant before every agent step.
+    #[must_use]
+    pub fn with_entitlements(
+        mut self,
+        tenant: TenantId,
+        entitlements: Arc<dyn Entitlements>,
+    ) -> Self {
+        self.limits = Some((tenant, entitlements));
+        self
     }
 
     async fn switches(&self) -> HashMap<String, bool> {
@@ -257,6 +271,12 @@ impl AgentSteps for AutomationEngine {
             .agents
             .get(agent_id)
             .ok_or_else(|| format!("unknown agent `{agent_id}`"))?;
+        if let Some((tenant, entitlements)) = &self.limits {
+            let action = Action::RunAgent {
+                agent_id: agent_id.to_owned(),
+            };
+            entitlements.check(*tenant, &action).await?;
+        }
         let run = RunId::new();
         let failed = |error: AuditError| error.to_string();
         self.runtime

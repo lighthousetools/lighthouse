@@ -1,9 +1,10 @@
 //! The Second Brain.
 
-use crate::{ApiError, Scoped, internal};
+use crate::auth::Caller;
+use crate::{ApiError, Instance, Scoped, internal, may_ask};
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, Query};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -124,11 +125,14 @@ pub(crate) async fn search(
     request_body = AskRequest,
     responses(
         (status = 200, body = AskAnswer),
+        (status = 409, description = "The entitlements refuse the question"),
         (status = 502, description = "The model could not answer")
     ),
     security(("bearer" = []))
 )]
 pub(crate) async fn ask(
+    State(instance): State<Instance>,
+    caller: Caller,
     Scoped(state): Scoped,
     Json(request): Json<AskRequest>,
 ) -> Result<Json<AskAnswer>, ApiError> {
@@ -138,6 +142,7 @@ pub(crate) async fn ask(
             "the question is empty".to_owned(),
         ));
     }
+    may_ask(&instance, &caller).await?;
     state
         .assistant
         .ask(&request.question)
@@ -271,13 +276,17 @@ pub(crate) async fn resolve(
     operation_id = "ask_brain_stream",
     path = "/brain/ask/stream",
     request_body = AskRequest,
-    responses((status = 200, description = "Server-sent events", content_type = "text/event-stream")),
+    responses((status = 200, description = "Server-sent events", content_type = "text/event-stream"),
+        (status = 409, description = "The entitlements refuse the question")),
     security(("bearer" = []))
 )]
 pub(crate) async fn ask_stream(
+    State(instance): State<Instance>,
+    caller: Caller,
     Scoped(state): Scoped,
     Json(request): Json<AskRequest>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
+    may_ask(&instance, &caller).await?;
     let (sender, receiver) = mpsc::channel::<Result<Event, Infallible>>(256);
     tokio::spawn(async move {
         let (deltas, mut incoming) = mpsc::unbounded_channel();
@@ -304,7 +313,7 @@ pub(crate) async fn ask_stream(
         };
         let _ = sender.send(Ok(event)).await;
     });
-    Sse::new(ReceiverStream::new(receiver)).keep_alive(KeepAlive::default())
+    Ok(Sse::new(ReceiverStream::new(receiver)).keep_alive(KeepAlive::default()))
 }
 
 /// Changes an entry.

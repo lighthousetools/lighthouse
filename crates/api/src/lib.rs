@@ -373,6 +373,23 @@ fn internal(error: impl std::fmt::Display) -> ApiError {
     )
 }
 
+fn trigger_error(error: TriggerError) -> ApiError {
+    match error {
+        TriggerError::UnknownAgent(_) => ApiError(StatusCode::NOT_FOUND, error.to_string()),
+        TriggerError::Refused(_) => ApiError(StatusCode::CONFLICT, error.to_string()),
+        TriggerError::Failed(_) => internal(error),
+    }
+}
+
+/// Asks the entitlements whether the caller's tenant may ask the Brain now.
+async fn may_ask(instance: &Instance, caller: &Caller) -> Result<(), ApiError> {
+    instance
+        .entitlements
+        .check(caller.tenant, &hooks::Action::Ask { user: caller.user })
+        .await
+        .map_err(|message| ApiError(StatusCode::CONFLICT, message))
+}
+
 fn not_found(what: &str) -> ApiError {
     ApiError(StatusCode::NOT_FOUND, format!("unknown {what}"))
 }
@@ -496,15 +513,7 @@ async fn run_agent(
     Scoped(state): Scoped,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<RunStarted>), ApiError> {
-    let run = state
-        .trigger
-        .trigger(&id)
-        .await
-        .map_err(|error| match error {
-            TriggerError::UnknownAgent(_) => ApiError(StatusCode::NOT_FOUND, error.to_string()),
-            TriggerError::Refused(_) => ApiError(StatusCode::CONFLICT, error.to_string()),
-            TriggerError::Failed(_) => internal(error),
-        })?;
+    let run = state.trigger.trigger(&id).await.map_err(trigger_error)?;
     Ok((StatusCode::ACCEPTED, Json(RunStarted { id: run })))
 }
 

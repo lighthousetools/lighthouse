@@ -325,7 +325,7 @@ Talk is a conversation with the assistant, kept as threads of messages.
 | `GET /talk/threads` | Threads, pinned ones first |
 | `POST /talk/threads` | Start one, with an optional `title` |
 | `GET`, `PATCH`, `DELETE /talk/threads/{id}` | Read with all messages, rename or pin (`{"pinned": true}`), delete |
-| `POST /talk/threads/{id}/messages` | `{"text": "..."}` sends a message and returns the `question` and the `answer` |
+| `POST /talk/threads/{id}/messages` | `{"text": "..."}` sends a message and returns the `question` and the `answer`. 409 if a server's entitlements refuse the run or the question; nothing is stored then |
 
 With `[talk] agent = "<agent id>"` in the configuration, a run of that agent answers, with the last twelve messages as
 context. The answer is `pending` (`202`) until the run ends, then `done` or `failed`, and its `run_id` leads to the run
