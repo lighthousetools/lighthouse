@@ -1908,7 +1908,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1944,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-audit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "lighthouse-core",
@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-auth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -1980,7 +1980,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-brain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2004,7 +2004,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2033,7 +2033,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "figment",
  "secrecy",
@@ -2045,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "croner",
  "serde",
@@ -2057,7 +2057,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-desk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "lighthouse-core",
@@ -2073,7 +2073,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2096,7 +2096,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-node"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2118,7 +2118,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-notify"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2139,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-router"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2157,7 +2157,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2185,7 +2185,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-scheduler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-sessions"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "lighthouse-core",
@@ -2254,7 +2254,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-skills"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde-saphyr",
@@ -2264,7 +2264,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lighthouse-core",
  "sqlx",
@@ -2275,7 +2275,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-sync"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2297,7 +2297,7 @@ dependencies = [
 
 [[package]]
 name = "lighthouse-vault"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
