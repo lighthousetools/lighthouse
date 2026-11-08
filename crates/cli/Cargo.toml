@@ -37,6 +37,7 @@ uuid.workspace = true
 lighthouse-sessions.workspace = true
 lighthouse-store = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

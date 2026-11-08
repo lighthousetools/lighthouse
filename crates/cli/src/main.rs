@@ -1,5 +1,6 @@
 //! Command line for Lighthouse.
 
+mod client;
 mod demo;
 
 use anyhow::{Context, bail};
@@ -31,6 +32,14 @@ struct Cli {
     /// Server URL. Defaults to the configured bind address.
     #[arg(long, env = "LHT_SERVER", global = true)]
     server: Option<String>,
+    /// Device token of a user, from `lht login`. Without it, server commands
+    /// use the admin token.
+    #[arg(long, env = "LHT_TOKEN", global = true, hide_env_values = true)]
+    token: Option<String>,
+    /// Tenant ID for the admin token and for local commands such as `keys` and
+    /// `runs`. Defaults to the default tenant.
+    #[arg(long, env = "LHT_TENANT", global = true)]
+    tenant: Option<uuid::Uuid>,
     #[command(subcommand)]
     command: Command,
 }
@@ -70,6 +79,30 @@ enum Command {
         /// Maximum number of items.
         #[arg(long, default_value_t = 20)]
         limit: i64,
+    },
+    /// Signs in with email and password and prints a device token.
+    Login {
+        /// Email address. May be left out while the instance has one user.
+        #[arg(long)]
+        email: Option<String>,
+        /// Name of this device.
+        #[arg(long, default_value = "lht")]
+        device: String,
+    },
+    /// Lists the tenants of the signed-in user, the current one marked.
+    Tenants,
+    /// Prints a token for another tenant of the signed-in user.
+    Switch {
+        /// Tenant ID, see `lht tenants`.
+        tenant: uuid::Uuid,
+    },
+    /// Invites someone to the current tenant.
+    Invite {
+        /// Email address.
+        email: String,
+        /// Role: member, admin or owner.
+        #[arg(long, default_value = "member")]
+        role: String,
     },
 }
 
@@ -154,18 +187,22 @@ async fn store(config: &Config) -> anyhow::Result<Store> {
     Ok(store)
 }
 
-async fn vault(config: &Config) -> anyhow::Result<Vault> {
+async fn vault(config: &Config, tenant: TenantId) -> anyhow::Result<Vault> {
     let key = match (&config.vault.master_key, &config.vault.master_key_file) {
         (Some(key), _) => MasterKey::from_base64(key.expose_secret())?,
         (None, Some(path)) => MasterKey::from_file(path)?,
         (None, None) => bail!("configure vault.master_key_file or vault.master_key"),
     };
-    Ok(Vault::new(store(config).await?, TenantId::DEFAULT, &key))
+    Ok(Vault::new(store(config).await?, tenant, &key))
 }
 
 fn read_secret(name: &str) -> anyhow::Result<SecretString> {
+    read_hidden(&format!("Value for {name}: "))
+}
+
+fn read_hidden(prompt: &str) -> anyhow::Result<SecretString> {
     let value = if std::io::stdin().is_terminal() {
-        rpassword::prompt_password(format!("Value for {name}: "))?
+        rpassword::prompt_password(prompt)?
     } else {
         let mut line = String::new();
         std::io::stdin().lock().read_line(&mut line)?;
@@ -177,7 +214,7 @@ fn read_secret(name: &str) -> anyhow::Result<SecretString> {
     Ok(SecretString::from(value))
 }
 
-async fn keys(config: &Config, command: KeysCommand) -> anyhow::Result<()> {
+async fn keys(config: &Config, tenant: TenantId, command: KeysCommand) -> anyhow::Result<()> {
     match command {
         KeysCommand::Init => {
             let path = config
@@ -194,16 +231,16 @@ async fn keys(config: &Config, command: KeysCommand) -> anyhow::Result<()> {
         }
         KeysCommand::Set { name } => {
             let value = read_secret(&name)?;
-            vault(config).await?.put(&name, &value).await?;
+            vault(config, tenant).await?.put(&name, &value).await?;
             println!("stored {name}");
         }
         KeysCommand::List => {
-            for name in vault(config).await?.list().await? {
+            for name in vault(config, tenant).await?.list().await? {
                 println!("{name}");
             }
         }
         KeysCommand::Delete { name } => {
-            if !vault(config).await?.delete(&name).await? {
+            if !vault(config, tenant).await?.delete(&name).await? {
                 bail!("no entry named {name}");
             }
             println!("deleted {name}");
@@ -251,7 +288,10 @@ fn list_agents(path: &Path) -> anyhow::Result<()> {
 
 async fn connector_tools(config: &Config, connector: &str) -> anyhow::Result<()> {
     let policy = ToolPolicy::new(&config.connectors);
-    let mcp = McpConnector::new(config.connectors.clone(), vault(config).await?);
+    let mcp = McpConnector::new(
+        config.connectors.clone(),
+        vault(config, TenantId::DEFAULT).await?,
+    );
     let session = mcp.session(&[format!("{connector}.any")]).await?;
     for tool in session.all_tools(connector).await? {
         let level = policy.level(&format!("{connector}.{}", tool.name));
@@ -313,27 +353,44 @@ fn check_sources(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn get(config: &Config, server: Option<String>, path: &str) -> anyhow::Result<Value> {
-    let token = config
-        .server
-        .admin_token
-        .as_ref()
-        .context("set LIGHTHOUSE_SERVER__ADMIN_TOKEN")?;
-    let response = reqwest::Client::new()
-        .get(format!("{}{path}", server_url(config, server)))
-        .bearer_auth(token.expose_secret())
-        .send()
-        .await
-        .context("cannot reach the server")?;
-    let status = response.status();
-    let body: Value = response.json().await.unwrap_or(Value::Null);
-    if !status.is_success() {
-        bail!(
-            "server answered {status}: {}",
-            body["error"].as_str().unwrap_or("unknown error")
-        );
+/// Where and how server commands reach the running server.
+struct Remote {
+    base: String,
+    token: Option<String>,
+    tenant: Option<uuid::Uuid>,
+}
+
+impl Remote {
+    /// A client with the user's token, or the admin token.
+    fn client(&self, config: &Config) -> anyhow::Result<client::Client> {
+        let token = match &self.token {
+            Some(token) => SecretString::from(token.clone()),
+            None => config
+                .server
+                .admin_token
+                .clone()
+                .context("sign in with `lht login` or set LIGHTHOUSE_SERVER__ADMIN_TOKEN")?,
+        };
+        let tenant = self.token.is_none().then_some(self.tenant).flatten();
+        Ok(client::Client::new(self.base.clone(), token, tenant))
     }
-    Ok(body)
+
+    /// A client with exactly this token.
+    fn with_token(&self, token: &str) -> client::Client {
+        client::Client::new(
+            self.base.clone(),
+            SecretString::from(token.to_owned()),
+            None,
+        )
+    }
+}
+
+async fn get(config: &Config, remote: &Remote, path: &str) -> anyhow::Result<Value> {
+    remote.client(config)?.get(path).await
+}
+
+async fn post(config: &Config, remote: &Remote, path: &str) -> anyhow::Result<Value> {
+    remote.client(config)?.post(path, &Value::Null).await
 }
 
 fn server_url(config: &Config, flag: Option<String>) -> String {
@@ -345,47 +402,12 @@ fn server_url(config: &Config, flag: Option<String>) -> String {
     })
 }
 
-/// Posts JSON with a token, the admin token when `token` is `None`.
-async fn post_json(
-    config: &Config,
-    server: Option<String>,
-    path: &str,
-    token: Option<&str>,
-    body: &Value,
-) -> anyhow::Result<Value> {
-    let admin = config
-        .server
-        .admin_token
-        .as_ref()
-        .context("set LIGHTHOUSE_SERVER__ADMIN_TOKEN")?;
-    let response = reqwest::Client::new()
-        .post(format!("{}{path}", server_url(config, server)))
-        .bearer_auth(token.unwrap_or_else(|| admin.expose_secret()))
-        .json(body)
-        .send()
-        .await
-        .context("cannot reach the server")?;
-    let status = response.status();
-    let answer: Value = response.json().await.unwrap_or(Value::Null);
-    if !status.is_success() {
-        bail!(
-            "server answered {status} to {path}: {}",
-            answer["error"].as_str().unwrap_or("unknown error")
-        );
-    }
-    Ok(answer)
-}
-
 /// Feeds the demo machine through the node endpoints, as `lighthouse-node` would.
-async fn demo_node(config: &Config, server: Option<String>) -> anyhow::Result<()> {
-    let issued = post_json(
-        config,
-        server.clone(),
-        "/auth/tokens",
-        None,
-        &demo::node_token_request(),
-    )
-    .await?;
+async fn demo_node(config: &Config, remote: &Remote) -> anyhow::Result<()> {
+    let issued = remote
+        .client(config)?
+        .post("/auth/tokens", &demo::node_token_request())
+        .await?;
     let token = issued["token"]
         .as_str()
         .context("the server issued no token")?;
@@ -396,33 +418,10 @@ async fn demo_node(config: &Config, server: Option<String>) -> anyhow::Result<()
         ("/node/otel/v1/metrics", demo::node_metrics()),
         ("/node/permissions", demo::node_permission()),
     ] {
-        post_json(config, server.clone(), path, Some(token), &body).await?;
+        remote.with_token(token).post(path, &body).await?;
     }
     println!("started the demo machine with two Claude Code sessions");
     Ok(())
-}
-
-async fn post(config: &Config, server: Option<String>, path: &str) -> anyhow::Result<Value> {
-    let token = config
-        .server
-        .admin_token
-        .as_ref()
-        .context("set LIGHTHOUSE_SERVER__ADMIN_TOKEN")?;
-    let response = reqwest::Client::new()
-        .post(format!("{}{path}", server_url(config, server)))
-        .bearer_auth(token.expose_secret())
-        .send()
-        .await
-        .context("cannot reach the server")?;
-    let status = response.status();
-    let body: Value = response.json().await.unwrap_or(Value::Null);
-    if !status.is_success() {
-        bail!(
-            "server answered {status}: {}",
-            body["error"].as_str().unwrap_or("unknown error")
-        );
-    }
-    Ok(body)
 }
 
 fn print_detail(detail: &RunDetail) {
@@ -459,8 +458,8 @@ fn print_detail(detail: &RunDetail) {
     }
 }
 
-async fn runs(config: &Config, command: RunsCommand) -> anyhow::Result<()> {
-    let audit = AuditLog::new(store(config).await?, TenantId::DEFAULT);
+async fn runs(config: &Config, tenant: TenantId, command: RunsCommand) -> anyhow::Result<()> {
+    let audit = AuditLog::new(store(config).await?, tenant);
     match command {
         RunsCommand::List { limit } => {
             for run in audit.list_runs(limit).await? {
@@ -487,42 +486,85 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = Config::load(&cli.config)
         .with_context(|| format!("cannot load {}", cli.config.display()))?;
+    let tenant = cli.tenant.map_or(TenantId::DEFAULT, TenantId::from_uuid);
+    let remote = Remote {
+        base: server_url(&config, cli.server.clone()),
+        token: cli.token.clone(),
+        tenant: cli.tenant,
+    };
     match cli.command {
-        Command::Keys(command) => keys(&config, command).await,
+        Command::Keys(command) => keys(&config, tenant, command).await,
         Command::Agents(AgentsCommand::Check) => check_agents(&config),
         Command::Agents(AgentsCommand::List) => list_agents(&config.paths.agents),
         Command::Run { id } => {
-            let body = post(&config, cli.server, &format!("/agents/{id}/run")).await?;
+            let body = post(&config, &remote, &format!("/agents/{id}/run")).await?;
             println!("started run {}", body["id"].as_str().unwrap_or("?"));
             Ok(())
         }
-        Command::Runs(command) => runs(&config, command).await,
+        Command::Runs(command) => runs(&config, tenant, command).await,
+        Command::Login { email, device } => {
+            let password = read_hidden("Password: ")?;
+            let issued = client::login(
+                &remote.base,
+                email.as_deref(),
+                &password,
+                &device,
+                cli.tenant,
+            )
+            .await?;
+            println!("{}", client::token_message(&issued));
+            Ok(())
+        }
+        Command::Tenants => {
+            let client = remote.client(&config)?;
+            let me = client.get("/me").await?;
+            let tenants = client.get("/tenants").await?;
+            for line in client::tenant_lines(&tenants, me["tenant_id"].as_str()) {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        Command::Switch { tenant } => {
+            let issued = remote
+                .client(&config)?
+                .post(
+                    &format!("/tenants/{tenant}/switch"),
+                    &serde_json::json!({"device_name": "lht", "device_kind": "api"}),
+                )
+                .await?;
+            println!("{}", client::token_message(&issued));
+            Ok(())
+        }
+        Command::Invite { email, role } => {
+            let created = remote
+                .client(&config)?
+                .post(
+                    "/tenant/invitations",
+                    &serde_json::json!({"email": email, "role": role}),
+                )
+                .await?;
+            println!("{}", client::invitation_message(&created));
+            Ok(())
+        }
         Command::Connectors(ConnectorsCommand::Tools { connector }) => {
             connector_tools(&config, &connector).await
         }
         Command::Sources(SourcesCommand::Check) => check_sources(&config),
         Command::Demo(DemoCommand::Warm) => {
-            let feed = get(&config, cli.server.clone(), "/ready").await?;
-            let brief = get(&config, cli.server.clone(), "/briefs/latest")
-                .await
-                .is_ok();
-            let recaps = get(&config, cli.server.clone(), "/recaps")
-                .await
-                .unwrap_or_default();
+            let feed = get(&config, &remote, "/ready").await?;
+            let brief = get(&config, &remote, "/briefs/latest").await.is_ok();
+            let recaps = get(&config, &remote, "/recaps").await.unwrap_or_default();
             let agents = demo::warmup_agents(&feed, brief, &recaps);
-            let sessions = get(&config, cli.server.clone(), "/sessions")
-                .await
-                .unwrap_or_default();
+            let sessions = get(&config, &remote, "/sessions").await.unwrap_or_default();
             let node = demo::needs_node(&sessions);
             if agents.is_empty() && !node {
                 println!("The demo is warm already.");
             }
             if node {
-                demo_node(&config, cli.server.clone()).await?;
+                demo_node(&config, &remote).await?;
             }
             for agent in agents {
-                let body =
-                    post(&config, cli.server.clone(), &format!("/agents/{agent}/run")).await?;
+                let body = post(&config, &remote, &format!("/agents/{agent}/run")).await?;
                 println!(
                     "started {agent}: run {}",
                     body["id"].as_str().unwrap_or("?")
@@ -547,7 +589,7 @@ async fn main() -> anyhow::Result<()> {
                 Some(name) => format!("/connected/sources/{name}/refresh"),
                 None => "/connected/refresh".to_owned(),
             };
-            let body = post(&config, cli.server, &path).await?;
+            let body = post(&config, &remote, &path).await?;
             let results = if body.is_array() {
                 body
             } else {
@@ -567,7 +609,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Inbox { limit } => {
-            let body = get(&config, cli.server, &format!("/inbox?limit={limit}")).await?;
+            let body = get(&config, &remote, &format!("/inbox?limit={limit}")).await?;
             for item in body["items"].as_array().into_iter().flatten() {
                 println!(
                     "{:>3}  {:<8} {:<12} {}",
@@ -582,7 +624,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Connect { connector } => {
             let body = post(
                 &config,
-                cli.server,
+                &remote,
                 &format!("/connectors/{connector}/connect"),
             )
             .await?;

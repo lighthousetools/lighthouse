@@ -114,6 +114,20 @@ Agent files in `paths.agents` and `paths.automations`, skills, connectors, sourc
 tenant. Each tenant has its own vault, so connector tokens and provider keys are its own. `[owner] accounts` only apply
 to the default tenant; in other tenants, agents work for the tenant's first owner.
 
+### Command line
+
+Server commands of `lht` use the admin token, in the default tenant or the one `--tenant <id>` names. With a user's
+device token in `LHT_TOKEN` (or `--token`), they act as that user in the token's tenant instead. `lht keys` and
+`lht runs` work on the database directly, also in the tenant `--tenant` names.
+
+| Command | What it does |
+|---|---|
+| `lht login [--email <email>]` | Asks for the password and prints a device token to export as `LHT_TOKEN` |
+| `lht tenants` | Lists the tenants of the signed-in user, the current one marked |
+| `lht switch <tenant>` | Prints a token for another tenant of the user |
+| `lht invite <email> [--role admin]` | Invites someone to the current tenant and prints the link if no mail is configured |
+| `lht --tenant <id> keys set anthropic` | Stores a tenant's own provider key |
+
 ### Upgrading from 0.1
 
 Nothing needs to change. On the first start of 0.2, the configured owner becomes a user with their `email`, keeps the
