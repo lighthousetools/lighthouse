@@ -94,6 +94,9 @@ pub enum AuthError {
     /// The default tenant of the instance cannot be deleted.
     #[error("the default tenant cannot be deleted")]
     DefaultTenant,
+    /// The person is a member of the tenant already.
+    #[error("this person is a member already")]
+    AlreadyMember,
 }
 
 /// What kind of client holds a token.

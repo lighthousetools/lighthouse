@@ -72,6 +72,34 @@ impl Accounts {
             .collect())
     }
 
+    /// Lists every tenant of the instance with its name, oldest first.
+    pub async fn list_tenants(&self) -> Result<Vec<Tenant>, AuthError> {
+        let rows = sqlx::query("SELECT id, name, created_at FROM tenants ORDER BY created_at, id")
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|row| Tenant {
+                id: row.get(0),
+                name: row.get(1),
+                created_at: row.get(2),
+            })
+            .collect())
+    }
+
+    /// Creates a tenant without members, for example one whose owner is
+    /// invited afterwards.
+    pub async fn create_empty_tenant(&self, name: &str) -> Result<TenantId, AuthError> {
+        let name = check_name(name, "tenant name")?;
+        let tenant = TenantId::generate();
+        sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, $2)")
+            .bind(tenant.as_uuid())
+            .bind(name)
+            .execute(self.pool())
+            .await?;
+        Ok(tenant)
+    }
+
     /// Creates a tenant owned by an existing user.
     pub async fn create_tenant(&self, owner: Uuid, name: &str) -> Result<TenantId, AuthError> {
         let name = check_name(name, "tenant name")?;
@@ -268,6 +296,26 @@ mod tests {
     use lighthouse_core::TenantId;
     use lighthouse_store::sqlx;
     use secrecy::ExposeSecret;
+
+    #[tokio::test]
+    async fn an_empty_tenant_has_no_members_until_someone_joins() {
+        let (accounts, _) = accounts().await;
+        let tenant = accounts.create_empty_tenant("Prepared").await.unwrap();
+        assert!(accounts.members(tenant).await.unwrap().is_empty());
+        assert!(accounts.primary_user(tenant).await.unwrap().is_none());
+        let names: Vec<String> = accounts
+            .list_tenants()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|tenant| tenant.name)
+            .collect();
+        assert_eq!(names, ["default", "Prepared"]);
+        assert!(matches!(
+            accounts.create_empty_tenant(" ").await,
+            Err(AuthError::Invalid(_))
+        ));
+    }
 
     #[tokio::test]
     async fn the_last_owner_cannot_be_demoted_or_removed() {

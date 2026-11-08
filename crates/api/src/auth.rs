@@ -219,9 +219,10 @@ pub(crate) fn auth_error(error: AuthError) -> ApiError {
         | AuthError::InvalidToken => StatusCode::BAD_REQUEST,
         AuthError::WrongPassword => StatusCode::UNAUTHORIZED,
         AuthError::LockedOut => StatusCode::TOO_MANY_REQUESTS,
-        AuthError::EmailTaken | AuthError::LastOwner | AuthError::DefaultTenant => {
-            StatusCode::CONFLICT
-        }
+        AuthError::EmailTaken
+        | AuthError::LastOwner
+        | AuthError::DefaultTenant
+        | AuthError::AlreadyMember => StatusCode::CONFLICT,
         AuthError::NotMember => StatusCode::FORBIDDEN,
         AuthError::NotFound(_) => StatusCode::NOT_FOUND,
         AuthError::Database(_) | AuthError::Store(_) | AuthError::Hash => {

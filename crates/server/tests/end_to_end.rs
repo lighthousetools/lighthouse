@@ -904,6 +904,13 @@ struct Gate;
 
 #[async_trait::async_trait]
 impl lighthouse_api::hooks::Lifecycle for Gate {
+    async fn on_start(&self, instance: &lighthouse_api::Instance) {
+        let name = instance.extension_config["gate"]["prepared"]
+            .as_str()
+            .unwrap();
+        instance.create_tenant(name, None).await.unwrap();
+    }
+
     async fn on_signup(&self, email: &str, _client: &str) -> lighthouse_api::hooks::SignupDecision {
         if email.starts_with("wait") {
             lighthouse_api::hooks::SignupDecision::Pending("we will be in touch".to_owned())
@@ -965,7 +972,8 @@ async fn another_program_adds_hooks_limits_and_routes() {
         ..lighthouse_server::Hooks::default()
     };
     let (base, _dir, _database) = start_with_hooks(
-        "[tenancy]\nsignup = \"open\"\ndata_dir = \"{dir}/tenants\"\n",
+        "[tenancy]\nsignup = \"open\"\ndata_dir = \"{dir}/tenants\"\n\
+         [extensions.gate]\nprepared = \"Prepared\"\n",
         hooks,
     )
     .await;
@@ -988,6 +996,23 @@ async fn another_program_adds_hooks_limits_and_routes() {
         .await
         .unwrap();
     let token = issued["token"].as_str().unwrap();
+    let tenants: Value = client
+        .get(format!("{base}/tenants"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        tenants
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tenant| tenant["tenant_name"] == "Prepared"),
+        "{tenants}"
+    );
     let verification = outbox.0.lock().unwrap().pop().unwrap();
     assert_eq!(verification.to, "sam@example.com");
     assert!(verification.text.contains("/#/verify?token="));

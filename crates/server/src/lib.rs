@@ -1154,6 +1154,9 @@ pub struct App {
     pub router: lighthouse_api::Router,
     /// The tenants, for background work.
     pub workspaces: Arc<Workspaces>,
+    /// Accounts, tenants and mail of the instance, the same handle
+    /// [`Lifecycle::on_start`] gets.
+    pub instance: Instance,
 }
 
 fn signup_mode(mode: lighthouse_config::SignupMode) -> SignupMode {
@@ -1253,27 +1256,31 @@ pub async fn build_with(config: Config, hooks: Hooks) -> anyhow::Result<App> {
         .open(TenantId::DEFAULT)
         .await
         .context("cannot open the default tenant")?;
-    let router = lighthouse_api::router_with(
-        Instance {
-            accounts,
-            tenants: workspaces.clone(),
-            oauth: shared.oauth.clone(),
-            admin_token: config.server.admin_token.clone(),
-            signup: signup_mode(config.tenancy.signup),
-            mailer,
-            mail_templates: hooks.mail_templates,
-            public_url: config.server.public_url.trim_end_matches('/').to_owned(),
-            trust_forwarded_for: config.server.trust_forwarded_for,
-            lifecycle: hooks.lifecycle,
-            entitlements: hooks.entitlements,
-        },
-        hooks.routes,
-    );
+    let instance = Instance {
+        accounts,
+        tenants: workspaces.clone(),
+        oauth: shared.oauth.clone(),
+        admin_token: config.server.admin_token.clone(),
+        signup: signup_mode(config.tenancy.signup),
+        mailer,
+        mail_templates: hooks.mail_templates,
+        public_url: config.server.public_url.trim_end_matches('/').to_owned(),
+        trust_forwarded_for: config.server.trust_forwarded_for,
+        lifecycle: hooks.lifecycle,
+        entitlements: hooks.entitlements,
+        extension_config: Arc::new(config.extensions.clone()),
+    };
+    instance.lifecycle.on_start(&instance).await;
+    let router = lighthouse_api::router_with(instance.clone(), hooks.routes);
     let router = match &config.paths.web {
         Some(directory) => lighthouse_api::with_web_app(router, directory),
         None => router,
     };
-    Ok(App { router, workspaces })
+    Ok(App {
+        router,
+        workspaces,
+        instance,
+    })
 }
 
 #[cfg(test)]

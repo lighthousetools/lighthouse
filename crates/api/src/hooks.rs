@@ -24,6 +24,11 @@ pub enum SignupDecision {
 /// Hooks around accounts and tenants. Every method has a neutral default.
 #[async_trait]
 pub trait Lifecycle: Send + Sync {
+    /// Runs once when the server is wired, before it serves requests. The
+    /// instance is a handle for background work: keep a clone, for example in
+    /// a spawned task, to list, create, invite into or delete tenants.
+    async fn on_start(&self, _instance: &crate::Instance) {}
+
     /// Decides on a sign-up before anything is created.
     async fn on_signup(&self, _email: &str, _client: &str) -> SignupDecision {
         SignupDecision::Allow

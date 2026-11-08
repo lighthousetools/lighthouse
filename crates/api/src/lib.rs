@@ -67,7 +67,7 @@ pub use talk::{Exchange, NewMessage, NewThread, ThreadDetail, ThreadPatch};
 pub use tasks::{Delegation, TaskOrder, TaskOrderResult};
 pub use tenants::{
     AcceptInvitation, Confirmation, InvitationCreated, InviteRequest, Me, MePatch, NewTenant,
-    RoleChange, SwitchRequest, TenantInfo, TenantPatch,
+    RoleChange, SentInvitation, SwitchRequest, TenantInfo, TenantPatch,
 };
 
 use async_trait::async_trait;
@@ -206,6 +206,9 @@ pub struct Instance {
     pub lifecycle: Arc<dyn hooks::Lifecycle>,
     /// Limits of tenants.
     pub entitlements: Arc<dyn hooks::Entitlements>,
+    /// The `[extensions]` tables of the configuration, by program name, for
+    /// programs built on these crates. The core ignores them.
+    pub extension_config: Arc<std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 impl Instance {
@@ -1355,6 +1358,7 @@ mod tests {
     /// A router with real storage and fakes for everything that calls out.
     pub(crate) struct Harness {
         pub(crate) app: Router,
+        pub(crate) instance: Instance,
         pub(crate) audit: AuditLog,
         pub(crate) desk: Desk,
         pub(crate) sessions: Sessions,
@@ -1491,10 +1495,12 @@ mod tests {
             trust_forwarded_for: true,
             lifecycle: Arc::new(hooks::NoHooks),
             entitlements: Arc::new(hooks::AllowAll),
+            extension_config: Arc::default(),
         };
         tweak(&mut instance);
         Harness {
-            app: router(instance),
+            app: router(instance.clone()),
+            instance,
             audit: state.audit.clone(),
             desk: state.desk.clone(),
             sessions: state.sessions.clone(),

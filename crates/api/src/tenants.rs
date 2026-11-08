@@ -167,6 +167,99 @@ fn invite_link(instance: &Instance, token: &SecretString) -> String {
     )
 }
 
+/// An invitation made through [`Instance::invite`].
+#[derive(Clone, Debug)]
+pub struct SentInvitation {
+    /// The invitation.
+    pub invitation: Invitation,
+    /// The link that accepts it. Treat it like a password.
+    pub accept_url: String,
+    /// Whether the invitation went out by mail.
+    pub mailed: bool,
+}
+
+/// Account work for programs built on these crates, from hooks, extra routes
+/// or background tasks. These calls skip the role checks and entitlements of
+/// the HTTP API: the program decides who may do what.
+impl Instance {
+    /// Creates a tenant. With an owner, the user becomes its owner and
+    /// [`Lifecycle::on_tenant_created`](crate::hooks::Lifecycle::on_tenant_created)
+    /// runs; without one, the tenant has no members until someone accepts an
+    /// invitation, for example as its owner.
+    pub async fn create_tenant(
+        &self,
+        name: &str,
+        owner: Option<Uuid>,
+    ) -> Result<TenantId, AuthError> {
+        let Some(owner) = owner else {
+            return self.accounts.create_empty_tenant(name).await;
+        };
+        let tenant = self.accounts.create_tenant(owner, name).await?;
+        self.lifecycle.on_tenant_created(tenant, owner).await;
+        Ok(tenant)
+    }
+
+    /// Invites someone to a tenant with a role and mails the invitation if a
+    /// mailer is set. The answer always carries the accept link. Accepting
+    /// needs `tenancy.signup` to be `invite` or `open`.
+    pub async fn invite(
+        &self,
+        tenant: TenantId,
+        email: &str,
+        role: Role,
+        invited_by: Option<Uuid>,
+    ) -> Result<SentInvitation, AuthError> {
+        let tenant_name = self
+            .accounts
+            .tenant(tenant)
+            .await?
+            .ok_or(AuthError::NotFound("tenant"))?
+            .name;
+        if let Some(existing) = self.accounts.user_by_email(email).await?
+            && self.accounts.role(tenant, existing.id).await?.is_some()
+        {
+            return Err(AuthError::AlreadyMember);
+        }
+        let issued = self
+            .accounts
+            .invite(tenant, email, role, invited_by)
+            .await?;
+        let accept_url = invite_link(self, &issued.token);
+        let text = self
+            .mail_templates
+            .invitation(&issued.invitation, &tenant_name, &accept_url)
+            .await;
+        let mailed = self.send_mail(&issued.invitation.email, text).await;
+        Ok(SentInvitation {
+            invitation: issued.invitation,
+            accept_url,
+            mailed,
+        })
+    }
+
+    /// Lists every tenant of the instance, oldest first.
+    pub async fn list_tenants(&self) -> Result<Vec<Tenant>, AuthError> {
+        self.accounts.list_tenants().await
+    }
+
+    /// Deletes a tenant the way `DELETE /tenant` does: its data, its open
+    /// workspace and its files go, then
+    /// [`Lifecycle::on_tenant_deleted`](crate::hooks::Lifecycle::on_tenant_deleted)
+    /// runs. The default tenant stays.
+    pub async fn delete_tenant(&self, tenant: TenantId) -> Result<(), AuthError> {
+        self.accounts.delete_tenant(tenant).await?;
+        self.tenants.forget(tenant).await;
+        self.lifecycle.on_tenant_deleted(tenant).await;
+        Ok(())
+    }
+
+    /// Stops the background work of a tenant and removes its files, without
+    /// touching its data in the database. It opens again on next use.
+    pub async fn forget_tenant(&self, tenant: TenantId) {
+        self.tenants.forget(tenant).await;
+    }
+}
+
 /// Returns the signed-in user and their tenant.
 #[utoipa::path(
     get,
@@ -344,11 +437,9 @@ pub(crate) async fn create(
         .await
         .map_err(|message| ApiError(StatusCode::FORBIDDEN, message))?;
     let tenant = instance
-        .accounts
-        .create_tenant(user, &new.name)
+        .create_tenant(&new.name, Some(user))
         .await
         .map_err(auth_error)?;
-    instance.lifecycle.on_tenant_created(tenant, user).await;
     let issued = instance
         .accounts
         .issue(user, tenant, &new.device_name, new.device_kind)
@@ -519,12 +610,9 @@ pub(crate) async fn delete(
         ));
     }
     instance
-        .accounts
         .delete_tenant(caller.tenant)
         .await
         .map_err(auth_error)?;
-    instance.tenants.forget(caller.tenant).await;
-    instance.lifecycle.on_tenant_deleted(caller.tenant).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -674,23 +762,6 @@ pub(crate) async fn invite(
     if request.role == Role::Owner && caller.role != Role::Owner {
         return Err(owners_only());
     }
-    if let Some(existing) = instance
-        .accounts
-        .user_by_email(&request.email)
-        .await
-        .map_err(auth_error)?
-        && instance
-            .accounts
-            .role(caller.tenant, existing.id)
-            .await
-            .map_err(auth_error)?
-            .is_some()
-    {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "this person is a member already".to_owned(),
-        ));
-    }
     let members = instance
         .accounts
         .members(caller.tenant)
@@ -702,29 +773,16 @@ pub(crate) async fn invite(
         .check(caller.tenant, &Action::InviteMember { members })
         .await
         .map_err(|message| ApiError(StatusCode::FORBIDDEN, message))?;
-    let issued = instance
-        .accounts
+    let sent = instance
         .invite(caller.tenant, &request.email, request.role, caller.user)
         .await
         .map_err(auth_error)?;
-    let link = invite_link(&instance, &issued.token);
-    let tenant_name = instance
-        .accounts
-        .tenant(caller.tenant)
-        .await
-        .map_err(auth_error)?
-        .map_or_else(String::new, |tenant| tenant.name);
-    let text = instance
-        .mail_templates
-        .invitation(&issued.invitation, &tenant_name, &link)
-        .await;
-    let mailed = instance.send_mail(&issued.invitation.email, text).await;
     Ok((
         StatusCode::CREATED,
         Json(InvitationCreated {
-            invitation: issued.invitation,
-            mailed,
-            accept_url: (!mailed).then_some(link),
+            invitation: sent.invitation,
+            mailed: sent.mailed,
+            accept_url: (!sent.mailed).then_some(sent.accept_url),
         }),
     ))
 }
@@ -762,6 +820,8 @@ mod tests {
     use crate::{SignupMode, TokenIssued};
     use async_trait::async_trait;
     use axum::http::StatusCode;
+    use lighthouse_auth::{AuthError, Role};
+    use lighthouse_core::TenantId;
     use lighthouse_notify::{Mail, Mailer, NotifyError};
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
@@ -1209,6 +1269,109 @@ mod tests {
         let robin = accept_new(app, &mail.1).await;
         let (_, body) = call(app, "GET", "/me", Some(&robin.token)).await;
         assert_eq!(json_of(&body)["role"], "admin");
+    }
+
+    /// Lifecycle hooks that write down what happened.
+    #[derive(Default)]
+    pub(crate) struct Recorder(pub(crate) Mutex<Vec<String>>);
+
+    impl Recorder {
+        fn take(&self) -> Vec<String> {
+            std::mem::take(&mut *self.0.lock().unwrap())
+        }
+    }
+
+    #[async_trait]
+    impl crate::hooks::Lifecycle for Recorder {
+        async fn on_start(&self, _instance: &crate::Instance) {
+            self.0.lock().unwrap().push("start".to_owned());
+        }
+
+        async fn on_tenant_created(&self, _tenant: TenantId, _owner: uuid::Uuid) {
+            self.0.lock().unwrap().push("created".to_owned());
+        }
+
+        async fn on_tenant_deleted(&self, _tenant: TenantId) {
+            self.0.lock().unwrap().push("deleted".to_owned());
+        }
+    }
+
+    async fn recorded(signup: SignupMode) -> (crate::tests::Harness, Arc<Recorder>, Arc<Outbox>) {
+        let recorder = Arc::new(Recorder::default());
+        let outbox = Arc::new(Outbox::default());
+        let hooks = recorder.clone();
+        let harness = crate::tests::build_harness_tweaked(
+            Some(TOKEN),
+            None,
+            signup,
+            Some(outbox.clone()),
+            |instance| instance.lifecycle = hooks,
+        )
+        .await;
+        (harness, recorder, outbox)
+    }
+
+    #[tokio::test]
+    async fn a_program_prepares_a_tenant_and_invites_its_owner() {
+        let (harness, recorder, outbox) = recorded(SignupMode::Invite).await;
+        let instance = &harness.instance;
+        instance.lifecycle.on_start(instance).await;
+        assert_eq!(recorder.take(), ["start"]);
+        let tenant = instance.create_tenant("Prepared", None).await.unwrap();
+        assert!(recorder.take().is_empty(), "no owner, no hook yet");
+        let sent = instance
+            .invite(tenant, "robin@example.com", Role::Owner, None)
+            .await
+            .unwrap();
+        assert!(sent.mailed);
+        assert!(
+            sent.accept_url
+                .starts_with("https://lighthouse.test/#/invite?token=")
+        );
+        let (to, text) = outbox.0.lock().unwrap().pop().unwrap();
+        assert_eq!(to, "robin@example.com");
+        assert!(text.contains("as an owner") && text.contains(&sent.accept_url));
+
+        let robin = accept_new(&harness.app, &sent.accept_url).await;
+        assert_eq!(robin.tenant_id, tenant.as_uuid());
+        let (_, body) = call(&harness.app, "GET", "/me", Some(&robin.token)).await;
+        assert_eq!(json_of(&body)["role"], "owner");
+        assert!(matches!(
+            instance
+                .invite(tenant, "ROBIN@example.com", Role::Member, None)
+                .await,
+            Err(AuthError::AlreadyMember)
+        ));
+        assert!(matches!(
+            instance
+                .invite(TenantId::generate(), "x@example.com", Role::Member, None)
+                .await,
+            Err(AuthError::NotFound("tenant"))
+        ));
+
+        let names: Vec<String> = instance
+            .list_tenants()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|tenant| tenant.name)
+            .collect();
+        assert_eq!(names, ["default", "Prepared"]);
+        let owned = instance
+            .create_tenant("Owned", Some(robin.user_id))
+            .await
+            .unwrap();
+        assert_eq!(recorder.take(), ["created"]);
+
+        instance.forget_tenant(owned).await;
+        instance.delete_tenant(tenant).await.unwrap();
+        assert_eq!(recorder.take(), ["deleted"]);
+        assert_eq!(*harness.tenants.forgotten.lock().unwrap(), [owned, tenant]);
+        assert!(instance.accounts.tenant(tenant).await.unwrap().is_none());
+        assert!(matches!(
+            instance.delete_tenant(TenantId::DEFAULT).await,
+            Err(AuthError::DefaultTenant)
+        ));
     }
 
     struct Plain;

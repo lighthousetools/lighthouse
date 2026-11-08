@@ -141,10 +141,29 @@ with `lighthouse_server::build_with(config, hooks)` and serve the returned route
 
 | Field | Trait or type | Default | Consulted |
 |---|---|---|---|
-| `lifecycle` | `lighthouse_api::hooks::Lifecycle` | `NoHooks` | `on_signup` before an account is created; it may allow, reject (403) or hold the sign-up (202, nothing created). `on_tenant_created` after sign-up and `POST /tenants`, `on_tenant_deleted` after a tenant is deleted |
+| `lifecycle` | `lighthouse_api::hooks::Lifecycle` | `NoHooks` | `on_start` once in `build_with`, before the server serves, with the `Instance`. `on_signup` before an account is created; it may allow, reject (403) or hold the sign-up (202, nothing created). `on_tenant_created` after sign-up, `POST /tenants` and `Instance::create_tenant` with an owner, `on_tenant_deleted` after a tenant is deleted |
 | `entitlements` | `lighthouse_api::hooks::Entitlements` | `AllowAll` | Before a user creates another tenant, before an invitation, and before every agent run, by hand, from a task, from Talk or on a schedule. A refusal answers 403, or 409 for runs; scheduled runs are skipped and logged |
 | `mailer` | `lighthouse_notify::Mailer` | `SmtpMailer` from `[delivery.smtp]`, or none | Every mail of the server goes through it: email verification, invitations and reports delivered to `mail:` targets. A `Mail` has a recipient, a subject, a plain text body and an optional HTML body |
 | `mail_templates` | `lighthouse_api::hooks::MailTemplates` | `EnglishMails` | Writes the subject and bodies of the verification and invitation mails. Every method has an English default, so an implementation overrides only the mails it changes, for example to translate them |
 | `routes` | `lighthouse_api::Extensions` | none | `public` routes are merged as they are; `signed_in` routes sit behind the sign-in and can extract `Caller` (user, tenant, role) and `Scoped` (the tenant's state), with `Instance` (accounts and the store) as router state |
 
 The defaults allow everything, which is how `lighthouse-server` runs.
+
+### The instance handle
+
+`lighthouse_api::Instance` holds the accounts, the tenants and the mailer of the instance. Programs get it in
+`Lifecycle::on_start`, as router state of their extra routes, and as `App::instance`. It is cheap to clone, so a
+program keeps a clone for background work. Its calls skip the role checks and entitlements of the HTTP API, since the
+program decides who may do what:
+
+| Call | What it does |
+|---|---|
+| `create_tenant(name, owner: Option<Uuid>) -> TenantId` | Creates a tenant. Without an owner it has no members until someone accepts an invitation, for example as its owner; `on_tenant_created` runs only with an owner |
+| `invite(tenant, email, role, invited_by) -> SentInvitation` | Invites someone as owner, admin or member and mails the invitation if a mailer is set. The answer holds the invitation, the accept link and whether it was mailed. Accepting needs `tenancy.signup` to be `invite` or `open` |
+| `list_tenants() -> Vec<Tenant>` | Every tenant of the instance, oldest first |
+| `delete_tenant(tenant)` | Deletes a tenant like `DELETE /tenant`: its data, its open workspace and its files, then `on_tenant_deleted` |
+| `forget_tenant(tenant)` | Stops the background work of a tenant and removes its files, leaving its data; it opens again on next use |
+| `send_mail(to, MailText) -> bool` | Sends a mail through the mailer; `false` without one or on failure |
+
+`Instance::extension_config` holds the `[extensions]` tables of the configuration (see
+[configuration.md](configuration.md#extensions)); `accounts` gives the lower-level calls of `lighthouse_auth::Accounts`.
