@@ -106,3 +106,10 @@ path = "brain"
 # embedding_model = ""
 # vision_model = ""
 # transcription_model = ""
+
+# Users and tenants, see docs/architecture.md. The defaults keep a single-user
+# install as it was: the owner above signs in and nobody can sign up.
+# [tenancy]
+# signup = "closed"            # closed, invite or open
+# allow_instance_keys = true   # tenants without own provider keys use the instance keys
+# data_dir = "tenants"         # Brain and created files of further tenants

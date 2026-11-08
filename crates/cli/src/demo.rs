@@ -3,8 +3,9 @@
 //! a conversation. Nothing here describes real people or companies.
 
 use chrono::{Duration, Utc};
-use lighthouse_auth::Auth;
+use lighthouse_auth::Accounts;
 use lighthouse_brain::{Brain, NewEntry, Source};
+use lighthouse_config::OwnerConfig;
 use lighthouse_core::TenantId;
 use lighthouse_desk::{
     BrandProfile, Desk, ImportedPost, NewAlert, NewFact, NewPost, NewRule, NewTask, PillarInput,
@@ -140,15 +141,22 @@ pub fn node_permission() -> serde_json::Value {
            "input": {"command": "git push origin main", "description": "Publish the new prices"}})
 }
 
-/// Adds the demo data, unless it is there already.
-pub async fn seed(store: &Store, brain_dir: &Path) -> anyhow::Result<Seeded> {
+/// Adds the demo data to the default tenant, unless it is there already. The
+/// configured owner becomes its user with the demo password.
+pub async fn seed(store: &Store, brain_dir: &Path, owner: &OwnerConfig) -> anyhow::Result<Seeded> {
     let tenant = TenantId::DEFAULT;
     let sync = SyncStore::new(store.clone(), tenant);
     if !sync.organizations().await?.is_empty() {
         return Ok(Seeded::AlreadyThere);
     }
-    Auth::new(store.clone(), tenant)
-        .set_password(&SecretString::from(DEMO_PASSWORD.to_owned()))
+    let accounts = Accounts::new(store.clone());
+    accounts.bootstrap_owner(&owner.email, &owner.name).await?;
+    let user = accounts
+        .primary_user(tenant)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("the default tenant has no owner"))?;
+    accounts
+        .set_password(user.id, &SecretString::from(DEMO_PASSWORD.to_owned()))
         .await?;
     for (id, name, color, sources) in [
         (
@@ -513,11 +521,30 @@ mod tests {
     async fn the_demo_is_seeded_once() {
         let store = fresh_store().await;
         let brain = tempfile::tempdir().unwrap();
-        assert_eq!(seed(&store, brain.path()).await.unwrap(), Seeded::Added);
+        let owner = OwnerConfig {
+            name: "Demo Owner".to_owned(),
+            email: "demo@example.com".to_owned(),
+            accounts: std::collections::BTreeMap::new(),
+        };
         assert_eq!(
-            seed(&store, brain.path()).await.unwrap(),
+            seed(&store, brain.path(), &owner).await.unwrap(),
+            Seeded::Added
+        );
+        assert_eq!(
+            seed(&store, brain.path(), &owner).await.unwrap(),
             Seeded::AlreadyThere
         );
+        let accounts = Accounts::new(store.clone());
+        let password = SecretString::from(DEMO_PASSWORD.to_owned());
+        let user = accounts
+            .authenticate(lighthouse_auth::Credentials {
+                email: Some("demo@example.com"),
+                password: &password,
+                client: "test",
+            })
+            .await
+            .unwrap();
+        assert_eq!(user.name, "Demo Owner");
         let desk = Desk::new(store.clone(), TenantId::DEFAULT);
         let today = Utc::now().date_naive();
         assert_eq!(desk.tasks(TaskView::All, today, 50).await.unwrap().len(), 5);

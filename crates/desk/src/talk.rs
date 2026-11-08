@@ -170,6 +170,25 @@ impl Desk {
             .bind(sources)
             .fetch_one(&mut *transaction)
             .await?;
+        // The run starts before its answer is added, so it may have ended
+        // already without finding the answer to fill in.
+        let query = format!(
+            "UPDATE talk_messages m SET text = coalesce(r.report, r.reason, ''), \
+             status = CASE WHEN r.status = 'succeeded' THEN 'done' ELSE 'failed' END \
+             FROM runs r WHERE m.id = $1 AND m.status = 'pending' AND r.tenant_id = m.tenant_id \
+             AND r.id = m.run_id AND r.status NOT IN ('running', 'waiting') \
+             RETURNING {}",
+            MESSAGE_COLUMNS
+                .split(", ")
+                .map(|column| format!("m.{column}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let ended: Option<TalkMessage> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(message.id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+        let message = ended.unwrap_or(message);
         sqlx::query("UPDATE talk_threads SET updated_at = now() WHERE tenant_id = $1 AND id = $2")
             .bind(self.tenant())
             .bind(thread)
@@ -224,6 +243,53 @@ mod tests {
     use lighthouse_core::TenantId;
     use lighthouse_store::testing::fresh_store;
     use serde_json::json;
+
+    async fn ended_run(desk: &Desk, status: &str, report: Option<&str>) -> Uuid {
+        let run = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO runs (id, tenant_id, agent_id, trigger, status, report, reason) \
+             VALUES ($1, $2, 'talk', 'manual', $3, $4, 'it broke')",
+        )
+        .bind(run)
+        .bind(TenantId::DEFAULT.as_uuid())
+        .bind(status)
+        .bind(report)
+        .execute(desk.pool())
+        .await
+        .unwrap();
+        run
+    }
+
+    #[tokio::test]
+    async fn an_answer_to_a_run_that_ended_already_is_filled_in_at_once() {
+        let desk = Desk::new(fresh_store().await, TenantId::DEFAULT);
+        let thread = desk.create_thread("Quick").await.unwrap();
+        let run = ended_run(&desk, "succeeded", Some("All done")).await;
+        let message = desk
+            .add_message(thread.id, "assistant", "", "pending", Some(run), json!([]))
+            .await
+            .unwrap();
+        assert_eq!(
+            (message.status.as_str(), message.text.as_str()),
+            ("done", "All done")
+        );
+        let failed = ended_run(&desk, "failed", None).await;
+        let message = desk
+            .add_message(
+                thread.id,
+                "assistant",
+                "",
+                "pending",
+                Some(failed),
+                json!([]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (message.status.as_str(), message.text.as_str()),
+            ("failed", "it broke")
+        );
+    }
 
     #[tokio::test]
     async fn threads_keep_messages_and_pending_answers() {

@@ -51,6 +51,10 @@ fn write_agent(dir: &Path, file: &str, tools: &str) {
 }
 
 async fn start() -> (String, tempfile::TempDir, lighthouse_store::Store) {
+    start_with("").await
+}
+
+async fn start_with(extra: &str) -> (String, tempfile::TempDir, lighthouse_store::Store) {
     let database = lighthouse_store::testing::fresh_store().await;
     let url: (String,) = lighthouse_store::sqlx::query_as("SELECT current_database()::text")
         .fetch_one(database.pool())
@@ -140,6 +144,10 @@ path = "{brain}"
         created_automations = dir.path().join("created-automations").display(),
         brain = dir.path().join("brain").display(),
         skills = dir.path().join("skills").display(),
+    );
+    let toml = format!(
+        "{toml}\n{}",
+        extra.replace("{dir}", &dir.path().display().to_string())
     );
     let path = dir.path().join("lighthouse.toml");
     std::fs::write(&path, toml).unwrap();
@@ -800,4 +808,87 @@ async fn a_talk_agent_answers_a_conversation_through_a_run() {
     .await;
     assert_eq!(detail["messages"][1]["text"], "mock answer");
     assert_eq!(detail["thread"]["title"], "What is open?");
+}
+
+#[tokio::test]
+async fn a_signed_up_tenant_works_on_its_own_and_can_be_deleted() {
+    let (base, dir, _database) =
+        start_with("[tenancy]\nsignup = \"open\"\ndata_dir = \"{dir}/tenants\"\n").await;
+    let client = reqwest::Client::new();
+    let issued: Value = client
+        .post(format!("{base}/auth/signup"))
+        .json(
+            &json!({"email": "sam@example.com", "name": "Sam", "password": "a long enough password",
+                      "tenant_name": "Studio", "device_name": "web", "device_kind": "web"}),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = issued["token"].as_str().unwrap().to_owned();
+    let tenant = issued["tenant_id"].as_str().unwrap().to_owned();
+    let tenant_dir = dir.path().join("tenants").join(&tenant);
+
+    let started: Value = client
+        .post(format!("{base}/agents/reader/run"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let run = started["id"].as_str().unwrap().to_owned();
+    let mut status = Value::Null;
+    for _ in 0..600 {
+        let detail: Value = client
+            .get(format!("{base}/runs/{run}"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        status = detail["run"]["status"].clone();
+        if status != "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(status, "succeeded");
+    assert!(
+        tenant_dir.join("brain").is_dir(),
+        "the tenant got its own Brain"
+    );
+    let in_default = client
+        .get(format!("{base}/runs/{run}"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        in_default.status(),
+        404,
+        "the default tenant does not see it"
+    );
+
+    let deleted = client
+        .delete(format!("{base}/tenant"))
+        .bearer_auth(&token)
+        .json(&json!({"confirm": "Studio"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 204);
+    assert!(!tenant_dir.exists(), "its files are gone");
+    let after = client
+        .get(format!("{base}/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(after.status(), 401);
 }

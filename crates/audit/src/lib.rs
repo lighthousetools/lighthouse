@@ -206,6 +206,28 @@ pub struct DailyCost {
 pub struct AuditLog {
     store: Store,
     tenant: TenantId,
+    viewer: Option<Uuid>,
+}
+
+/// The user a request acts for, so runs it starts are recorded for them even
+/// when they are registered deep inside the runtime.
+pub mod acting_user {
+    use std::future::Future;
+    use uuid::Uuid;
+
+    tokio::task_local! {
+        static USER: Option<Uuid>;
+    }
+
+    /// Runs a future on behalf of a user.
+    pub async fn scope<F: Future>(user: Option<Uuid>, future: F) -> F::Output {
+        USER.scope(user, future).await
+    }
+
+    /// The user the current task acts for, if any.
+    pub fn current() -> Option<Uuid> {
+        USER.try_with(|user| *user).ok().flatten()
+    }
 }
 
 const RUN_COLUMNS: &str = "id, agent_id, trigger, status, reason, report, input_tokens, output_tokens, \
@@ -216,7 +238,24 @@ const RUN_COLUMNS: &str = "id, agent_id, trigger, status, reason, report, input_
 impl AuditLog {
     /// Creates the log.
     pub fn new(store: Store, tenant: TenantId) -> Self {
-        Self { store, tenant }
+        Self {
+            store,
+            tenant,
+            viewer: None,
+        }
+    }
+
+    /// The same log as seen by one user. Runs it starts belong to that user.
+    pub fn for_user(&self, user: Option<Uuid>) -> Self {
+        Self {
+            viewer: user,
+            ..self.clone()
+        }
+    }
+
+    /// The tenant of the log.
+    pub fn tenant(&self) -> TenantId {
+        self.tenant
     }
 
     /// Records the start of a run.
@@ -226,14 +265,20 @@ impl AuditLog {
         agent_id: &str,
         trigger: &str,
     ) -> Result<(), AuditError> {
-        sqlx::query("INSERT INTO runs (id, tenant_id, agent_id, trigger, status) VALUES ($1, $2, $3, $4, $5)")
-            .bind(id.as_uuid())
-            .bind(self.tenant.as_uuid())
-            .bind(agent_id)
-            .bind(trigger)
-            .bind(RunStatus::Running.as_str())
-            .execute(self.store.pool())
-            .await?;
+        // A run belongs to the user who started it. Runs from schedules and
+        // automations belong to the person agents work for in the tenant.
+        sqlx::query(
+            "INSERT INTO runs (id, tenant_id, agent_id, trigger, status, user_id) \
+             VALUES ($1, $2, $3, $4, $5, coalesce($6, tenant_primary_user($2)))",
+        )
+        .bind(id.as_uuid())
+        .bind(self.tenant.as_uuid())
+        .bind(agent_id)
+        .bind(trigger)
+        .bind(RunStatus::Running.as_str())
+        .bind(self.viewer.or_else(acting_user::current))
+        .execute(self.store.pool())
+        .await?;
         Ok(())
     }
 

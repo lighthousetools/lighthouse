@@ -1,9 +1,9 @@
 //! "Ready for you": everything that waits for the owner, in one call.
 
 use crate::ready_view::{Preview, Review, Reviewer};
-use crate::{ApiError, ApiState, desk_error, internal};
+use crate::{ApiError, ApiState, Scoped, desk_error, internal};
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 use lighthouse_desk::{AlertCounts, FactFilter, TaskView};
@@ -128,7 +128,7 @@ pub(crate) async fn run_tools(state: &ApiState, run: Uuid, except: Option<&str>)
     security(("bearer" = []))
 )]
 pub(crate) async fn run_basis(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<crate::ready_view::Basis>>, ApiError> {
     let tools = run_tools(&state, id, None).await;
@@ -176,7 +176,7 @@ async fn draft_tools(state: &ApiState) -> Vec<String> {
     responses((status = 200, body = ReadyFeed)),
     security(("bearer" = []))
 )]
-pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed>, ApiError> {
+pub(crate) async fn feed(Scoped(state): Scoped) -> Result<Json<ReadyFeed>, ApiError> {
     let reviewer = reviewer(&state).await;
     let mut items = Vec::new();
     for approval in state
@@ -404,7 +404,7 @@ pub(crate) async fn feed(State(state): State<ApiState>) -> Result<Json<ReadyFeed
     security(("bearer" = []))
 )]
 pub(crate) async fn dismiss_draft(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     state
@@ -438,7 +438,7 @@ pub struct Snooze {
     security(("bearer" = []))
 )]
 pub(crate) async fn snooze(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path((kind, id)): Path<(String, String)>,
     Json(snooze): Json<Snooze>,
 ) -> Result<StatusCode, ApiError> {
@@ -470,7 +470,7 @@ pub(crate) async fn snooze(
     security(("bearer" = []))
 )]
 pub(crate) async fn unsnooze(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path((kind, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     if !state.desk.unsnooze(&kind, &id).await.map_err(desk_error)? {
@@ -601,7 +601,7 @@ async fn draft_text(state: &ApiState, kind: &str, id: &str) -> Result<String, Ap
     security(("bearer" = []))
 )]
 pub(crate) async fn rewrite(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path((kind, id)): Path<(String, String)>,
     Json(request): Json<ToneRequest>,
 ) -> Result<Json<Rewritten>, ApiError> {
@@ -645,7 +645,7 @@ pub(crate) async fn rewrite(
     security(("bearer" = []))
 )]
 pub(crate) async fn edit_text(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(edit): Json<TextEdit>,
 ) -> Result<Json<lighthouse_audit::Approval>, ApiError> {

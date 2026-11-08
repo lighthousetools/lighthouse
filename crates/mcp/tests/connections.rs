@@ -313,8 +313,8 @@ async fn oauth_flow_stores_tokens_in_the_vault_and_connects() {
         Err(McpError::NotAuthorized { .. })
     ));
 
-    let flows = OAuthFlows::new(config.clone(), vault.clone(), "https://lighthouse.test/");
-    let authorize = flows.start("demo").await.unwrap();
+    let flows = OAuthFlows::new(config.clone(), "https://lighthouse.test/");
+    let authorize = flows.start("demo", &vault).await.unwrap();
     let url = url::Url::parse(&authorize).unwrap();
     let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
     assert!(authorize.starts_with(&format!("{base}/authorize")));
@@ -365,10 +365,14 @@ async fn oauth_start_rejects_other_connectors() {
         "http://127.0.0.1:1/mcp".to_owned(),
         ConnectorAuth::None,
     ));
-    let flows = OAuthFlows::new(config, vault().await, "https://lighthouse.test");
-    assert!(matches!(flows.start("demo").await, Err(McpError::OAuth(_))));
+    let flows = OAuthFlows::new(config, "https://lighthouse.test");
+    let vault = vault().await;
     assert!(matches!(
-        flows.start("nobody").await,
+        flows.start("demo", &vault).await,
+        Err(McpError::OAuth(_))
+    ));
+    assert!(matches!(
+        flows.start("nobody", &vault).await,
         Err(McpError::UnknownConnector(_))
     ));
 }

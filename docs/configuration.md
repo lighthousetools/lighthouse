@@ -8,11 +8,12 @@ Any value can be overridden with an environment variable: `LIGHTHOUSE_<SECTION>_
 
 ## Secrets
 
-Secrets are not part of the configuration file. Store them on the running instance with `lht keys set <name>`:
+Secrets are not part of the configuration file. Store them on the running instance with `lht keys set <name>`, which
+writes to the vault of the default tenant:
 
 | Entry | Used for |
 |---|---|
-| `<provider>` | API key of a model provider, for example `anthropic` |
+| `<provider>` | API key of a model provider, for example `anthropic`. Each tenant may store its own, see [Tenancy](#tenancy) |
 | `mcp:<connector>` | Bearer token of a connector with `auth = "bearer"` |
 | `smtp` | SMTP password |
 | `slack:<alias>` | Incoming webhook URL, for example `slack:#weekly` |
@@ -65,8 +66,8 @@ automatically. A pending authorization lives in the server's memory, so finish i
 
 ## API
 
-`GET /openapi.json` describes the API. Everything except `/health`, `/openapi.json`, `/auth/status`, `/auth/login` and
-`/oauth/callback` needs a device token or the admin token as a bearer token.
+`GET /openapi.json` describes the API. Everything except `/health`, `/openapi.json`, `/oauth/callback` and the public
+sign-in endpoints needs a device token or the admin token as a bearer token.
 
 Other endpoints: `/agents`, `/connectors`, `/skills` and `/costs`. See [api.md](api.md) for live events, tasks and the
 other parts of the owner's desk.
@@ -76,7 +77,8 @@ directory. The [release image](release-image.md) already contains the web app an
 
 ## Sign-in
 
-Lighthouse has one owner with one password of at least 12 characters. Set it once with the admin token:
+People sign in with an email address and a password of at least 12 characters. On the first start, the configured
+`[owner]` becomes the first user and the owner of the default tenant. Set their password once with the admin token:
 
 ```sh
 curl -X POST "$LIGHTHOUSE_URL/auth/setup" \
@@ -86,7 +88,35 @@ curl -X POST "$LIGHTHOUSE_URL/auth/setup" \
 ```
 
 `POST /auth/login` then issues one token per device. Tokens are stored only as a hash and can be revoked one by one
-through `DELETE /auth/devices/{id}`. Setting a new password signs out every device. After five failed attempts, sign-in
-pauses for a minute.
+through `DELETE /auth/devices/{id}`. Setting a new password signs out every device of the user. After five failed
+attempts from one address or for one email address, sign-in pauses for a minute. See [api.md](api.md#users-and-tenants).
 
 Credentials can also be managed through `/credentials`. The API accepts values but never returns them.
+
+## Tenancy
+
+`[tenancy]` decides who may join and how tenants use model keys:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `signup` | `closed` | `closed`: nobody signs up and nobody is invited, as in a single-user install. `invite`: owners and admins invite people by email. `open`: anyone signs up and owns a new tenant; invitations work too |
+| `allow_instance_keys` | `true` | Tenants without their own key of a model provider use the instance's key, the one stored in the default tenant's vault (`lht keys set anthropic`). Hosted instances set `false`, so every tenant brings its own key through `PUT /credentials/<provider>` |
+| `data_dir` | `tenants` | One subdirectory per further tenant for its Brain and the agents and automations created in the apps. The default tenant keeps `[brain] path` and the `[paths]` directories |
+
+`server.trust_forwarded_for` (default `false`) counts the first address of `X-Forwarded-For` as the client for rate
+limits. Turn it on only behind a reverse proxy that sets this header.
+
+Verification and invitation mails go through `[delivery.smtp]` with the `smtp` password of the default tenant's vault.
+Without SMTP, no verification mail is sent, and `POST /tenant/invitations` returns the accept link to the inviting
+admin instead, to pass on in another way.
+
+Agent files in `paths.agents` and `paths.automations`, skills, connectors, sources and model routing apply to every
+tenant. Each tenant has its own vault, so connector tokens and provider keys are its own. `[owner] accounts` only apply
+to the default tenant; in other tenants, agents work for the tenant's first owner.
+
+### Upgrading from 0.1
+
+Nothing needs to change. On the first start of 0.2, the configured owner becomes a user with their `email`, keeps the
+password and every signed-in device, and becomes the owner of the default tenant, which keeps all data. The Mac app
+and other clients that sign in with the password alone keep working while the instance has one user. Once you invite a
+second person, sign-in needs the email address.

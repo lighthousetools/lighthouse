@@ -1,8 +1,8 @@
 //! The owner's to-do list.
 
-use crate::{ApiError, ApiState, desk_error, not_found};
+use crate::{ApiError, ApiState, Scoped, desk_error, not_found};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use chrono::Utc;
 use lighthouse_desk::{NewTask, Task, TaskPatch, TaskView};
@@ -51,7 +51,7 @@ fn changed(state: &ApiState, id: Option<Uuid>) {
     security(("bearer" = []))
 )]
 pub(crate) async fn list(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<TaskQuery>,
 ) -> Result<Json<Vec<Task>>, ApiError> {
     let today = Utc::now().with_timezone(&state.zone).date_naive();
@@ -74,7 +74,7 @@ pub(crate) async fn list(
     security(("bearer" = []))
 )]
 pub(crate) async fn create(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(task): Json<NewTask>,
 ) -> Result<(StatusCode, Json<Task>), ApiError> {
     let task = state
@@ -96,7 +96,7 @@ pub(crate) async fn create(
     security(("bearer" = []))
 )]
 pub(crate) async fn get(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Task>, ApiError> {
     let task = state.desk.task(id).await.map_err(desk_error)?;
@@ -118,7 +118,7 @@ pub(crate) async fn get(
     security(("bearer" = []))
 )]
 pub(crate) async fn update(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(patch): Json<TaskPatch>,
 ) -> Result<Json<Task>, ApiError> {
@@ -142,7 +142,7 @@ pub(crate) async fn update(
     security(("bearer" = []))
 )]
 pub(crate) async fn delete(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     if !state.desk.delete_task(id).await.map_err(desk_error)? {
@@ -166,7 +166,7 @@ fn conflict(what: &str) -> ApiError {
     security(("bearer" = []))
 )]
 pub(crate) async fn complete(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Task>, ApiError> {
     let task = state.desk.complete_task(id).await.map_err(desk_error)?;
@@ -185,7 +185,7 @@ pub(crate) async fn complete(
     security(("bearer" = []))
 )]
 pub(crate) async fn reopen(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Task>, ApiError> {
     let task = state.desk.reopen_task(id).await.map_err(desk_error)?;
@@ -204,7 +204,7 @@ pub(crate) async fn reopen(
     security(("bearer" = []))
 )]
 pub(crate) async fn accept(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Task>, ApiError> {
     let task = state.desk.accept_task(id).await.map_err(desk_error)?;
@@ -236,7 +236,7 @@ pub struct Delegation {
     security(("bearer" = []))
 )]
 pub(crate) async fn delegate(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(delegation): Json<Delegation>,
 ) -> Result<(StatusCode, Json<Task>), ApiError> {
@@ -285,7 +285,7 @@ pub(crate) async fn delegate(
     security(("bearer" = []))
 )]
 pub(crate) async fn reorder(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(order): Json<TaskOrder>,
 ) -> Result<Json<TaskOrderResult>, ApiError> {
     let moved = state

@@ -1,8 +1,8 @@
 //! Things that broke.
 
-use crate::{ApiError, ApiState, desk_error, not_found};
+use crate::{ApiError, ApiState, Scoped, desk_error, not_found};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use lighthouse_desk::{Alert, AlertCounts, AlertView};
 use serde::Deserialize;
@@ -31,7 +31,7 @@ pub(crate) struct AlertQuery {
     security(("bearer" = []))
 )]
 pub(crate) async fn list(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<AlertQuery>,
 ) -> Result<Json<Vec<Alert>>, ApiError> {
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 500);
@@ -51,7 +51,7 @@ pub(crate) async fn list(
     responses((status = 200, body = AlertCounts)),
     security(("bearer" = []))
 )]
-pub(crate) async fn counts(State(state): State<ApiState>) -> Result<Json<AlertCounts>, ApiError> {
+pub(crate) async fn counts(Scoped(state): Scoped) -> Result<Json<AlertCounts>, ApiError> {
     Ok(Json(state.desk.alert_counts().await.map_err(desk_error)?))
 }
 
@@ -65,7 +65,7 @@ pub(crate) async fn counts(State(state): State<ApiState>) -> Result<Json<AlertCo
     security(("bearer" = []))
 )]
 pub(crate) async fn get(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Alert>, ApiError> {
     let alert = state.desk.alert(id).await.map_err(desk_error)?;
@@ -115,7 +115,7 @@ pub(crate) struct SeriesQuery {
     security(("bearer" = []))
 )]
 pub(crate) async fn series(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Query(query): Query<SeriesQuery>,
 ) -> Result<Json<AlertSeries>, ApiError> {
@@ -206,7 +206,7 @@ fn settled(state: &ApiState, alert: Option<Alert>, what: &str) -> Result<Json<Al
     security(("bearer" = []))
 )]
 pub(crate) async fn acknowledge(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Alert>, ApiError> {
     let alert = state.desk.acknowledge_alert(id).await.map_err(desk_error)?;
@@ -223,7 +223,7 @@ pub(crate) async fn acknowledge(
     security(("bearer" = []))
 )]
 pub(crate) async fn resolve(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Alert>, ApiError> {
     let alert = state.desk.resolve_alert(id).await.map_err(desk_error)?;

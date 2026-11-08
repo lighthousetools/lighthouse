@@ -461,6 +461,10 @@ impl Desk {
     }
 
     /// Notes that an agent run works on a task.
+    ///
+    /// The run starts before it is linked here, so it may have ended already.
+    /// Then its result is taken over right away, since the end of the run
+    /// found no task to report to.
     pub async fn delegate_task(
         &self,
         id: Uuid,
@@ -468,8 +472,11 @@ impl Desk {
         run: Uuid,
     ) -> Result<Option<Task>, DeskError> {
         let query = format!(
-            "UPDATE tasks SET delegated_agent = $3, delegated_run = $4, result = NULL, \
-             result_status = NULL, updated_at = now() WHERE tenant_id = $1 AND id = $2 RETURNING {COLUMNS}"
+            "WITH ended AS (SELECT status, coalesce(report, reason) AS result FROM runs \
+                 WHERE tenant_id = $1 AND id = $4 AND status NOT IN ('running', 'waiting')) \
+             UPDATE tasks SET delegated_agent = $3, delegated_run = $4, \
+             result = (SELECT result FROM ended), result_status = (SELECT status FROM ended), \
+             updated_at = now() WHERE tenant_id = $1 AND id = $2 RETURNING {COLUMNS}"
         );
         let row: Option<TaskRow> = sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(self.tenant())
@@ -711,6 +718,32 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn a_run_that_ended_before_the_link_still_reports_to_its_task() {
+        let desk = desk().await;
+        let task = desk
+            .create_task(new("Collect issues", None), None)
+            .await
+            .unwrap();
+        let run = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO runs (id, tenant_id, agent_id, trigger, status, report) \
+             VALUES ($1, $2, 'reader', 'task', 'succeeded', 'Three issues')",
+        )
+        .bind(run)
+        .bind(lighthouse_core::TenantId::DEFAULT.as_uuid())
+        .execute(desk.pool())
+        .await
+        .unwrap();
+        let delegated = desk
+            .delegate_task(task.id, "reader", run)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delegated.result.as_deref(), Some("Three issues"));
+        assert_eq!(delegated.result_status.as_deref(), Some("succeeded"));
     }
 
     #[tokio::test]

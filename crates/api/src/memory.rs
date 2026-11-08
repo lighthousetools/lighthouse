@@ -1,8 +1,8 @@
 //! What the assistant knows about the owner.
 
-use crate::{ApiError, ApiState, desk_error, not_found};
+use crate::{ApiError, ApiState, Scoped, desk_error, not_found};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use lighthouse_desk::{Fact, FactFilter, FactPatch, NewFact};
 use serde_json::json;
@@ -25,7 +25,7 @@ fn changed(state: &ApiState, id: Uuid) {
     security(("bearer" = []))
 )]
 pub(crate) async fn list(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(filter): Query<FactFilter>,
 ) -> Result<Json<Vec<Fact>>, ApiError> {
     Ok(Json(state.desk.facts(&filter).await.map_err(desk_error)?))
@@ -41,7 +41,7 @@ pub(crate) async fn list(
     security(("bearer" = []))
 )]
 pub(crate) async fn create(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(fact): Json<NewFact>,
 ) -> Result<(StatusCode, Json<Fact>), ApiError> {
     let fact = state.desk.create_fact(fact).await.map_err(desk_error)?;
@@ -59,7 +59,7 @@ pub(crate) async fn create(
     security(("bearer" = []))
 )]
 pub(crate) async fn get(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Fact>, ApiError> {
     let fact = state.desk.fact(id).await.map_err(desk_error)?;
@@ -81,7 +81,7 @@ pub(crate) async fn get(
     security(("bearer" = []))
 )]
 pub(crate) async fn update(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(patch): Json<FactPatch>,
 ) -> Result<Json<Fact>, ApiError> {
@@ -108,7 +108,7 @@ pub(crate) async fn update(
     security(("bearer" = []))
 )]
 pub(crate) async fn confirm(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Fact>, ApiError> {
     let fact = state
@@ -136,7 +136,7 @@ pub(crate) async fn confirm(
     security(("bearer" = []))
 )]
 pub(crate) async fn delete(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     if !state.desk.delete_fact(id).await.map_err(desk_error)? {

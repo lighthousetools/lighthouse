@@ -72,6 +72,25 @@ impl Accounts {
             .collect())
     }
 
+    /// Creates a tenant owned by an existing user.
+    pub async fn create_tenant(&self, owner: Uuid, name: &str) -> Result<TenantId, AuthError> {
+        let name = check_name(name, "tenant name")?;
+        let tenant = TenantId::generate();
+        let mut transaction = self.pool().begin().await?;
+        sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, $2)")
+            .bind(tenant.as_uuid())
+            .bind(name)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, 'owner')")
+            .bind(tenant.as_uuid())
+            .bind(owner)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(tenant)
+    }
+
     /// Renames a tenant.
     pub async fn rename_tenant(&self, tenant: TenantId, name: &str) -> Result<Tenant, AuthError> {
         let name = check_name(name, "tenant name")?;
@@ -340,7 +359,13 @@ mod tests {
     #[tokio::test]
     async fn tenants_can_be_renamed_listed_and_deleted() {
         let (accounts, _) = accounts().await;
-        let (_, tenant) = signup(&accounts, "sam@example.com").await;
+        let (sam, tenant) = signup(&accounts, "sam@example.com").await;
+        let second = accounts
+            .create_tenant(sam.id, "Side project")
+            .await
+            .unwrap();
+        assert_eq!(accounts.tenants_of(sam.id).await.unwrap().len(), 2);
+        accounts.delete_tenant(second).await.unwrap();
         assert_eq!(
             accounts
                 .rename_tenant(tenant, " Studio ")

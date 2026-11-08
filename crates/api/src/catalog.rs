@@ -1,9 +1,9 @@
 //! Agents, connectors, skills and costs.
 
-use crate::{ApiError, ApiState, internal};
+use crate::{ApiError, ApiState, Scoped, internal};
 use async_trait::async_trait;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use lighthouse_audit::{DailyCost, RunRecord};
@@ -180,7 +180,7 @@ fn unknown_agent() -> ApiError {
     responses((status = 200, body = Vec<AgentInfo>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn agents(State(state): State<ApiState>) -> Json<Vec<AgentInfo>> {
+pub(crate) async fn agents(Scoped(state): Scoped) -> Json<Vec<AgentInfo>> {
     let corrections = corrections(&state).await;
     Json(
         state
@@ -216,7 +216,7 @@ fn with_corrections(
     security(("bearer" = []))
 )]
 pub(crate) async fn agent(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
 ) -> Result<Json<AgentInfo>, ApiError> {
     let agent = state.catalog.agent(&id).ok_or_else(unknown_agent)?;
@@ -232,7 +232,7 @@ pub(crate) async fn agent(
     security(("bearer" = []))
 )]
 pub(crate) async fn agent_runs(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
     let runs = state
@@ -255,7 +255,7 @@ pub(crate) async fn agent_runs(
     security(("bearer" = []))
 )]
 pub(crate) async fn draft_agent(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(request): Json<AgentDraftRequest>,
 ) -> Result<Json<AgentSource>, ApiError> {
     if request.description.trim().is_empty() {
@@ -284,7 +284,7 @@ pub(crate) async fn draft_agent(
     security(("bearer" = []))
 )]
 pub(crate) async fn save_agent(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(request): Json<AgentSource>,
 ) -> Result<Json<AgentInfo>, ApiError> {
     let agent = state
@@ -308,7 +308,7 @@ pub(crate) async fn save_agent(
     security(("bearer" = []))
 )]
 pub(crate) async fn delete_agent(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     if state
@@ -331,7 +331,7 @@ pub(crate) async fn delete_agent(
     security(("bearer" = []))
 )]
 pub(crate) async fn connectors(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
 ) -> Result<Json<Vec<ConnectorInfo>>, ApiError> {
     Ok(Json(state.catalog.connectors().await.map_err(internal)?))
 }
@@ -343,7 +343,7 @@ pub(crate) async fn connectors(
     responses((status = 200, body = Vec<SkillInfo>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn skills(State(state): State<ApiState>) -> Json<Vec<SkillInfo>> {
+pub(crate) async fn skills(Scoped(state): Scoped) -> Json<Vec<SkillInfo>> {
     Json(state.catalog.skills())
 }
 
@@ -356,7 +356,7 @@ pub(crate) async fn skills(State(state): State<ApiState>) -> Json<Vec<SkillInfo>
     security(("bearer" = []))
 )]
 pub(crate) async fn costs(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<CostQuery>,
 ) -> Result<Json<Vec<DailyCost>>, ApiError> {
     let days = query.days.unwrap_or(DEFAULT_COST_DAYS).clamp(1, 366);

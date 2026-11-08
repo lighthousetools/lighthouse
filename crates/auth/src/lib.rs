@@ -11,12 +11,10 @@
 //! [`Accounts::bootstrap_owner`] turns that owner into the first user.
 
 mod invitations;
-mod legacy;
 pub mod limiter;
 mod tenants;
 
 pub use invitations::{AcceptAs, Accepted, Invitation, IssuedInvitation};
-pub use legacy::Auth;
 pub use tenants::{Member, Membership, Tenant};
 
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};

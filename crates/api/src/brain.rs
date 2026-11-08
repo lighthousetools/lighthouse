@@ -1,9 +1,9 @@
 //! The Second Brain.
 
-use crate::{ApiError, ApiState, internal};
+use crate::{ApiError, Scoped, internal};
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -104,7 +104,7 @@ pub struct AskAnswer {
     security(("bearer" = []))
 )]
 pub(crate) async fn search(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<Vec<SearchHit>>, ApiError> {
     let limit = query.limit.unwrap_or(DEFAULT_HITS).clamp(1, 50);
@@ -129,7 +129,7 @@ pub(crate) async fn search(
     security(("bearer" = []))
 )]
 pub(crate) async fn ask(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(request): Json<AskRequest>,
 ) -> Result<Json<AskAnswer>, ApiError> {
     if request.question.trim().is_empty() {
@@ -162,7 +162,7 @@ pub(crate) async fn ask(
     security(("bearer" = []))
 )]
 pub(crate) async fn list(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<EntriesQuery>,
 ) -> Result<Json<Vec<EntrySummary>>, ApiError> {
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 500);
@@ -211,7 +211,7 @@ impl From<Entry> for EntryDetail {
     security(("bearer" = []))
 )]
 pub(crate) async fn create(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(mut new): Json<NewEntry>,
 ) -> Result<(StatusCode, Json<EntryDetail>), ApiError> {
     if new.sources.is_empty() {
@@ -231,7 +231,7 @@ pub(crate) async fn create(
     security(("bearer" = []))
 )]
 pub(crate) async fn get(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<EntryDetail>, ApiError> {
     let entry = state.brain.get(id).await.map_err(brain_error)?;
@@ -250,7 +250,7 @@ pub(crate) async fn get(
     security(("bearer" = []))
 )]
 pub(crate) async fn resolve(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<ResolveQuery>,
 ) -> Result<Json<ResolvedEntry>, ApiError> {
     let id = state
@@ -275,7 +275,7 @@ pub(crate) async fn resolve(
     security(("bearer" = []))
 )]
 pub(crate) async fn ask_stream(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(request): Json<AskRequest>,
 ) -> impl IntoResponse {
     let (sender, receiver) = mpsc::channel::<Result<Event, Infallible>>(256);
@@ -318,7 +318,7 @@ pub(crate) async fn ask_stream(
     security(("bearer" = []))
 )]
 pub(crate) async fn update(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(patch): Json<EntryPatch>,
 ) -> Result<Json<EntryDetail>, ApiError> {
@@ -336,7 +336,7 @@ pub(crate) async fn update(
     security(("bearer" = []))
 )]
 pub(crate) async fn delete(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     if state.brain.delete(id).await.map_err(brain_error)? {
@@ -360,7 +360,7 @@ pub(crate) async fn delete(
     security(("bearer" = []))
 )]
 pub(crate) async fn upload(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<UploadQuery>,
     headers: HeaderMap,
     body: Bytes,
@@ -387,7 +387,7 @@ pub(crate) async fn upload(
     security(("bearer" = []))
 )]
 pub(crate) async fn download(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
     let (name, bytes) = state

@@ -2,9 +2,8 @@
 //! assistant with one owner, so there are no members to manage.
 
 use crate::catalog::ModelRoute;
-use crate::{ApiError, ApiState, desk_error, internal};
+use crate::{ApiError, ApiState, Scoped, desk_error, internal};
 use axum::Json;
-use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -108,9 +107,7 @@ async fn view(state: &ApiState, budget: Budget) -> Result<BudgetView, ApiError> 
     responses((status = 200, body = BudgetView)),
     security(("bearer" = []))
 )]
-pub(crate) async fn get_budget(
-    State(state): State<ApiState>,
-) -> Result<Json<BudgetView>, ApiError> {
+pub(crate) async fn get_budget(Scoped(state): Scoped) -> Result<Json<BudgetView>, ApiError> {
     let budget = budget(&state).await?;
     Ok(Json(view(&state, budget).await?))
 }
@@ -126,7 +123,7 @@ pub(crate) async fn get_budget(
     security(("bearer" = []))
 )]
 pub(crate) async fn set_budget(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(budget): Json<Budget>,
 ) -> Result<Json<BudgetView>, ApiError> {
     if budget
@@ -160,7 +157,7 @@ pub(crate) async fn set_budget(
     responses((status = 200, body = Vec<ModelRoute>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn models(State(state): State<ApiState>) -> Json<Vec<ModelRoute>> {
+pub(crate) async fn models(Scoped(state): Scoped) -> Json<Vec<ModelRoute>> {
     Json(state.catalog.models())
 }
 

@@ -1,10 +1,10 @@
 //! Automations: a trigger and ordered steps, stored as files like agents.
 
 use crate::catalog::{AgentChangeError, AgentSource};
-use crate::{ApiError, ApiState, TriggerError, internal, not_found};
+use crate::{ApiError, ApiState, Scoped, TriggerError, internal, not_found};
 use async_trait::async_trait;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use lighthouse_audit::RunRecord;
@@ -193,9 +193,7 @@ fn changed(state: &ApiState, id: &str) {
     responses((status = 200, body = Vec<AutomationInfo>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn list(
-    State(state): State<ApiState>,
-) -> Result<Json<Vec<AutomationInfo>>, ApiError> {
+pub(crate) async fn list(Scoped(state): Scoped) -> Result<Json<Vec<AutomationInfo>>, ApiError> {
     Ok(Json(state.automations.list().await.map_err(internal)?))
 }
 
@@ -209,7 +207,7 @@ pub(crate) async fn list(
     security(("bearer" = []))
 )]
 pub(crate) async fn get(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
 ) -> Result<Json<AutomationInfo>, ApiError> {
     let automation = state.automations.get(&id).await.map_err(internal)?;
@@ -229,7 +227,7 @@ pub(crate) async fn get(
     security(("bearer" = []))
 )]
 pub(crate) async fn save(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(request): Json<AgentSource>,
 ) -> Result<Json<AutomationInfo>, ApiError> {
     let automation = state
@@ -252,7 +250,7 @@ pub(crate) async fn save(
     security(("bearer" = []))
 )]
 pub(crate) async fn switch(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
     Json(switch): Json<AutomationSwitch>,
 ) -> Result<Json<AutomationInfo>, ApiError> {
@@ -280,7 +278,7 @@ pub(crate) async fn switch(
     security(("bearer" = []))
 )]
 pub(crate) async fn delete(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     if !state.automations.delete(&id).await.map_err(change_error)? {
@@ -300,7 +298,7 @@ pub(crate) async fn delete(
     security(("bearer" = []))
 )]
 pub(crate) async fn runs(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
     let agent = format!("{}{id}", lighthouse_core::automation::RUN_PREFIX);
@@ -329,7 +327,7 @@ pub(crate) struct PayloadBody {
     security(("bearer" = []))
 )]
 pub(crate) async fn run(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
     body: Option<Json<PayloadBody>>,
 ) -> Result<(StatusCode, Json<crate::RunStarted>), ApiError> {
@@ -360,7 +358,7 @@ pub(crate) async fn run(
     security(("bearer" = []))
 )]
 pub(crate) async fn webhook(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
     payload: Option<Json<Value>>,
 ) -> Result<(StatusCode, Json<AutomationRuns>), ApiError> {
@@ -392,7 +390,7 @@ pub(crate) async fn webhook(
     security(("bearer" = []))
 )]
 pub(crate) async fn emit(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(event): Json<ExternalEvent>,
 ) -> Result<(StatusCode, Json<AutomationRuns>), ApiError> {
     if !lighthouse_core::automation::valid_event_name(&event.name) || event.name.starts_with("run.")
@@ -424,7 +422,7 @@ pub(crate) async fn emit(
     security(("bearer" = []))
 )]
 pub(crate) async fn dry_run(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(request): Json<DryRunRequest>,
 ) -> Result<Json<AutomationDryRun>, ApiError> {
     let unknown = request.source.is_none() && request.id.is_some();
@@ -449,7 +447,7 @@ pub(crate) async fn dry_run(
     security(("bearer" = []))
 )]
 pub(crate) async fn draft(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(request): Json<AutomationDraftRequest>,
 ) -> Result<Json<AgentSource>, ApiError> {
     let source = state

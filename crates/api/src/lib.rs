@@ -1,8 +1,10 @@
 //! HTTP API of the server.
 //!
-//! Only `/health`, `/openapi.json`, the sign-in and the OAuth callback are public.
-//! Everything else needs a device token or the admin token, because runs and
-//! reports contain private data. Setting the password needs the admin token.
+//! Only `/health`, `/openapi.json`, sign-in, sign-up, invitations and the OAuth
+//! callback are public. Everything else needs a device token or the admin
+//! token, because runs and reports contain private data. A device token
+//! belongs to one user and is bound to one tenant; every request works in that
+//! tenant only. Setting the first password needs the admin token.
 
 mod alerts;
 mod approvals;
@@ -26,10 +28,12 @@ mod sessions;
 mod settings;
 mod talk;
 mod tasks;
+mod tenants;
 
 pub use approvals::{BatchDecision, BatchResult, Decision};
 pub use auth::{
-    AuthStatus, Caller, CredentialValue, LoginRequest, SetupRequest, TokenIssued, TokenRequest,
+    AcceptRequest, AuthStatus, Caller, CredentialValue, InvitationInfo, LinkToken, LoginRequest,
+    PasswordChange, SetupRequest, SignupRequest, TENANT_HEADER, TokenIssued, TokenRequest,
 };
 pub use automations::{
     AutomationDraftRequest, AutomationDryRun, AutomationInfo, AutomationRuns, AutomationStepInfo,
@@ -60,10 +64,14 @@ pub use sessions::{
 pub use settings::{BUDGET, Budget, BudgetView, RunLimit, month_start};
 pub use talk::{Exchange, NewMessage, NewThread, ThreadDetail, ThreadPatch};
 pub use tasks::{Delegation, TaskOrder, TaskOrderResult};
+pub use tenants::{
+    AcceptInvitation, Confirmation, InvitationCreated, InviteRequest, Me, MePatch, NewTenant,
+    RoleChange, SwitchRequest, TenantInfo, TenantPatch,
+};
 
 use async_trait::async_trait;
 use axum::Json;
-use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, FromRequestParts, Path, Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -72,25 +80,27 @@ use axum::routing::{delete, get, patch, post, put};
 
 pub use axum::Router;
 use lighthouse_audit::{Approval, AuditLog, DailyCost, RunDetail, RunRecord, StepRecord};
-use lighthouse_auth::{Auth, Device, DeviceKind};
+use lighthouse_auth::{
+    Accounts, Device, DeviceKind, Invitation, Member, Membership, Role, Tenant, User,
+};
 use lighthouse_brain::{Brain, Entry, EntryPatch, EntrySummary, NewEntry, SearchHit, Source};
+use lighthouse_core::TenantId;
 use lighthouse_desk::{
     Alert, AlertCounts, AlertView, Desk, DeskError, Fact, FactPatch, FactSource, NewFact, NewRule,
     NewTask, Origin, Rule, RulePatch, SourceLink, Task, TaskPatch, TaskStatus, TaskView,
 };
 use lighthouse_mcp::{McpError, OAuthFlows};
-use lighthouse_notify::EventBus;
+use lighthouse_notify::{EventBus, Notifier};
 use lighthouse_sessions::{
     NewPermission, Node, NodeReport, NodeState, Permission, Session, SessionReport, Sessions,
 };
 use lighthouse_vault::Vault;
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
-use subtle::ConstantTimeEq;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_stream::wrappers::ReceiverStream;
 use utoipa::{OpenApi, ToSchema};
@@ -145,7 +155,73 @@ pub trait Assistant: Send + Sync {
     ) -> Result<AskAnswer, String>;
 }
 
-/// Shared state of the API.
+/// Who may create an account.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SignupMode {
+    /// Nobody: the configured owner signs in, as in a single-user install.
+    #[default]
+    Closed,
+    /// Only people with an invitation.
+    Invite,
+    /// Anyone, who then owns a new tenant. Invitations work too.
+    Open,
+}
+
+/// Opens the tenants of the instance.
+#[async_trait]
+pub trait Tenants: Send + Sync {
+    /// The state of a tenant, opened on first use. `None` if it does not
+    /// exist. The error text is logged, not shown.
+    async fn state(&self, tenant: TenantId) -> Result<Option<ApiState>, String>;
+
+    /// Forgets a deleted tenant: stops its background work and removes its files.
+    async fn forget(&self, tenant: TenantId);
+}
+
+/// State of the API shared by every tenant.
+#[derive(Clone)]
+pub struct Instance {
+    /// Users, tenants, memberships and device tokens.
+    pub accounts: Accounts,
+    /// The tenants and their state.
+    pub tenants: Arc<dyn Tenants>,
+    /// OAuth flows of every tenant.
+    pub oauth: Arc<OAuthFlows>,
+    /// Admin token. Without one, the first password can only be set by the CLI.
+    pub admin_token: Option<SecretString>,
+    /// Who may create an account.
+    pub signup: SignupMode,
+    /// Sends verification and invitation mails, if mail is configured.
+    pub mailer: Option<Arc<dyn Notifier>>,
+    /// Public base URL of the apps, for links in mails.
+    pub public_url: String,
+    /// Whether the first address in `X-Forwarded-For` is the client, behind a
+    /// trusted reverse proxy.
+    pub trust_forwarded_for: bool,
+}
+
+/// The state of the caller's tenant, as the authentication put it into the
+/// request. Personal data in it is narrowed to the calling user.
+pub(crate) struct Scoped(pub ApiState);
+
+impl<S: Send + Sync> FromRequestParts<S> for Scoped {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, ApiError> {
+        parts
+            .extensions
+            .get::<ApiState>()
+            .cloned()
+            .map(Self)
+            .ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "sign-in required".to_owned()))
+    }
+}
+
+/// State of one tenant in the API.
 #[derive(Clone)]
 pub struct ApiState {
     /// The audit log.
@@ -154,8 +230,6 @@ pub struct ApiState {
     pub trigger: Arc<dyn RunTrigger>,
     /// OAuth flows.
     pub oauth: Arc<OAuthFlows>,
-    /// Sign-in and device tokens.
-    pub auth: Auth,
     /// Encrypted credentials.
     pub vault: Vault,
     /// The Second Brain.
@@ -166,10 +240,6 @@ pub struct ApiState {
     pub catalog: Arc<dyn Catalog>,
     /// Desktop agents and their sessions.
     pub sessions: Sessions,
-    /// Name of the person this instance works for.
-    pub owner_name: String,
-    /// Admin token. Without one, the password can only be set by the CLI.
-    pub admin_token: Option<SecretString>,
     /// Live events for the apps.
     pub events: EventBus,
     /// Tasks, rules, memory, alerts and briefing documents.
@@ -190,6 +260,17 @@ pub struct ApiState {
     pub writer: Arc<dyn Writer>,
 }
 
+impl ApiState {
+    /// The state as one user sees it: their personal data, and the shared
+    /// data of the tenant. `None` is the admin token, which sees everything.
+    pub fn for_user(&self, user: Option<Uuid>) -> Self {
+        Self {
+            audit: self.audit.for_user(user),
+            ..self.clone()
+        }
+    }
+}
+
 /// Answer of the health check.
 #[derive(Serialize, ToSchema)]
 pub struct Health {
@@ -197,17 +278,6 @@ pub struct Health {
     pub status: &'static str,
     /// Server version.
     pub version: &'static str,
-}
-
-/// The signed-in owner.
-#[derive(Serialize, Deserialize, ToSchema)]
-pub struct Me {
-    /// Display name.
-    pub name: String,
-    /// IANA time zone of the owner, such as `Europe/Berlin`. Dates such as
-    /// "today" and the days of charts follow it.
-    #[serde(default)]
-    pub timezone: String,
 }
 
 /// Answer when a run started.
@@ -274,37 +344,12 @@ fn bearer_token(request: &Request) -> Option<&str> {
         .and_then(|value| value.strip_prefix("Bearer "))
 }
 
-fn is_admin(state: &ApiState, provided: &str) -> bool {
-    state.admin_token.as_ref().is_some_and(|expected| {
-        bool::from(
-            expected
-                .expose_secret()
-                .as_bytes()
-                .ct_eq(provided.as_bytes()),
-        )
-    })
-}
-
 /// Reports that the server is up.
 #[utoipa::path(get, path = "/health", responses((status = 200, body = Health)))]
 async fn health() -> Json<Health> {
     Json(Health {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
-    })
-}
-
-/// Returns the signed-in owner.
-#[utoipa::path(
-    get,
-    path = "/me",
-    responses((status = 200, body = Me)),
-    security(("bearer" = []))
-)]
-async fn me(State(state): State<ApiState>) -> Json<Me> {
-    Json(Me {
-        name: state.owner_name.clone(),
-        timezone: state.zone.name().to_owned(),
     })
 }
 
@@ -319,7 +364,7 @@ async fn me(State(state): State<ApiState>) -> Json<Me> {
     responses((status = 200, description = "Server-sent events", content_type = "text/event-stream")),
     security(("bearer" = []))
 )]
-async fn events(State(state): State<ApiState>) -> impl IntoResponse {
+async fn events(Scoped(state): Scoped) -> impl IntoResponse {
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(16);
     let mut bus = state.events.subscribe();
     tokio::spawn(async move {
@@ -369,7 +414,7 @@ async fn events(State(state): State<ApiState>) -> impl IntoResponse {
     security(("bearer" = []))
 )]
 async fn list_runs(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 500);
@@ -384,10 +429,7 @@ async fn list_runs(
     responses((status = 200, body = RunDetail), (status = 404, description = "Unknown run")),
     security(("bearer" = []))
 )]
-async fn get_run(
-    State(state): State<ApiState>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<RunDetail>, ApiError> {
+async fn get_run(Scoped(state): Scoped, Path(id): Path<Uuid>) -> Result<Json<RunDetail>, ApiError> {
     let detail = state.audit.run_detail(id).await.map_err(internal)?;
     detail
         .map(Json)
@@ -403,7 +445,7 @@ async fn get_run(
     security(("bearer" = []))
 )]
 async fn run_agent(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<RunStarted>), ApiError> {
     let run = state
@@ -427,20 +469,27 @@ async fn run_agent(
     security(("bearer" = []))
 )]
 async fn connect(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
+    caller: Caller,
     Path(id): Path<String>,
 ) -> Result<Json<ConnectStarted>, ApiError> {
-    let authorize_url = state.oauth.start(&id).await.map_err(|error| match error {
-        McpError::UnknownConnector(_) | McpError::OAuth(_) => {
-            ApiError(StatusCode::BAD_REQUEST, error.to_string())
-        }
-        other => internal(other),
-    })?;
+    caller.require_manager()?;
+    let authorize_url =
+        state
+            .oauth
+            .start(&id, &state.vault)
+            .await
+            .map_err(|error| match error {
+                McpError::UnknownConnector(_) | McpError::OAuth(_) => {
+                    ApiError(StatusCode::BAD_REQUEST, error.to_string())
+                }
+                other => internal(other),
+            })?;
     Ok(Json(ConnectStarted { authorize_url }))
 }
 
 async fn oauth_callback(
-    State(state): State<ApiState>,
+    State(state): State<Instance>,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
     let failed =
@@ -491,9 +540,14 @@ impl utoipa::Modify for SecurityAddon {
 #[openapi(
     info(title = "Lighthouse API"),
     paths(
-        health, me, events, list_runs, get_run, run_agent, connect,
+        health, events, list_runs, get_run, run_agent, connect,
         auth::status, auth::setup, auth::login, auth::issue_token, auth::logout,
-        auth::devices, auth::revoke_device,
+        auth::devices, auth::revoke_device, auth::signup, auth::verify_email,
+        auth::resend_verification, auth::change_password, auth::invitation, auth::accept,
+        tenants::me, tenants::update_me, tenants::delete_me, tenants::list, tenants::create,
+        tenants::switch, tenants::accept, tenants::current, tenants::update, tenants::delete,
+        tenants::members, tenants::change_role, tenants::remove_member, tenants::invitations,
+        tenants::invite, tenants::revoke_invitation,
         auth::list_credentials, auth::put_credential, auth::delete_credential,
         approvals::list, approvals::decide, approvals::decide_batch,
         brain::search, brain::ask, brain::ask_stream, brain::resolve, brain::list, brain::create, brain::get, brain::update,
@@ -540,7 +594,10 @@ impl utoipa::Modify for SecurityAddon {
     components(schemas(
         Health, Me, RunRecord, StepRecord, RunDetail, RunStarted, ConnectStarted,
         AuthStatus, SetupRequest, LoginRequest, TokenRequest, TokenIssued, CredentialValue,
-        Device, DeviceKind, Approval, Decision, BatchDecision, BatchResult,
+        Device, DeviceKind, SignupMode, SignupRequest, PasswordChange, LinkToken, InvitationInfo,
+        AcceptRequest, MePatch, Confirmation, NewTenant, SwitchRequest, AcceptInvitation,
+        TenantPatch, TenantInfo, RoleChange, InviteRequest, InvitationCreated, Role, Tenant,
+        Membership, Member, Invitation, User, Approval, Decision, BatchDecision, BatchResult,
         Entry, EntryDetail, EntryPatch, EntrySummary, NewEntry, SearchHit, Source,
         AskRequest, AskAnswer, ResolvedEntry,
         AgentInfo, AgentTool, ConnectorInfo, SkillInfo, AgentDraftRequest, AgentSource, DailyCost,
@@ -599,9 +656,38 @@ pub fn with_web_app(router: Router, directory: &std::path::Path) -> Router {
 }
 
 /// Builds the router.
-pub fn router(state: ApiState) -> Router {
+pub fn router(state: Instance) -> Router {
     let signed_in = Router::new()
-        .route("/me", get(me))
+        .route(
+            "/me",
+            get(tenants::me)
+                .patch(tenants::update_me)
+                .delete(tenants::delete_me),
+        )
+        .route("/tenants", get(tenants::list).post(tenants::create))
+        .route("/tenants/accept", post(tenants::accept))
+        .route("/tenants/{id}/switch", post(tenants::switch))
+        .route(
+            "/tenant",
+            get(tenants::current)
+                .patch(tenants::update)
+                .delete(tenants::delete),
+        )
+        .route("/tenant/members", get(tenants::members))
+        .route(
+            "/tenant/members/{user}",
+            patch(tenants::change_role).delete(tenants::remove_member),
+        )
+        .route(
+            "/tenant/invitations",
+            get(tenants::invitations).post(tenants::invite),
+        )
+        .route(
+            "/tenant/invitations/{id}",
+            delete(tenants::revoke_invitation),
+        )
+        .route("/auth/password", post(auth::change_password))
+        .route("/auth/verify/resend", post(auth::resend_verification))
         .route("/events", get(events))
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
@@ -834,6 +920,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/oauth/callback", get(oauth_callback))
         .route("/auth/status", get(auth::status))
         .route("/auth/login", post(auth::login))
+        .route("/auth/signup", post(auth::signup))
+        .route("/auth/verify", post(auth::verify_email))
+        .route("/auth/invitation", post(auth::invitation))
+        .route("/auth/accept", post(auth::accept))
         .merge(signed_in)
         .merge(admin)
         .with_state(state)
@@ -1207,6 +1297,8 @@ mod tests {
         pub(crate) sync: lighthouse_sync::SyncStore,
         pub(crate) events: EventBus,
         pub(crate) resumed: Arc<Mutex<Vec<Uuid>>>,
+        pub(crate) accounts: Accounts,
+        pub(crate) tenants: Arc<TestTenants>,
     }
 
     pub(crate) async fn harness(token: Option<&str>) -> Harness {
@@ -1217,54 +1309,120 @@ mod tests {
         build_harness(token, Some(agent.to_owned())).await
     }
 
-    async fn build_harness(token: Option<&str>, talk_agent: Option<String>) -> Harness {
-        let resumed = Arc::new(Mutex::new(Vec::new()));
-        let store = fresh_store().await;
+    /// The state of one tenant with real storage and fakes for everything
+    /// that calls out.
+    pub(crate) fn tenant_state(
+        store: &lighthouse_store::Store,
+        tenant: TenantId,
+        resumed: Arc<Mutex<Vec<Uuid>>>,
+        talk_agent: Option<String>,
+    ) -> ApiState {
         let key = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
         let vault = Vault::new(
             store.clone(),
-            TenantId::DEFAULT,
+            tenant,
             &MasterKey::from_base64(&key).unwrap(),
         );
-        let audit = AuditLog::new(store.clone(), TenantId::DEFAULT);
-        let desk = Desk::new(store.clone(), TenantId::DEFAULT);
-        let sessions = Sessions::new(store.clone(), TenantId::DEFAULT);
-        let events = EventBus::new();
-        let sync = lighthouse_sync::SyncStore::new(store.clone(), TenantId::DEFAULT);
-        let state = ApiState {
-            audit: audit.clone(),
-            trigger: Arc::new(FakeTrigger(Uuid::nil(), resumed.clone())),
-            oauth: Arc::new(OAuthFlows::new(
-                BTreeMap::new(),
-                vault.clone(),
-                "https://lighthouse.test",
-            )),
-            auth: Auth::new(store.clone(), TenantId::DEFAULT),
+        ApiState {
+            audit: AuditLog::new(store.clone(), tenant),
+            trigger: Arc::new(FakeTrigger(Uuid::nil(), resumed)),
+            oauth: Arc::new(OAuthFlows::new(BTreeMap::new(), "https://lighthouse.test")),
             vault,
-            brain: Brain::new(store.clone(), TenantId::DEFAULT, brain_root()).unwrap(),
-            sessions: sessions.clone(),
-            owner_name: "Alex".to_owned(),
+            brain: Brain::new(store.clone(), tenant, brain_root()).unwrap(),
+            sessions: Sessions::new(store.clone(), tenant),
             assistant: Arc::new(FakeAssistant),
             catalog: Arc::new(FakeCatalog),
-            admin_token: token.map(|token| SecretString::from(token.to_owned())),
-            events: events.clone(),
-            desk: desk.clone(),
+            events: EventBus::new(),
+            desk: Desk::new(store.clone(), tenant),
             zone: chrono_tz::Europe::Berlin,
             automations: Arc::new(FakeAutomations),
-            sync: sync.clone(),
+            sync: lighthouse_sync::SyncStore::new(store.clone(), tenant),
             connected: Arc::new(FakeConnected),
             publisher: Arc::new(FakePublisher),
             talk_agent,
             writer: Arc::new(FakeWriter),
+        }
+    }
+
+    /// Opens tenants on first use, like the server does.
+    pub(crate) struct TestTenants {
+        store: lighthouse_store::Store,
+        states: Mutex<std::collections::HashMap<TenantId, ApiState>>,
+        pub(crate) forgotten: Mutex<Vec<TenantId>>,
+    }
+
+    #[async_trait]
+    impl Tenants for TestTenants {
+        async fn state(&self, tenant: TenantId) -> Result<Option<ApiState>, String> {
+            if let Some(state) = self.states.lock().unwrap().get(&tenant) {
+                return Ok(Some(state.clone()));
+            }
+            let (exists,): (bool,) = lighthouse_store::sqlx::query_as(
+                "SELECT EXISTS (SELECT 1 FROM tenants WHERE id = $1)",
+            )
+            .bind(tenant.as_uuid())
+            .fetch_one(self.store.pool())
+            .await
+            .map_err(|error| error.to_string())?;
+            if !exists {
+                return Ok(None);
+            }
+            let state = tenant_state(&self.store, tenant, Arc::default(), None);
+            self.states.lock().unwrap().insert(tenant, state.clone());
+            Ok(Some(state))
+        }
+
+        async fn forget(&self, tenant: TenantId) {
+            self.states.lock().unwrap().remove(&tenant);
+            self.forgotten.lock().unwrap().push(tenant);
+        }
+    }
+
+    pub(crate) const OWNER_EMAIL: &str = "alex@example.com";
+
+    async fn build_harness(token: Option<&str>, talk_agent: Option<String>) -> Harness {
+        build_harness_with(token, talk_agent, SignupMode::Closed, None).await
+    }
+
+    pub(crate) async fn build_harness_with(
+        token: Option<&str>,
+        talk_agent: Option<String>,
+        signup: SignupMode,
+        mailer: Option<Arc<dyn Notifier>>,
+    ) -> Harness {
+        let resumed = Arc::new(Mutex::new(Vec::new()));
+        let store = fresh_store().await;
+        let accounts = Accounts::new(store.clone());
+        accounts.bootstrap_owner(OWNER_EMAIL, "Alex").await.unwrap();
+        let state = tenant_state(&store, TenantId::DEFAULT, resumed.clone(), talk_agent);
+        let tenants = Arc::new(TestTenants {
+            store: store.clone(),
+            states: Mutex::new(std::collections::HashMap::from([(
+                TenantId::DEFAULT,
+                state.clone(),
+            )])),
+            forgotten: Mutex::default(),
+        });
+        let instance = Instance {
+            accounts: accounts.clone(),
+            tenants: tenants.clone(),
+            oauth: state.oauth.clone(),
+            admin_token: token.map(|token| SecretString::from(token.to_owned())),
+            signup,
+            mailer,
+            public_url: "https://lighthouse.test".to_owned(),
+            trust_forwarded_for: true,
         };
         Harness {
-            app: router(state),
-            audit,
-            desk,
-            sessions,
-            sync,
-            events,
+            app: router(instance),
+            audit: state.audit.clone(),
+            desk: state.desk.clone(),
+            sessions: state.sessions.clone(),
+            sync: state.sync.clone(),
+            events: state.events.clone(),
             resumed,
+            accounts,
+            tenants,
         }
     }
 

@@ -21,8 +21,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("cannot bind {bind}"))?;
     tracing::info!(%bind, version = env!("CARGO_PKG_VERSION"), "lighthouse-server started");
-    tokio::spawn(app.scheduler.run());
-    tokio::spawn(app.pool.clone().run_maintenance());
+    tokio::spawn(app.workspaces.clone().run());
     axum_serve(listener, app.router).await
 }
 

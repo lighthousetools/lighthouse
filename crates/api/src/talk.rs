@@ -1,8 +1,8 @@
 //! Talk: conversations with the assistant.
 
-use crate::{ApiError, ApiState, desk_error, internal, not_found};
+use crate::{ApiError, ApiState, Scoped, desk_error, internal, not_found};
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::http::StatusCode;
 use lighthouse_desk::{TalkMessage, TalkThread, transcript};
 use serde::{Deserialize, Serialize};
@@ -73,7 +73,7 @@ fn changed(state: &ApiState, thread: Uuid) {
     responses((status = 200, body = Vec<TalkThread>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn list(State(state): State<ApiState>) -> Result<Json<Vec<TalkThread>>, ApiError> {
+pub(crate) async fn list(Scoped(state): Scoped) -> Result<Json<Vec<TalkThread>>, ApiError> {
     Ok(Json(state.desk.threads(THREADS).await.map_err(desk_error)?))
 }
 
@@ -87,7 +87,7 @@ pub(crate) async fn list(State(state): State<ApiState>) -> Result<Json<Vec<TalkT
     security(("bearer" = []))
 )]
 pub(crate) async fn create(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(new): Json<NewThread>,
 ) -> Result<(StatusCode, Json<TalkThread>), ApiError> {
     let title = new.title.unwrap_or_else(|| "New conversation".to_owned());
@@ -106,7 +106,7 @@ pub(crate) async fn create(
     security(("bearer" = []))
 )]
 pub(crate) async fn get(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ThreadDetail>, ApiError> {
     let thread = state
@@ -130,7 +130,7 @@ pub(crate) async fn get(
     security(("bearer" = []))
 )]
 pub(crate) async fn update(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(patch): Json<ThreadPatch>,
 ) -> Result<Json<TalkThread>, ApiError> {
@@ -154,7 +154,7 @@ pub(crate) async fn update(
     security(("bearer" = []))
 )]
 pub(crate) async fn delete(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     if !state.desk.delete_thread(id).await.map_err(desk_error)? {
@@ -184,7 +184,7 @@ pub(crate) async fn delete(
     security(("bearer" = []))
 )]
 pub(crate) async fn send(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(message): Json<NewMessage>,
 ) -> Result<(StatusCode, Json<Exchange>), ApiError> {

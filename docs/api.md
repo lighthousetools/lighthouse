@@ -1,10 +1,99 @@
 # API
 
-`GET /openapi.json` describes every endpoint with its schemas. This page explains the concepts behind them. `GET /me` returns the owner's `name` and `timezone` (from `server.timezone`), which "today" and the days of charts
-follow.
+`GET /openapi.json` describes every endpoint with its schemas. This page explains the concepts behind them.
 
-Everything
-except `/health`, `/openapi.json`, `/auth/status`, `/auth/login` and `/oauth/callback` needs a bearer token.
+Everything except `/health`, `/openapi.json`, `/oauth/callback` and the public sign-in endpoints (`/auth/status`,
+`/auth/login`, `/auth/signup`, `/auth/verify`, `/auth/invitation` and `/auth/accept`) needs a bearer token: a device
+token or the admin token.
+
+## Users and tenants
+
+People sign in as **users** with an email address and a password of at least 12 characters. A user belongs to one or
+more **tenants** (a team, a company or a person on their own) with a **role**: `owner`, `admin` or `member`. Every
+device token belongs to one user and is bound to one tenant, and every request works in that tenant only. Data of
+other tenants is never visible, and personal data within a tenant (see [architecture.md](architecture.md#tenancy))
+is visible only to its user.
+
+The admin token has no user. It acts as an owner in the default tenant, or in the tenant whose ID the
+`X-Lighthouse-Tenant` header names.
+
+### Signing in
+
+| Endpoint | Body | Answer |
+|---|---|---|
+| `GET /auth/status` | | `{setup_required, signup, email_required}`: `signup` is `closed`, `invite` or `open`; `email_required` is true once the instance has more than one user |
+| `POST /auth/login` | `{email?, password, device_name, device_kind, tenant_id?}` | `TokenIssued` `{id, token, tenant_id, user_id}`. `email` may be left out while the instance has exactly one user. Without `tenant_id`, the token is bound to the user's oldest membership |
+| `POST /auth/setup` (admin token) | `{password}` | 204. Sets the password of the first owner of the default tenant and signs out their devices |
+| `POST /auth/signup` | `{email, name, password, tenant_name?, device_name, device_kind}` | 201 with `TokenIssued`. Only while `signup = "open"`; creates the user and a new tenant they own, and sends a verification mail if mail is configured |
+| `POST /auth/verify` | `{token}` | 204. Confirms the email address with the token from the verification link |
+| `POST /auth/verify/resend` | | 204, or 409 without mail |
+| `POST /auth/password` | `{current, new}` | 204. Every other device of the user is signed out |
+| `POST /auth/logout` | | 204. Signs out the current device |
+| `GET /auth/devices` | | The user's devices in every tenant, each with its `tenant_id` |
+| `DELETE /auth/devices/{id}` | | 204, or 404 for a device of somebody else |
+| `POST /auth/tokens` | `{name, kind}` | `TokenIssued` for the same user and tenant, for a desktop agent or a script |
+
+Failed sign-ins are limited per client address and per email address: after five failures, sign-in pauses for a
+minute. Sign-ups are limited to five per client address and hour. Behind a reverse proxy, set
+`server.trust_forwarded_for` so the limits count the real client.
+
+`device_kind` is `web`, `mac`, `ios`, `node` (desktop agent) or `api`.
+
+### The user and their tenants
+
+| Endpoint | Body | Answer |
+|---|---|---|
+| `GET /me` | | `{name, timezone, user_id, email, email_verified, tenant_id, tenant_name, role}`. `timezone` is `server.timezone`, which "today" and the days of charts follow |
+| `PATCH /me` | `{name}` | 204 |
+| `DELETE /me` | `{confirm: <email>}` | 204. Deletes the account and every tenant where the user is the only member, with all its data. 409 if the user is the last owner of a tenant with other members |
+| `GET /tenants` | | The user's memberships: `{tenant_id, tenant_name, role, joined_at}`. For the admin token, every tenant |
+| `POST /tenants` | `{name, device_name?, device_kind?}` | 201 with a `TokenIssued` for the new tenant. Only while sign-up is open |
+| `POST /tenants/{id}/switch` | `{device_name?, device_kind?}` | `TokenIssued` bound to another tenant of the user. The current token stays valid until it signs out |
+| `POST /tenants/accept` | `{token, device_name?, device_kind?}` | `TokenIssued` for the joined tenant. Accepts an invitation as the signed-in user, whose email address must match it |
+
+### Administering a tenant
+
+Reading works for every member. Changes need the `owner` or `admin` role; only owners grant or take away the owner
+role, remove owners or delete the tenant. A tenant always keeps at least one owner (409 otherwise).
+
+| Endpoint | Body | Answer |
+|---|---|---|
+| `GET /tenant` | | `{id, name, created_at, role, members}` |
+| `PATCH /tenant` | `{name}` | The tenant |
+| `DELETE /tenant` | `{confirm: <tenant name>}` | 204. Owner only. Deletes the tenant with all its data, files and background work. The default tenant cannot be deleted (409) |
+| `GET /tenant/members` | | `{user_id, email, name, role, joined_at}` |
+| `PATCH /tenant/members/{user}` | `{role}` | 204 |
+| `DELETE /tenant/members/{user}` | | 204. Removes a member and signs out their devices in this tenant. Every member may remove themselves (leave) |
+| `GET /tenant/invitations` | | Open invitations |
+| `POST /tenant/invitations` | `{email, role}` | 201 `{invitation, mailed, accept_url}`. With mail configured, the invitation goes out by mail and `accept_url` is null. Without mail, `accept_url` is the link to pass on yourself |
+| `DELETE /tenant/invitations/{id}` | | 204 |
+| `PUT`, `DELETE /credentials/{name}` | `{value}` | Tenant keys, such as a model provider key (`anthropic`). Owner and admin only |
+
+Invitations need `signup = "invite"` or `"open"` and are valid for seven days. The links point to the web app:
+`<public_url>/#/invite?token=<token>` and `<public_url>/#/verify?token=<token>`. To accept, the web app calls
+`POST /auth/invitation` with `{token}`, which answers `{email, role, tenant_name, expires_at, account_exists}`. A new
+person then calls `POST /auth/accept` with `{token, name, password, device_name, device_kind}` (201 with a
+`TokenIssued`); a person with an account signs in and calls `POST /tenants/accept`.
+
+## Changes in 0.2
+
+Lighthouse 0.2 serves several users and tenants. Clients of 0.1 keep working against a single-user instance, with
+these changes:
+
+- `POST /auth/login` takes an optional `email` and `tenant_id`. Without `email`, it works only while the instance has
+  one user; otherwise it answers 400. `GET /auth/status` tells whether the email is required (`email_required`) and
+  the sign-up mode (`signup`).
+- `TokenIssued` has two more fields, `tenant_id` and `user_id`.
+- `GET /me` has more fields: `user_id`, `email`, `email_verified`, `tenant_id`, `tenant_name` and `role`. `name` is
+  the user's name, no longer always the configured owner.
+- `Device` (in `GET /auth/devices`) has a `tenant_id`. The list holds the devices of the signed-in user only.
+- `PUT` and `DELETE /credentials/{name}` and `POST /connectors/{id}/connect` need the `owner` or `admin` role (403
+  for members).
+- Personal data is narrowed to its user: see [architecture.md](architecture.md#tenancy) for which lists now differ
+  between members of the same tenant.
+- New endpoints: everything in [Users and tenants](#users-and-tenants).
+- An existing single-user instance needs no change: the configured owner becomes the first user with the same
+  password and devices. See [configuration.md](configuration.md#upgrading-from-01).
 
 ## Live events
 

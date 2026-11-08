@@ -109,6 +109,18 @@ fn to_html(markdown: &str) -> String {
 impl ChannelNotifier {
     /// Creates a notifier from the configuration.
     pub fn from_config(config: DeliveryConfig, vault: Vault) -> Result<Self, NotifyError> {
+        let mail_vault = vault.clone();
+        Self::with_vaults(config, vault, mail_vault)
+    }
+
+    /// Creates a notifier for a tenant: Slack webhooks come from the tenant's
+    /// vault, the SMTP password from the instance's, since the mail server is
+    /// configured once for the instance.
+    pub fn with_vaults(
+        config: DeliveryConfig,
+        vault: Vault,
+        mail_vault: Vault,
+    ) -> Result<Self, NotifyError> {
         let slack_aliases = config.slack_channels;
         let mail = config
             .smtp
@@ -119,7 +131,7 @@ impl ChannelNotifier {
                     .map_err(|_| NotifyError::NotConfigured("smtp sender".to_owned()))?;
                 let sender: Arc<dyn MailSender> = Arc::new(SmtpSender {
                     settings,
-                    vault: vault.clone(),
+                    vault: mail_vault,
                 });
                 Ok::<_, NotifyError>((from, sender))
             })

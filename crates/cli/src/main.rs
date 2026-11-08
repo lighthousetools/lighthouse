@@ -532,9 +532,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Demo(DemoCommand::Seed) => {
             let store = store(&config).await?;
-            match demo::seed(&store, &config.brain.path).await? {
+            match demo::seed(&store, &config.brain.path, &config.owner).await? {
                 demo::Seeded::Added => println!(
-                    "Demo data added. Sign in with the password `{}`.",
+                    "Demo data added. Sign in as {} with the password `{}`.",
+                    config.owner.email,
                     demo::DEMO_PASSWORD
                 ),
                 demo::Seeded::AlreadyThere => println!("Demo data is there already."),

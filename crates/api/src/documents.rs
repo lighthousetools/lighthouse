@@ -1,8 +1,8 @@
 //! Structured briefing documents: morning briefs and weekly recaps.
 
-use crate::{ApiError, ApiState, desk_error, not_found};
+use crate::{ApiError, ApiState, Scoped, desk_error, not_found};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use lighthouse_desk::{BriefingDocument, MORNING_BRIEF, WEEKLY_RECAP};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -33,7 +33,7 @@ fn limit(query: &DocumentQuery) -> i64 {
     security(("bearer" = []))
 )]
 pub(crate) async fn list(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<DocumentQuery>,
 ) -> Result<Json<Vec<BriefingDocument>>, ApiError> {
     let documents = state
@@ -120,7 +120,7 @@ async fn latest(state: &ApiState, kind: &str) -> Result<Json<BriefingDocument>, 
     security(("bearer" = []))
 )]
 pub(crate) async fn latest_brief(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
 ) -> Result<Json<BriefingDocument>, ApiError> {
     latest(&state, MORNING_BRIEF).await
 }
@@ -135,7 +135,7 @@ pub(crate) async fn latest_brief(
     security(("bearer" = []))
 )]
 pub(crate) async fn recaps(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<DocumentQuery>,
 ) -> Result<Json<Vec<BriefingDocument>>, ApiError> {
     let recaps = state
@@ -156,7 +156,7 @@ pub(crate) async fn recaps(
     security(("bearer" = []))
 )]
 pub(crate) async fn recap(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(week): Path<String>,
 ) -> Result<Json<BriefingDocument>, ApiError> {
     if week == "latest" {
@@ -180,7 +180,7 @@ pub(crate) async fn recap(
     security(("bearer" = []))
 )]
 pub(crate) async fn of_run(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<BriefingDocument>, ApiError> {
     let document = state.desk.run_document(id).await.map_err(desk_error)?;

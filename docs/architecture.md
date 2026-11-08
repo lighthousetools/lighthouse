@@ -69,5 +69,18 @@ flowchart LR
 - **Audit log:** a database trigger rejects changes to recorded steps.
 - **Limits:** every run has limits for steps, cost and time.
 
-Tenant IDs exist in every table, so multi-tenancy can follow without a schema rewrite. The server currently runs in
-single-tenant mode.
+## Tenancy
+
+A **tenant** is the space a team, a company or a person works in. Every table carries a `tenant_id`. **Users** sign in
+with an email address and belong to tenants through **memberships** with a role (`owner`, `admin`, `member`). A device
+token belongs to one user and is bound to one tenant, so every request resolves to exactly one user and one tenant.
+
+The server opens each tenant on first use as a **workspace**: its own vault, Brain, agent registry, scheduler, sync,
+automations and live events, built from the shared configuration. Request paths never name a tenant themselves; they
+use the workspace of the caller's token. Background work (the scheduler, maintenance, refreshes of connected sources,
+automations, alerts and notifications) runs per workspace in its own tasks, so one failing tenant does not stop the
+others. At start, and once a minute after, the server opens every tenant, so background work covers new tenants too.
+
+The **default tenant** (the nil UUID) is the one a single-user install has always used. The configured `[owner]`
+becomes its first owner, the admin token acts in it, and it cannot be deleted. Deleting another tenant removes every
+row with its `tenant_id` in one transaction, its files and its background work.

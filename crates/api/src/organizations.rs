@@ -1,8 +1,8 @@
 //! The companies the owner runs.
 
-use crate::{ApiError, ApiState, internal, not_found};
+use crate::{ApiError, ApiState, Scoped, internal, not_found};
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::http::StatusCode;
 use lighthouse_sync::{Organization, OrganizationError, OrganizationInput};
 use serde_json::json;
@@ -21,9 +21,7 @@ fn changed(state: &ApiState, id: &str) {
     responses((status = 200, body = Vec<Organization>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn list(
-    State(state): State<ApiState>,
-) -> Result<Json<Vec<Organization>>, ApiError> {
+pub(crate) async fn list(Scoped(state): Scoped) -> Result<Json<Vec<Organization>>, ApiError> {
     Ok(Json(state.sync.organizations().await.map_err(internal)?))
 }
 
@@ -38,7 +36,7 @@ pub(crate) async fn list(
     security(("bearer" = []))
 )]
 pub(crate) async fn save(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
     Json(input): Json<OrganizationInput>,
 ) -> Result<Json<Organization>, ApiError> {
@@ -65,7 +63,7 @@ pub(crate) async fn save(
     security(("bearer" = []))
 )]
 pub(crate) async fn delete(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     if !state

@@ -6,12 +6,12 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use lighthouse_api::{
     AgentChangeError, AgentInfo, AgentTool, ApiState, AskAnswer, Assistant, Catalog, ConnectorInfo,
-    ModelRoute, RunTrigger, SkillInfo, TriggerError,
+    Instance, ModelRoute, RunTrigger, SignupMode, SkillInfo, TriggerError,
 };
 use lighthouse_audit::{AuditError, AuditLog, RunEnd, RunStatus};
-use lighthouse_auth::Auth;
+use lighthouse_auth::Accounts;
 use lighthouse_brain::{Brain, BrainToolFactory, Embedder, MediaError, MediaReader, SearchHit};
-use lighthouse_config::{Config, ConnectorAuth, ConnectorTransport, OwnerConfig};
+use lighthouse_config::{Config, ConnectorAuth, ConnectorTransport};
 use lighthouse_core::agent::{AgentDefinition, Delivery, ToolLevel, Trigger, parse_cron};
 use lighthouse_core::{RunId, TenantId};
 use lighthouse_desk::Desk;
@@ -28,8 +28,11 @@ use lighthouse_skills::SkillLibrary;
 use lighthouse_store::Store;
 use lighthouse_vault::{MasterKey, Vault};
 use secrecy::ExposeSecret;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
@@ -59,14 +62,6 @@ pub fn master_key(config: &Config) -> anyhow::Result<MasterKey> {
         .context("configure vault.master_key_file or vault.master_key")?;
     MasterKey::from_file(path)
         .with_context(|| format!("cannot use master key file {}", path.display()))
-}
-
-fn owner_context(owner: &OwnerConfig) -> String {
-    let mut context = format!("You work for {} ({}).", owner.name, owner.email);
-    for (service, account) in &owner.accounts {
-        let _ = write!(context, " Their {service} account is {account}.");
-    }
-    context
 }
 
 /// Starts runs of the loaded agents in the background.
@@ -553,19 +548,19 @@ impl Assistant for BrainAssistant {
 struct ProviderMedia {
     config: Arc<Config>,
     vault: Vault,
+    fallback: Option<Vault>,
     provider: String,
 }
 
 impl ProviderMedia {
     async fn client(&self) -> Result<OpenAiMedia, MediaError> {
-        let key = self
-            .vault
-            .get(&self.provider)
-            .await
-            .map_err(|error| MediaError::Failed(error.to_string()))?
-            .ok_or(MediaError::NotConfigured(
-                "this provider, its key is missing",
-            ))?;
+        let key =
+            lighthouse_runtime::provider_key(&self.vault, self.fallback.as_ref(), &self.provider)
+                .await
+                .map_err(|error| MediaError::Failed(error.to_string()))?
+                .ok_or(MediaError::NotConfigured(
+                    "this provider, its key is missing",
+                ))?;
         let base_url = self
             .config
             .providers
@@ -634,12 +629,145 @@ impl MediaReader for ProviderMedia {
     }
 }
 
-fn open_brain(config: &Arc<Config>, store: Store, vault: &Vault) -> anyhow::Result<Brain> {
-    let mut brain = Brain::new(store, TenantId::DEFAULT, config.brain.path.clone())?;
+/// The person agents work for in a tenant.
+struct TenantOwner {
+    name: String,
+    email: String,
+    accounts: BTreeMap<String, String>,
+}
+
+/// Where a tenant keeps its files.
+struct TenantPaths {
+    brain: PathBuf,
+    created_agents: PathBuf,
+    created_automations: PathBuf,
+}
+
+/// Everything the tenants of an instance share.
+struct Shared {
+    config: Arc<Config>,
+    store: Store,
+    key: MasterKey,
+    zone: Tz,
+    accounts: Accounts,
+    policy: ToolPolicy,
+    /// One set of OAuth flows serves every tenant, so the callback finds each flow.
+    oauth: Arc<OAuthFlows>,
+}
+
+impl Shared {
+    fn vault(&self, tenant: TenantId) -> Vault {
+        Vault::new(self.store.clone(), tenant, &self.key)
+    }
+
+    /// The instance vault, for provider keys of tenants without their own,
+    /// if the configuration allows it.
+    fn key_fallback(&self, tenant: TenantId) -> Option<Vault> {
+        (self.config.tenancy.allow_instance_keys && tenant != TenantId::DEFAULT)
+            .then(|| self.vault(TenantId::DEFAULT))
+    }
+
+    fn paths(&self, tenant: TenantId) -> TenantPaths {
+        if tenant == TenantId::DEFAULT {
+            return TenantPaths {
+                brain: self.config.brain.path.clone(),
+                created_agents: self.config.paths.created_agents.clone(),
+                created_automations: self.config.paths.created_automations.clone(),
+            };
+        }
+        let root = self.tenant_dir(tenant);
+        TenantPaths {
+            brain: root.join("brain"),
+            created_agents: root.join("agents-created"),
+            created_automations: root.join("automations-created"),
+        }
+    }
+
+    fn tenant_dir(&self, tenant: TenantId) -> PathBuf {
+        self.config
+            .tenancy
+            .data_dir
+            .join(tenant.as_uuid().to_string())
+    }
+
+    async fn owner(&self, tenant: TenantId) -> anyhow::Result<TenantOwner> {
+        if tenant == TenantId::DEFAULT {
+            let owner = &self.config.owner;
+            return Ok(TenantOwner {
+                name: owner.name.clone(),
+                email: owner.email.clone(),
+                accounts: owner.accounts.clone(),
+            });
+        }
+        let user = self.accounts.primary_user(tenant).await?;
+        Ok(user.map_or_else(
+            || TenantOwner {
+                name: String::new(),
+                email: String::new(),
+                accounts: BTreeMap::new(),
+            },
+            |user| TenantOwner {
+                name: user.name,
+                email: user.email,
+                accounts: BTreeMap::new(),
+            },
+        ))
+    }
+}
+
+fn owner_context(owner: &TenantOwner) -> String {
+    let mut context = format!("You work for {} ({}).", owner.name, owner.email);
+    for (service, account) in &owner.accounts {
+        let _ = write!(context, " Their {service} account is {account}.");
+    }
+    context
+}
+
+/// Resolves the configured sources for an owner and checks that they only read.
+fn resolve_sources(
+    config: &Config,
+    policy: &ToolPolicy,
+    owner: &TenantOwner,
+) -> anyhow::Result<Vec<lighthouse_sync::Source>> {
+    let mut sources = Vec::new();
+    for (name, source) in &config.sources {
+        let mut accounts: Vec<String> = owner
+            .accounts
+            .get(&source.connector)
+            .cloned()
+            .into_iter()
+            .collect();
+        if !owner.email.is_empty() {
+            accounts.push(owner.email.clone());
+        }
+        let resolved = lighthouse_sync::resolve(name, source, accounts)?;
+        for (collection, settings) in &resolved.collections {
+            let tool = resolved.tool(&settings.tool);
+            if policy.level(&tool) != ToolLevel::Read {
+                anyhow::bail!(
+                    "source `{name}`: collection `{collection}` calls `{tool}`, which is not in the \
+                     connector's read_tools. Refreshes only read."
+                );
+            }
+        }
+        sources.push(resolved);
+    }
+    Ok(sources)
+}
+
+fn open_brain(
+    shared: &Shared,
+    tenant: TenantId,
+    path: PathBuf,
+    vault: &Vault,
+) -> anyhow::Result<Brain> {
+    let config = &shared.config;
+    let mut brain = Brain::new(shared.store.clone(), tenant, path)?;
     if let Some(provider) = &config.brain.provider {
         let media = Arc::new(ProviderMedia {
             config: config.clone(),
             vault: vault.clone(),
+            fallback: shared.key_fallback(tenant),
             provider: provider.clone(),
         });
         brain = brain.with_media(media.clone());
@@ -650,28 +778,159 @@ fn open_brain(config: &Arc<Config>, store: Store, vault: &Vault) -> anyhow::Resu
     Ok(brain)
 }
 
-/// A fully wired server.
-pub struct App {
-    /// The HTTP router.
-    pub router: lighthouse_api::Router,
-    /// The scheduler, ready to run.
-    pub scheduler: Scheduler,
-    /// The agents, for background maintenance.
-    pub pool: Arc<AgentPool>,
+/// One open tenant: the state the API serves and its background work.
+pub struct Workspace {
+    tenant: TenantId,
+    state: ApiState,
+    pool: Arc<AgentPool>,
+    scheduler: std::sync::Mutex<Option<Scheduler>>,
+    tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
-/// Connects everything described by the configuration.
-pub async fn build(config: Config) -> anyhow::Result<App> {
-    let config = Arc::new(config);
-    let store = Store::connect(config.database.url.expose_secret())
-        .await
-        .context("cannot connect to Postgres")?;
-    store
-        .migrate()
-        .await
-        .context("cannot migrate the database")?;
-    let tenant = TenantId::DEFAULT;
-    let vault = Vault::new(store.clone(), tenant, &master_key(&config)?);
+impl Workspace {
+    /// The tenant.
+    pub fn tenant(&self) -> TenantId {
+        self.tenant
+    }
+
+    /// The agents of the tenant.
+    pub fn pool(&self) -> &Arc<AgentPool> {
+        &self.pool
+    }
+
+    /// Starts the scheduler and the maintenance of this tenant, once.
+    fn start(&self) {
+        let Some(scheduler) = self.scheduler.lock().expect("scheduler lock").take() else {
+            return;
+        };
+        let mut tasks = self.tasks.lock().expect("tasks lock");
+        tasks.push(tokio::spawn(scheduler.run()));
+        tasks.push(tokio::spawn(self.pool.clone().run_maintenance()));
+    }
+
+    fn stop(&self) {
+        for task in self.tasks.lock().expect("tasks lock").drain(..) {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Opens tenants on first use and runs their background work.
+///
+/// Each tenant has its own vault, Brain, agents, scheduler, sync and
+/// automations, so nothing of one tenant reaches another. Background work of
+/// each tenant runs in its own tasks: one failing tenant does not stop others.
+pub struct Workspaces {
+    shared: Arc<Shared>,
+    open: tokio::sync::Mutex<HashMap<TenantId, Arc<Workspace>>>,
+    background: AtomicBool,
+}
+
+impl Workspaces {
+    /// Returns an open tenant, or opens it. `None` if the tenant does not exist.
+    pub async fn open(&self, tenant: TenantId) -> anyhow::Result<Option<Arc<Workspace>>> {
+        let mut open = self.open.lock().await;
+        if let Some(workspace) = open.get(&tenant) {
+            return Ok(Some(workspace.clone()));
+        }
+        if self.shared.accounts.tenant(tenant).await?.is_none() {
+            return Ok(None);
+        }
+        let workspace = Arc::new(open_tenant(&self.shared, tenant).await?);
+        if self.background.load(Ordering::SeqCst) {
+            workspace.start();
+        }
+        open.insert(tenant, workspace.clone());
+        tracing::info!(tenant = %tenant.as_uuid(), "tenant open");
+        Ok(Some(workspace))
+    }
+
+    /// Opens every tenant of the instance. A tenant that fails to open is
+    /// logged and tried again on the next round.
+    pub async fn open_all(&self) -> anyhow::Result<()> {
+        for tenant in self.shared.accounts.all_tenants().await? {
+            if let Err(error) = self.open(tenant).await {
+                tracing::error!(tenant = %tenant.as_uuid(), %error, "cannot open the tenant");
+            }
+        }
+        Ok(())
+    }
+
+    /// Runs the background work of every tenant until the process ends, and
+    /// picks up new tenants once a minute.
+    pub async fn run(self: Arc<Self>) {
+        self.background.store(true, Ordering::SeqCst);
+        for workspace in self.open.lock().await.values() {
+            workspace.start();
+        }
+        let mut ticker = tokio::time::interval(MAINTENANCE_INTERVAL);
+        loop {
+            ticker.tick().await;
+            if let Err(error) = self.open_all().await {
+                tracing::error!(%error, "cannot list the tenants");
+            }
+        }
+    }
+
+    /// The tenants that are open now.
+    pub async fn opened(&self) -> Vec<TenantId> {
+        let mut tenants: Vec<TenantId> = self.open.lock().await.keys().copied().collect();
+        tenants.sort();
+        tenants
+    }
+}
+
+#[async_trait]
+impl lighthouse_api::Tenants for Workspaces {
+    async fn state(&self, tenant: TenantId) -> Result<Option<ApiState>, String> {
+        self.open(tenant)
+            .await
+            .map(|workspace| workspace.map(|workspace| workspace.state.clone()))
+            .map_err(|error| error.to_string())
+    }
+
+    async fn forget(&self, tenant: TenantId) {
+        if let Some(workspace) = self.open.lock().await.remove(&tenant) {
+            workspace.stop();
+        }
+        if tenant != TenantId::DEFAULT {
+            let directory = self.shared.tenant_dir(tenant);
+            match tokio::fs::remove_dir_all(&directory).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => tracing::warn!(%error, "cannot remove the files of a deleted tenant"),
+            }
+        }
+        tracing::info!(tenant = %tenant.as_uuid(), "tenant deleted");
+    }
+}
+
+/// Wires everything one tenant needs.
+#[allow(clippy::too_many_lines)]
+async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<Workspace> {
+    let config = &shared.config;
+    let store = shared.store.clone();
+    let zone = shared.zone;
+    let owner = shared.owner(tenant).await?;
+    let paths = shared.paths(tenant);
+    if tenant != TenantId::DEFAULT {
+        for directory in [
+            &paths.brain,
+            &paths.created_agents,
+            &paths.created_automations,
+        ] {
+            tokio::fs::create_dir_all(directory)
+                .await
+                .with_context(|| format!("cannot create {}", directory.display()))?;
+        }
+    }
+    let vault = shared.vault(tenant);
     let audit = AuditLog::new(store.clone(), tenant);
     let interrupted = audit.fail_interrupted_runs().await?;
     if interrupted > 0 {
@@ -679,18 +938,11 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
     }
     let desk = Desk::new(store.clone(), tenant);
     let events = EventBus::new();
-    let auth_store = store.clone();
-    let session_store = store.clone();
     let delivery = lighthouse_config::DeliveryConfig {
         smtp: config.delivery.smtp.clone(),
         slack_channels: config.delivery.slack_channels.clone(),
     };
-    let zone: Tz = config
-        .server
-        .timezone
-        .parse()
-        .map_err(|_| anyhow::anyhow!("unknown time zone"))?;
-    let brain = open_brain(&config, store.clone(), &vault)?;
+    let brain = open_brain(shared, tenant, paths.brain, &vault)?;
     let report = brain.sync().await.context("cannot read the Brain")?;
     tracing::info!(?report, "Brain ready");
     let embedding = brain.clone();
@@ -703,7 +955,10 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         Arc::new(McpConnector::new(config.connectors.clone(), vault.clone()));
     let sync_tools = mcp.clone();
     let runtime = Arc::new(Runtime {
-        router: Arc::new(VaultRouterSource::new(config.clone(), vault.clone())),
+        router: Arc::new(
+            VaultRouterSource::new(config.clone(), vault.clone())
+                .with_fallback(shared.key_fallback(tenant)),
+        ),
         tools: Arc::new(BrainToolFactory::new(
             brain.clone(),
             Arc::new(DeskToolFactory::new(desk.clone(), mcp)),
@@ -711,15 +966,19 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         policy: ToolPolicy::new(&config.connectors),
         skills: SkillLibrary::load(&config.paths.skills)?,
         audit: audit.clone(),
-        notifier: Arc::new(ChannelNotifier::from_config(delivery, vault.clone())?),
-        owner_context: owner_context(&config.owner),
-        owner_email: config.owner.email.clone(),
+        notifier: Arc::new(ChannelNotifier::with_vaults(
+            delivery,
+            vault.clone(),
+            shared.vault(TenantId::DEFAULT),
+        )?),
+        owner_context: owner_context(&owner),
+        owner_email: owner.email.clone(),
         zone,
         desk: desk.clone(),
     });
     let agents = Arc::new(AgentRegistry::load(
         config.paths.agents.clone(),
-        config.paths.created_agents.clone(),
+        paths.created_agents,
     )?);
     let definitions: Vec<AgentDefinition> = agents
         .list()
@@ -741,7 +1000,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
     }));
     let automation_files = Arc::new(AutomationRegistry::load(
         config.paths.automations.clone(),
-        config.paths.created_automations.clone(),
+        paths.created_automations,
     )?);
     tracing::info!(count = automation_files.list().len(), "automations loaded");
     let engine = Arc::new(AutomationEngine::new(
@@ -751,28 +1010,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         outcomes.clone(),
         desk.clone(),
     ));
-    let mut sources = Vec::new();
-    for (name, source) in &config.sources {
-        let mut accounts: Vec<String> = config
-            .owner
-            .accounts
-            .get(&source.connector)
-            .cloned()
-            .into_iter()
-            .collect();
-        accounts.push(config.owner.email.clone());
-        let resolved = lighthouse_sync::resolve(name, source, accounts)?;
-        for (collection, settings) in &resolved.collections {
-            let tool = resolved.tool(&settings.tool);
-            if runtime.policy.level(&tool) != ToolLevel::Read {
-                anyhow::bail!(
-                    "source `{name}`: collection `{collection}` calls `{tool}`, which is not in the \
-                     connector's read_tools. Refreshes only read."
-                );
-            }
-        }
-        sources.push(resolved);
-    }
+    let sources = resolve_sources(config, &shared.policy, &owner)?;
     tracing::info!(count = sources.len(), "connected sources loaded");
     let sync_store = lighthouse_sync::SyncStore::new(store.clone(), tenant);
     let syncer = Arc::new(lighthouse_sync::Syncer::new(
@@ -801,7 +1039,7 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         connected: connected.clone(),
     });
     let scheduler = Scheduler::new(
-        store,
+        store.clone(),
         tenant,
         &config.server.timezone,
         &definitions,
@@ -816,29 +1054,21 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         schedules: scheduler.handle(),
         zone,
     });
-    let oauth = OAuthFlows::new(
-        config.connectors.clone(),
-        vault.clone(),
-        &config.server.public_url,
-    );
     let assistant = Arc::new(BrainAssistant {
         brain: brain.clone(),
         runtime: pool.runtime.clone(),
     });
-    let router = lighthouse_api::router(ApiState {
+    let state = ApiState {
         audit,
         trigger: pool.clone(),
-        oauth: Arc::new(oauth),
-        auth: Auth::new(auth_store, tenant),
+        oauth: shared.oauth.clone(),
         vault,
-        brain: brain.clone(),
+        brain,
         assistant,
         catalog,
-        owner_name: config.owner.name.clone(),
-        sessions: Sessions::new(session_store, tenant),
-        admin_token: config.server.admin_token.clone(),
-        events: events.clone(),
-        desk: desk.clone(),
+        sessions: Sessions::new(store, tenant),
+        events,
+        desk,
         zone,
         automations,
         sync: sync_store,
@@ -846,16 +1076,101 @@ pub async fn build(config: Config) -> anyhow::Result<App> {
         publisher,
         talk_agent: config.talk.agent.clone(),
         writer: Arc::new(publishing::ServerWriter::new(pool.runtime.clone())),
+    };
+    Ok(Workspace {
+        tenant,
+        state,
+        pool,
+        scheduler: std::sync::Mutex::new(Some(scheduler)),
+        tasks: std::sync::Mutex::default(),
+    })
+}
+
+/// A fully wired server.
+pub struct App {
+    /// The HTTP router.
+    pub router: lighthouse_api::Router,
+    /// The tenants, for background work.
+    pub workspaces: Arc<Workspaces>,
+}
+
+fn signup_mode(mode: lighthouse_config::SignupMode) -> SignupMode {
+    match mode {
+        lighthouse_config::SignupMode::Closed => SignupMode::Closed,
+        lighthouse_config::SignupMode::Invite => SignupMode::Invite,
+        lighthouse_config::SignupMode::Open => SignupMode::Open,
+    }
+}
+
+/// Connects everything described by the configuration.
+pub async fn build(config: Config) -> anyhow::Result<App> {
+    let config = Arc::new(config);
+    let store = Store::connect(config.database.url.expose_secret())
+        .await
+        .context("cannot connect to Postgres")?;
+    store
+        .migrate()
+        .await
+        .context("cannot migrate the database")?;
+    let zone: Tz = config
+        .server
+        .timezone
+        .parse()
+        .map_err(|_| anyhow::anyhow!("unknown time zone"))?;
+    let accounts = Accounts::new(store.clone());
+    accounts
+        .bootstrap_owner(&config.owner.email, &config.owner.name)
+        .await
+        .context("cannot create the first user from the configured owner")?;
+    let policy = ToolPolicy::new(&config.connectors);
+    let shared = Arc::new(Shared {
+        key: master_key(&config)?,
+        config: config.clone(),
+        store,
+        zone,
+        accounts: accounts.clone(),
+        policy,
+        oauth: Arc::new(OAuthFlows::new(
+            config.connectors.clone(),
+            &config.server.public_url,
+        )),
+    });
+    let configured_owner = shared.owner(TenantId::DEFAULT).await?;
+    resolve_sources(&config, &shared.policy, &configured_owner)?;
+    let workspaces = Arc::new(Workspaces {
+        shared: shared.clone(),
+        open: tokio::sync::Mutex::default(),
+        background: AtomicBool::new(false),
+    });
+    workspaces
+        .open(TenantId::DEFAULT)
+        .await
+        .context("cannot open the default tenant")?;
+    let mailer: Option<Arc<dyn lighthouse_notify::Notifier>> = match &config.delivery.smtp {
+        Some(smtp) => Some(Arc::new(ChannelNotifier::from_config(
+            lighthouse_config::DeliveryConfig {
+                smtp: Some(smtp.clone()),
+                slack_channels: Vec::new(),
+            },
+            shared.vault(TenantId::DEFAULT),
+        )?)),
+        None => None,
+    };
+    let router = lighthouse_api::router(Instance {
+        accounts,
+        tenants: workspaces.clone(),
+        oauth: shared.oauth.clone(),
+        admin_token: config.server.admin_token.clone(),
+        signup: signup_mode(config.tenancy.signup),
+        mailer,
+        public_url: config.server.public_url.trim_end_matches('/').to_owned(),
+        trust_forwarded_for: config.server.trust_forwarded_for,
     });
     let router = match &config.paths.web {
         Some(directory) => lighthouse_api::with_web_app(router, directory),
         None => router,
     };
-    Ok(App {
-        router,
-        scheduler,
-        pool,
-    })
+    Ok(App { router, workspaces })
 }
 
 #[cfg(test)]

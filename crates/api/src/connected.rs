@@ -1,9 +1,9 @@
 //! Mail, calendar, issues and pull requests from the connected services.
 
-use crate::{ApiError, ApiState, internal, not_found};
+use crate::{ApiError, ApiState, Scoped, internal, not_found};
 use async_trait::async_trait;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 use lighthouse_sync::{ItemFilter, ItemPage, Order, SyncStatus, SyncedItem};
@@ -238,7 +238,7 @@ macro_rules! list_endpoint {
             security(("bearer" = []))
         )]
         pub(crate) async fn $name(
-            State(state): State<ApiState>,
+            Scoped(state): Scoped,
             Query(query): Query<ListQuery>,
         ) -> Result<Json<ItemPage>, ApiError> {
             let mut filter = query.filter($domain, $kinds, $open);
@@ -416,7 +416,7 @@ list_endpoint!(
     security(("bearer" = []))
 )]
 pub(crate) async fn inbox(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<ItemPage>, ApiError> {
     let mut filter = query.filter(None, &INBOX_KINDS, true);
@@ -436,7 +436,7 @@ pub(crate) async fn inbox(
     security(("bearer" = []))
 )]
 pub(crate) async fn item(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ItemDetail>, ApiError> {
     let item = state
@@ -475,7 +475,7 @@ pub(crate) struct NumbersQuery {
     security(("bearer" = []))
 )]
 pub(crate) async fn numbers(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<NumbersQuery>,
 ) -> Result<Json<lighthouse_sync::Numbers>, ApiError> {
     let months = query.months.unwrap_or(12).clamp(1, 36);
@@ -508,7 +508,7 @@ pub(crate) struct ForecastQuery {
     security(("bearer" = []))
 )]
 pub(crate) async fn forecast(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<ForecastQuery>,
 ) -> Result<Json<Vec<lighthouse_sync::CurrencyForecast>>, ApiError> {
     let months = query.months.unwrap_or(3);
@@ -540,7 +540,7 @@ pub(crate) struct RangeQuery {
     security(("bearer" = []))
 )]
 pub(crate) async fn free_busy(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(range): Query<RangeQuery>,
 ) -> Result<Json<Vec<BusyBlock>>, ApiError> {
     let from = range.from.unwrap_or_else(Utc::now);
@@ -561,9 +561,7 @@ pub(crate) async fn free_busy(
     responses((status = 200, body = Vec<SourceInfo>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn sources(
-    State(state): State<ApiState>,
-) -> Result<Json<Vec<SourceInfo>>, ApiError> {
+pub(crate) async fn sources(Scoped(state): Scoped) -> Result<Json<Vec<SourceInfo>>, ApiError> {
     Ok(Json(state.connected.sources().await.map_err(internal)?))
 }
 
@@ -585,7 +583,7 @@ fn refreshed(state: &ApiState, results: &[RefreshResult]) {
     security(("bearer" = []))
 )]
 pub(crate) async fn refresh_all(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
 ) -> Result<Json<Vec<RefreshResult>>, ApiError> {
     let results = state.connected.refresh(None).await.map_err(internal)?;
     refreshed(&state, &results);
@@ -602,7 +600,7 @@ pub(crate) async fn refresh_all(
     security(("bearer" = []))
 )]
 pub(crate) async fn refresh(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(name): Path<String>,
 ) -> Result<Json<RefreshResult>, ApiError> {
     let results = state
@@ -660,7 +658,7 @@ fn acted(state: &ApiState, result: ActionResult) -> (StatusCode, Json<ActionResu
     security(("bearer" = []))
 )]
 pub(crate) async fn act_on_item(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path((id, action)): Path<(Uuid, String)>,
     request: Option<Json<ActionRequest>>,
 ) -> Result<(StatusCode, Json<ActionResult>), ApiError> {
@@ -699,7 +697,7 @@ pub(crate) async fn act_on_item(
     security(("bearer" = []))
 )]
 pub(crate) async fn act_on_source(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path((name, action)): Path<(String, String)>,
     request: Option<Json<ActionRequest>>,
 ) -> Result<(StatusCode, Json<ActionResult>), ApiError> {
@@ -977,7 +975,7 @@ pub struct ItemSnooze {
     security(("bearer" = []))
 )]
 pub(crate) async fn snooze(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(snooze): Json<ItemSnooze>,
 ) -> Result<StatusCode, ApiError> {
@@ -1005,7 +1003,7 @@ pub(crate) async fn snooze(
     security(("bearer" = []))
 )]
 pub(crate) async fn unsnooze(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     if !state.sync.snooze(id, None).await.map_err(internal)? {
@@ -1026,7 +1024,7 @@ pub(crate) async fn unsnooze(
     security(("bearer" = []))
 )]
 pub(crate) async fn splits(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
 ) -> Result<Json<Vec<lighthouse_sync::Split>>, ApiError> {
     Ok(Json(state.sync.splits().await.map_err(internal)?))
 }
@@ -1042,7 +1040,7 @@ pub(crate) async fn splits(
     security(("bearer" = []))
 )]
 pub(crate) async fn save_split(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
     Json(input): Json<lighthouse_sync::SplitInput>,
 ) -> Result<Json<lighthouse_sync::Split>, ApiError> {
@@ -1071,7 +1069,7 @@ pub(crate) async fn save_split(
     security(("bearer" = []))
 )]
 pub(crate) async fn delete_split(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     if !state.sync.delete_split(&id).await.map_err(internal)? {
@@ -1094,7 +1092,7 @@ pub(crate) async fn delete_split(
     security(("bearer" = []))
 )]
 pub(crate) async fn split_items(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<ItemPage>, ApiError> {
@@ -1146,7 +1144,7 @@ pub struct BulkOutcome {
     security(("bearer" = []))
 )]
 pub(crate) async fn bulk(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(bulk): Json<BulkAction>,
 ) -> Result<Json<Vec<BulkOutcome>>, ApiError> {
     let mut outcomes = Vec::new();
@@ -1247,7 +1245,7 @@ async fn suggest(state: &ApiState, query: &SuggestionQuery) -> Result<Vec<BusyBl
     security(("bearer" = []))
 )]
 pub(crate) async fn suggestions(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<SuggestionQuery>,
 ) -> Result<Json<Vec<BusyBlock>>, ApiError> {
     Ok(Json(suggest(&state, &query).await?))
@@ -1285,7 +1283,7 @@ pub struct FocusBlock {
     security(("bearer" = []))
 )]
 pub(crate) async fn focus(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(block): Json<FocusBlock>,
 ) -> Result<(StatusCode, Json<ActionResult>), ApiError> {
     let minutes = block.minutes.unwrap_or(90).clamp(15, 8 * 60);

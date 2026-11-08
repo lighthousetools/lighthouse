@@ -1,9 +1,9 @@
 //! Suggestions for the pipeline: deal values from similar deals, and the top
 //! deals as proposed tasks. Plain heuristics, explained, never automatic.
 
-use crate::{ApiError, ApiState, desk_error, internal, not_found};
+use crate::{ApiError, Scoped, desk_error, internal, not_found};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
@@ -68,7 +68,7 @@ pub fn median(values: &mut [f64]) -> Option<f64> {
     security(("bearer" = []))
 )]
 pub(crate) async fn suggestion(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<DealSuggestion>, ApiError> {
     let deal = state
@@ -168,7 +168,7 @@ fn weight(deal: &SyncedItem) -> f64 {
     security(("bearer" = []))
 )]
 pub(crate) async fn top_tasks(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(request): Json<TopDealsRequest>,
 ) -> Result<Json<TopDealsResult>, ApiError> {
     let filter = ItemFilter {
@@ -273,7 +273,7 @@ pub(crate) struct ExportQuery {
     security(("bearer" = []))
 )]
 pub(crate) async fn export(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<ExportQuery>,
 ) -> Result<Response, ApiError> {
     let months = query.months.unwrap_or(12).clamp(1, 36);

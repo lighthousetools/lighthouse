@@ -1,9 +1,9 @@
 //! The owner's own notes on holdings and reminders before earnings dates.
 //! Data only: Lighthouse gives no advice and never trades.
 
-use crate::{ApiError, ApiState, desk_error, internal, not_found};
+use crate::{ApiError, ApiState, Scoped, desk_error, internal, not_found};
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::http::StatusCode;
 use chrono::{Duration, Utc};
 use lighthouse_brain::{BrainError, Entry, EntrySummary, NewEntry, Source};
@@ -83,7 +83,7 @@ pub struct HoldingNotes {
     security(("bearer" = []))
 )]
 pub(crate) async fn notes(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<HoldingNotes>, ApiError> {
     let holding = holding(&state, id).await?;
@@ -107,9 +107,7 @@ pub(crate) async fn notes(
     responses((status = 200, body = Vec<SyncedItem>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn watchlist(
-    State(state): State<ApiState>,
-) -> Result<Json<Vec<SyncedItem>>, ApiError> {
+pub(crate) async fn watchlist(Scoped(state): Scoped) -> Result<Json<Vec<SyncedItem>>, ApiError> {
     Ok(Json(state.sync.watched().await.map_err(internal)?))
 }
 
@@ -133,7 +131,7 @@ async fn holding(state: &ApiState, id: Uuid) -> Result<SyncedItem, ApiError> {
     security(("bearer" = []))
 )]
 pub(crate) async fn theses(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<EntrySummary>>, ApiError> {
     let holding = holding(&state, id).await?;
@@ -157,7 +155,7 @@ pub(crate) async fn theses(
     security(("bearer" = []))
 )]
 pub(crate) async fn create_thesis(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(thesis): Json<NewThesis>,
 ) -> Result<(StatusCode, Json<Entry>), ApiError> {
@@ -200,7 +198,7 @@ pub(crate) async fn create_thesis(
     security(("bearer" = []))
 )]
 pub(crate) async fn reminders(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(request): Json<ReminderRequest>,
 ) -> Result<Json<ReminderResult>, ApiError> {
     let days_before = request.days_before.unwrap_or(3).clamp(0, 30);

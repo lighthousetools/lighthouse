@@ -4,9 +4,9 @@
 //! new slide. The export renders every slide as a page, ready to show in a
 //! browser or to print as PDF.
 
-use crate::{ApiError, ApiState, internal, not_found};
+use crate::{ApiError, ApiState, Scoped, internal, not_found};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use lighthouse_brain::{BrainError, Entry, EntrySummary, NewEntry, Source};
@@ -125,9 +125,7 @@ async fn deck(state: &ApiState, id: Uuid) -> Result<Entry, ApiError> {
     responses((status = 200, body = Vec<EntrySummary>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn list(
-    State(state): State<ApiState>,
-) -> Result<Json<Vec<EntrySummary>>, ApiError> {
+pub(crate) async fn list(Scoped(state): Scoped) -> Result<Json<Vec<EntrySummary>>, ApiError> {
     Ok(Json(
         state
             .brain
@@ -147,7 +145,7 @@ pub(crate) async fn list(
     security(("bearer" = []))
 )]
 pub(crate) async fn create(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(new): Json<NewDeck>,
 ) -> Result<(StatusCode, Json<Entry>), ApiError> {
     let entry = state
@@ -184,7 +182,7 @@ pub(crate) async fn create(
     security(("bearer" = []))
 )]
 pub(crate) async fn generate(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(brief): Json<DeckBrief>,
 ) -> Result<(StatusCode, Json<Entry>), ApiError> {
     let instructions = "Write a presentation in Markdown. Start every slide after the first with a line that \
@@ -196,7 +194,7 @@ pub(crate) async fn generate(
         .await
         .map_err(|error| ApiError(StatusCode::BAD_GATEWAY, error))?;
     create(
-        State(state),
+        Scoped(state),
         Json(NewDeck {
             title: brief.title,
             markdown: written.text,
@@ -222,7 +220,7 @@ pub(crate) async fn generate(
     security(("bearer" = []))
 )]
 pub(crate) async fn attach(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(attachment): Json<DeckAttachment>,
 ) -> Result<(StatusCode, Json<crate::ActionResult>), ApiError> {
@@ -275,7 +273,7 @@ pub(crate) async fn attach(
     security(("bearer" = []))
 )]
 pub(crate) async fn export(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Query(query): Query<ExportQuery>,
 ) -> Result<Response, ApiError> {

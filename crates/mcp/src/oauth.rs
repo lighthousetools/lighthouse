@@ -70,7 +70,6 @@ impl CredentialStore for VaultCredentialStore {
 /// Runs OAuth flows for connectors.
 pub struct OAuthFlows {
     connectors: BTreeMap<String, ConnectorConfig>,
-    vault: Vault,
     redirect_uri: String,
     pending: Mutex<HashMap<String, (String, OAuthState)>>,
 }
@@ -88,22 +87,20 @@ fn oauth_error(error: impl std::fmt::Display) -> McpError {
 }
 
 impl OAuthFlows {
-    /// Creates the flow manager. `public_url` is the server's base URL.
-    pub fn new(
-        connectors: BTreeMap<String, ConnectorConfig>,
-        vault: Vault,
-        public_url: &str,
-    ) -> Self {
+    /// Creates the flow manager. `public_url` is the server's base URL. One
+    /// manager serves every tenant: each flow stores its tokens in the vault
+    /// it was started with.
+    pub fn new(connectors: BTreeMap<String, ConnectorConfig>, public_url: &str) -> Self {
         Self {
             connectors,
-            vault,
             redirect_uri: format!("{}/oauth/callback", public_url.trim_end_matches('/')),
             pending: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Starts a flow and returns the URL the user must open.
-    pub async fn start(&self, connector: &str) -> Result<String, McpError> {
+    /// Starts a flow for the tenant of `vault` and returns the URL the user
+    /// must open.
+    pub async fn start(&self, connector: &str, vault: &Vault) -> Result<String, McpError> {
         let config = self
             .connectors
             .get(connector)
@@ -126,7 +123,7 @@ impl OAuthFlows {
             AuthorizationManager::new(url.as_str()).await
         }
         .map_err(oauth_error)?;
-        manager.set_credential_store(VaultCredentialStore::new(self.vault.clone(), connector));
+        manager.set_credential_store(VaultCredentialStore::new(vault.clone(), connector));
         let mut state = OAuthState::Unauthorized(manager);
         let mut request = AuthorizationRequest::new(self.redirect_uri.clone())
             .with_client_name(CLIENT_NAME)

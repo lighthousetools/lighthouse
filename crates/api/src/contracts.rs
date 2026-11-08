@@ -1,8 +1,7 @@
 //! Contract templates in the Brain, and drafts composed from them.
 
-use crate::{ActionError, ActionResult, ApiError, ApiState, internal, not_found};
+use crate::{ActionError, ActionResult, ApiError, Scoped, internal, not_found};
 use axum::Json;
-use axum::extract::State;
 use axum::http::StatusCode;
 use lighthouse_brain::{BrainError, Entry, EntrySummary, NewEntry, Source};
 use serde::{Deserialize, Serialize};
@@ -86,9 +85,7 @@ pub fn fill(template: &str, values: &BTreeMap<String, String>) -> (String, Vec<S
     responses((status = 200, body = Vec<EntrySummary>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn templates(
-    State(state): State<ApiState>,
-) -> Result<Json<Vec<EntrySummary>>, ApiError> {
+pub(crate) async fn templates(Scoped(state): Scoped) -> Result<Json<Vec<EntrySummary>>, ApiError> {
     Ok(Json(
         state.brain.list(Some(KIND), 200).await.map_err(internal)?,
     ))
@@ -104,7 +101,7 @@ pub(crate) async fn templates(
     security(("bearer" = []))
 )]
 pub(crate) async fn create_template(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(new): Json<NewTemplate>,
 ) -> Result<(StatusCode, Json<Entry>), ApiError> {
     let entry = state
@@ -143,7 +140,7 @@ pub(crate) async fn create_template(
     security(("bearer" = []))
 )]
 pub(crate) async fn compose(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(request): Json<ComposeRequest>,
 ) -> Result<Json<Composed>, ApiError> {
     let template = state

@@ -72,6 +72,55 @@ pub struct Config {
     /// Where the owner is, for the weather in the Morning Brief.
     #[serde(default)]
     pub weather: Option<WeatherConfig>,
+    /// Users, tenants and sign-up.
+    #[serde(default)]
+    pub tenancy: TenancyConfig,
+}
+
+/// Who may create an account.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignupMode {
+    /// Nobody. The configured owner signs in, as in a single-user install.
+    #[default]
+    Closed,
+    /// Only people with an invitation from an owner or admin.
+    Invite,
+    /// Anyone, who then owns a new tenant. Invitations work too.
+    Open,
+}
+
+/// Users, tenants and sign-up.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenancyConfig {
+    /// Who may create an account.
+    #[serde(default)]
+    pub signup: SignupMode,
+    /// Whether tenants without their own model provider key may use the keys
+    /// of the instance, stored in the vault of the default tenant. Hosted
+    /// instances turn this off so every tenant brings its own keys.
+    #[serde(default = "enabled")]
+    pub allow_instance_keys: bool,
+    /// Directory with one subdirectory per tenant for its Brain and the agents
+    /// and automations created in the apps. The default tenant keeps the
+    /// directories of `[paths]` and `[brain]`.
+    #[serde(default = "default_tenant_dir")]
+    pub data_dir: PathBuf,
+}
+
+fn default_tenant_dir() -> PathBuf {
+    PathBuf::from("tenants")
+}
+
+impl Default for TenancyConfig {
+    fn default() -> Self {
+        Self {
+            signup: SignupMode::Closed,
+            allow_instance_keys: true,
+            data_dir: default_tenant_dir(),
+        }
+    }
 }
 
 /// A place for the weather, from Open-Meteo, which needs no key.
@@ -104,6 +153,11 @@ pub struct ServerConfig {
     /// Token for admin endpoints. Prefer `LIGHTHOUSE_SERVER__ADMIN_TOKEN`.
     #[serde(default)]
     pub admin_token: Option<SecretString>,
+    /// Whether the first address in `X-Forwarded-For` is the client. Turn it on
+    /// only behind a reverse proxy that sets the header, since rate limits of
+    /// sign-in and sign-up count per client address.
+    #[serde(default)]
+    pub trust_forwarded_for: bool,
 }
 
 fn default_timezone() -> String {
@@ -594,6 +648,28 @@ mod tests {
             let error = config.unwrap_err().to_string();
             assert!(error.contains("has no model for task `image`"), "{error}");
         });
+    }
+
+    #[test]
+    fn tenancy_defaults_keep_a_single_user_install_closed() {
+        with_config(EXAMPLE, |config| {
+            let config = config.unwrap();
+            assert_eq!(config.tenancy.signup, SignupMode::Closed);
+            assert!(config.tenancy.allow_instance_keys);
+            assert_eq!(config.tenancy.data_dir, PathBuf::from("tenants"));
+            assert!(!config.server.trust_forwarded_for);
+        });
+        let hosted = format!(
+            "{EXAMPLE}\n[tenancy]\nsignup = \"open\"\nallow_instance_keys = false\n\
+             data_dir = \"/var/lib/lighthouse/tenants\"\n"
+        );
+        with_config(&hosted, |config| {
+            let tenancy = config.unwrap().tenancy;
+            assert_eq!(tenancy.signup, SignupMode::Open);
+            assert!(!tenancy.allow_instance_keys);
+        });
+        let wrong = format!("{EXAMPLE}\n[tenancy]\nsignup = \"everyone\"\n");
+        with_config(&wrong, |config| assert!(config.is_err()));
     }
 
     #[test]

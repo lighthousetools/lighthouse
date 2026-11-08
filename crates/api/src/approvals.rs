@@ -1,8 +1,8 @@
 //! Decisions on proposed actions.
 
-use crate::{ApiError, ApiState, internal};
+use crate::{ApiError, ApiState, Scoped, internal};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use lighthouse_audit::Approval;
 use serde::{Deserialize, Serialize};
@@ -66,7 +66,7 @@ async fn resume(state: &ApiState, run: Uuid) {
     security(("bearer" = []))
 )]
 pub(crate) async fn list(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<ApprovalQuery>,
 ) -> Result<Json<Vec<Approval>>, ApiError> {
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 500);
@@ -92,7 +92,7 @@ pub(crate) async fn list(
     security(("bearer" = []))
 )]
 pub(crate) async fn decide(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(decision): Json<Decision>,
 ) -> Result<Json<Approval>, ApiError> {
@@ -121,7 +121,7 @@ pub(crate) async fn decide(
     security(("bearer" = []))
 )]
 pub(crate) async fn decide_batch(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(batch): Json<BatchDecision>,
 ) -> Result<Json<BatchResult>, ApiError> {
     let mut result = BatchResult {

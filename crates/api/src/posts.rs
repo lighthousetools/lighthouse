@@ -1,10 +1,10 @@
 //! Posts, the posting plan, pillars, the archive and the owner's brand profile.
 
 use crate::connected::{ActionError, ActionResult};
-use crate::{ApiError, ApiState, desk_error, internal, not_found};
+use crate::{ApiError, ApiState, Scoped, desk_error, internal, not_found};
 use async_trait::async_trait;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use chrono::{NaiveDate, Utc};
 use lighthouse_desk::{
@@ -124,7 +124,7 @@ async fn check_images(state: &ApiState, images: &[Uuid]) -> Result<(), ApiError>
     security(("bearer" = []))
 )]
 pub(crate) async fn list(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(filter): Query<PostFilter>,
 ) -> Result<Json<Vec<Post>>, ApiError> {
     Ok(Json(state.desk.posts(&filter).await.map_err(desk_error)?))
@@ -140,7 +140,7 @@ pub(crate) async fn list(
     security(("bearer" = []))
 )]
 pub(crate) async fn create(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(post): Json<NewPost>,
 ) -> Result<(StatusCode, Json<Post>), ApiError> {
     check_images(&state, &post.images).await?;
@@ -159,7 +159,7 @@ pub(crate) async fn create(
     security(("bearer" = []))
 )]
 pub(crate) async fn get(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Post>, ApiError> {
     let post = state.desk.post(id).await.map_err(desk_error)?;
@@ -181,7 +181,7 @@ pub(crate) async fn get(
     security(("bearer" = []))
 )]
 pub(crate) async fn update(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(patch): Json<PostPatch>,
 ) -> Result<Json<Post>, ApiError> {
@@ -208,7 +208,7 @@ pub(crate) async fn update(
     security(("bearer" = []))
 )]
 pub(crate) async fn delete(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     if !state.desk.delete_post(id).await.map_err(desk_error)? {
@@ -246,7 +246,7 @@ pub(crate) async fn check(Json(request): Json<CheckRequest>) -> Json<PostCheck> 
     security(("bearer" = []))
 )]
 pub(crate) async fn publish(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<ActionResult>), ApiError> {
     let post = state
@@ -316,7 +316,7 @@ pub(crate) async fn publish(
     security(("bearer" = []))
 )]
 pub(crate) async fn rewrite(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(request): Json<RewriteRequest>,
 ) -> Result<Json<Written>, ApiError> {
@@ -368,7 +368,7 @@ pub(crate) async fn rewrite(
     security(("bearer" = []))
 )]
 pub(crate) async fn import(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(request): Json<ImportRequest>,
 ) -> Result<Json<ImportResult>, ApiError> {
     let mut posts = request.posts;
@@ -393,7 +393,7 @@ pub(crate) async fn import(
     security(("bearer" = []))
 )]
 pub(crate) async fn calendar(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<CalendarQuery>,
 ) -> Result<Json<Vec<CalendarSlot>>, ApiError> {
     let from = query
@@ -417,7 +417,7 @@ pub(crate) async fn calendar(
     security(("bearer" = []))
 )]
 pub(crate) async fn blocked_days(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
 ) -> Result<Json<Vec<lighthouse_desk::BlockedDay>>, ApiError> {
     Ok(Json(state.desk.blocked_days().await.map_err(desk_error)?))
 }
@@ -432,7 +432,7 @@ pub(crate) async fn blocked_days(
     security(("bearer" = []))
 )]
 pub(crate) async fn set_blocked_days(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(days): Json<Vec<lighthouse_desk::BlockedDay>>,
 ) -> Result<Json<Vec<lighthouse_desk::BlockedDay>>, ApiError> {
     let days = state
@@ -452,7 +452,7 @@ pub(crate) async fn set_blocked_days(
     responses((status = 200, body = Vec<PostSlot>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn slots(State(state): State<ApiState>) -> Result<Json<Vec<PostSlot>>, ApiError> {
+pub(crate) async fn slots(Scoped(state): Scoped) -> Result<Json<Vec<PostSlot>>, ApiError> {
     Ok(Json(state.desk.post_slots().await.map_err(desk_error)?))
 }
 
@@ -466,7 +466,7 @@ pub(crate) async fn slots(State(state): State<ApiState>) -> Result<Json<Vec<Post
     security(("bearer" = []))
 )]
 pub(crate) async fn set_slots(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(slots): Json<Vec<PostSlot>>,
 ) -> Result<Json<Vec<PostSlot>>, ApiError> {
     let slots = state
@@ -486,7 +486,7 @@ pub(crate) async fn set_slots(
     responses((status = 200, body = Vec<Pillar>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn pillars(State(state): State<ApiState>) -> Result<Json<Vec<Pillar>>, ApiError> {
+pub(crate) async fn pillars(Scoped(state): Scoped) -> Result<Json<Vec<Pillar>>, ApiError> {
     Ok(Json(state.desk.pillars().await.map_err(desk_error)?))
 }
 
@@ -501,7 +501,7 @@ pub(crate) async fn pillars(State(state): State<ApiState>) -> Result<Json<Vec<Pi
     security(("bearer" = []))
 )]
 pub(crate) async fn save_pillar(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
     Json(pillar): Json<PillarInput>,
 ) -> Result<Json<Pillar>, ApiError> {
@@ -524,7 +524,7 @@ pub(crate) async fn save_pillar(
     security(("bearer" = []))
 )]
 pub(crate) async fn delete_pillar(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     if !state.desk.delete_pillar(&id).await.map_err(desk_error)? {
@@ -542,9 +542,7 @@ pub(crate) async fn delete_pillar(
     responses((status = 200, body = BrandProfile)),
     security(("bearer" = []))
 )]
-pub(crate) async fn branding(
-    State(state): State<ApiState>,
-) -> Result<Json<BrandProfile>, ApiError> {
+pub(crate) async fn branding(Scoped(state): Scoped) -> Result<Json<BrandProfile>, ApiError> {
     Ok(Json(state.desk.brand_profile().await.map_err(desk_error)?))
 }
 
@@ -558,7 +556,7 @@ pub(crate) async fn branding(
     security(("bearer" = []))
 )]
 pub(crate) async fn save_branding(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(profile): Json<BrandProfile>,
 ) -> Result<Json<BrandProfile>, ApiError> {
     let profile = state

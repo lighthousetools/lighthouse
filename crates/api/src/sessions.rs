@@ -1,9 +1,9 @@
 //! Desktop agents, Claude Code sessions and their permission requests.
 
 use crate::auth::Caller;
-use crate::{ApiError, ApiState, internal};
+use crate::{ApiError, Scoped, internal};
 use axum::Json;
-use axum::extract::{Extension, Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use lighthouse_sessions::{
     ChangedFile, NewPermission, NewSessionEvent, Node, NodeReport, NodeState, Permission, Session,
@@ -22,7 +22,7 @@ const MAX_WAIT_SECONDS: u64 = 60;
 const POLL: Duration = Duration::from_millis(500);
 
 fn node_of(caller: Caller) -> Result<Uuid, ApiError> {
-    caller.0.filter(|_| caller.1).ok_or_else(|| {
+    caller.device.filter(|_| caller.node).ok_or_else(|| {
         ApiError(
             StatusCode::FORBIDDEN,
             "this endpoint needs the token of a desktop agent".to_owned(),
@@ -67,8 +67,8 @@ pub struct NodeChange {
     security(("bearer" = []))
 )]
 pub(crate) async fn report(
-    State(state): State<ApiState>,
-    Extension(caller): Extension<Caller>,
+    Scoped(state): Scoped,
+    caller: Caller,
     Json(report): Json<NodeReport>,
 ) -> Result<Json<NodeState>, ApiError> {
     let node = node_of(caller)?;
@@ -86,8 +86,8 @@ pub(crate) async fn report(
     security(("bearer" = []))
 )]
 pub(crate) async fn request(
-    State(state): State<ApiState>,
-    Extension(caller): Extension<Caller>,
+    Scoped(state): Scoped,
+    caller: Caller,
     Json(new): Json<NewPermission>,
 ) -> Result<(StatusCode, Json<Permission>), ApiError> {
     let node = node_of(caller)?;
@@ -107,8 +107,8 @@ pub(crate) async fn request(
     security(("bearer" = []))
 )]
 pub(crate) async fn await_decision(
-    State(state): State<ApiState>,
-    Extension(caller): Extension<Caller>,
+    Scoped(state): Scoped,
+    caller: Caller,
     Path(id): Path<Uuid>,
     Query(query): Query<WaitQuery>,
 ) -> Result<Json<Permission>, ApiError> {
@@ -136,7 +136,7 @@ pub(crate) async fn await_decision(
     responses((status = 200, body = Vec<Node>)),
     security(("bearer" = []))
 )]
-pub(crate) async fn nodes(State(state): State<ApiState>) -> Result<Json<Vec<Node>>, ApiError> {
+pub(crate) async fn nodes(Scoped(state): Scoped) -> Result<Json<Vec<Node>>, ApiError> {
     Ok(Json(state.sessions.nodes().await.map_err(internal)?))
 }
 
@@ -150,7 +150,7 @@ pub(crate) async fn nodes(State(state): State<ApiState>) -> Result<Json<Vec<Node
     security(("bearer" = []))
 )]
 pub(crate) async fn update_node(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(change): Json<NodeChange>,
 ) -> Result<StatusCode, ApiError> {
@@ -175,7 +175,7 @@ pub(crate) async fn update_node(
     security(("bearer" = []))
 )]
 pub(crate) async fn sessions(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<Session>>, ApiError> {
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 500);
@@ -196,7 +196,7 @@ pub(crate) async fn sessions(
     security(("bearer" = []))
 )]
 pub(crate) async fn permissions(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<Permission>>, ApiError> {
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 500);
@@ -222,7 +222,7 @@ pub(crate) async fn permissions(
     security(("bearer" = []))
 )]
 pub(crate) async fn decide(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(decision): Json<PermissionDecision>,
 ) -> Result<Json<Permission>, ApiError> {
@@ -285,8 +285,8 @@ pub struct SessionDetail {
     security(("bearer" = []))
 )]
 pub(crate) async fn record_events(
-    State(state): State<ApiState>,
-    Extension(caller): Extension<Caller>,
+    Scoped(state): Scoped,
+    caller: Caller,
     Json(body): Json<SessionEvents>,
 ) -> Result<StatusCode, ApiError> {
     let node = node_of(caller)?;
@@ -322,8 +322,8 @@ pub(crate) async fn record_events(
     security(("bearer" = []))
 )]
 pub(crate) async fn export_metrics(
-    State(state): State<ApiState>,
-    Extension(caller): Extension<Caller>,
+    Scoped(state): Scoped,
+    caller: Caller,
     Json(export): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let node = node_of(caller)?;
@@ -356,8 +356,8 @@ pub(crate) async fn export_metrics(
     security(("bearer" = []))
 )]
 pub(crate) async fn take_messages(
-    State(state): State<ApiState>,
-    Extension(caller): Extension<Caller>,
+    Scoped(state): Scoped,
+    caller: Caller,
     Path(id): Path<String>,
     Query(query): Query<WaitQuery>,
 ) -> Result<Json<Vec<SessionMessage>>, ApiError> {
@@ -396,7 +396,7 @@ pub(crate) async fn take_messages(
     security(("bearer" = []))
 )]
 pub(crate) async fn session(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path((node, id)): Path<(Uuid, String)>,
 ) -> Result<Json<SessionDetail>, ApiError> {
     let sessions = &state.sessions;
@@ -448,7 +448,7 @@ pub(crate) async fn session(
     security(("bearer" = []))
 )]
 pub(crate) async fn send_message(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path((node, id)): Path<(Uuid, String)>,
     Json(message): Json<NewSessionMessage>,
 ) -> Result<(StatusCode, Json<SessionMessage>), ApiError> {

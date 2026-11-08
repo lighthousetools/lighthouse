@@ -72,12 +72,39 @@ impl RouterSource for Arc<Router> {
 pub struct VaultRouterSource {
     config: Arc<Config>,
     vault: Vault,
+    fallback: Option<Vault>,
 }
 
 impl VaultRouterSource {
     /// Creates the source.
     pub fn new(config: Arc<Config>, vault: Vault) -> Self {
-        Self { config, vault }
+        Self {
+            config,
+            vault,
+            fallback: None,
+        }
+    }
+
+    /// Uses the keys of another vault, the instance's, for providers the
+    /// tenant has no key for.
+    pub fn with_fallback(mut self, fallback: Option<Vault>) -> Self {
+        self.fallback = fallback;
+        self
+    }
+}
+
+/// Reads a provider key from a tenant vault, then from the instance vault.
+pub async fn provider_key(
+    vault: &Vault,
+    fallback: Option<&Vault>,
+    name: &str,
+) -> Result<Option<secrecy::SecretString>, lighthouse_vault::VaultError> {
+    if let Some(key) = vault.get(name).await? {
+        return Ok(Some(key));
+    }
+    match fallback {
+        Some(fallback) => fallback.get(name).await,
+        None => Ok(None),
     }
 }
 
@@ -86,7 +113,7 @@ impl RouterSource for VaultRouterSource {
     async fn router(&self) -> Result<Arc<Router>, RouterError> {
         let mut keys = HashMap::new();
         for name in self.config.providers.keys() {
-            if let Ok(Some(key)) = self.vault.get(name).await {
+            if let Ok(Some(key)) = provider_key(&self.vault, self.fallback.as_ref(), name).await {
                 keys.insert(name.clone(), key);
             }
         }
@@ -1200,5 +1227,50 @@ impl Runtime {
                 },
             )
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use lighthouse_core::TenantId;
+    use lighthouse_store::testing::fresh_store;
+    use lighthouse_vault::MasterKey;
+    use secrecy::{ExposeSecret, SecretString};
+
+    #[tokio::test]
+    async fn tenant_keys_come_first_and_instance_keys_only_when_allowed() {
+        let store = fresh_store().await;
+        let key =
+            MasterKey::from_base64(&base64::engine::general_purpose::STANDARD.encode([4u8; 32]))
+                .unwrap();
+        let instance = Vault::new(store.clone(), TenantId::DEFAULT, &key);
+        let tenant = TenantId::generate();
+        lighthouse_store::sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, 't')")
+            .bind(tenant.as_uuid())
+            .execute(store.pool())
+            .await
+            .unwrap();
+        let own = Vault::new(store, tenant, &key);
+        instance
+            .put("anthropic", &SecretString::from("instance-key".to_owned()))
+            .await
+            .unwrap();
+        let without = provider_key(&own, None, "anthropic").await.unwrap();
+        assert!(without.is_none(), "no fallback without permission");
+        let fallback = provider_key(&own, Some(&instance), "anthropic")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fallback.expose_secret(), "instance-key");
+        own.put("anthropic", &SecretString::from("tenant-key".to_owned()))
+            .await
+            .unwrap();
+        let first = provider_key(&own, Some(&instance), "anthropic")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.expose_secret(), "tenant-key");
     }
 }

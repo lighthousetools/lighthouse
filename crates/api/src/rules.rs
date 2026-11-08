@@ -1,8 +1,8 @@
 //! Standing rules for the assistant.
 
-use crate::{ApiError, ApiState, desk_error, not_found};
+use crate::{ApiError, ApiState, Scoped, desk_error, not_found};
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use lighthouse_desk::{NewRule, Rule, RulePatch};
 use serde::Deserialize;
@@ -29,7 +29,7 @@ fn changed(state: &ApiState, id: Uuid) {
     security(("bearer" = []))
 )]
 pub(crate) async fn list(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Query(query): Query<RuleQuery>,
 ) -> Result<Json<Vec<Rule>>, ApiError> {
     let rules = match query.agent {
@@ -49,7 +49,7 @@ pub(crate) async fn list(
     security(("bearer" = []))
 )]
 pub(crate) async fn create(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Json(rule): Json<NewRule>,
 ) -> Result<(StatusCode, Json<Rule>), ApiError> {
     let rule = state.desk.create_rule(rule).await.map_err(desk_error)?;
@@ -67,7 +67,7 @@ pub(crate) async fn create(
     security(("bearer" = []))
 )]
 pub(crate) async fn get(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Rule>, ApiError> {
     let rule = state.desk.rule(id).await.map_err(desk_error)?;
@@ -89,7 +89,7 @@ pub(crate) async fn get(
     security(("bearer" = []))
 )]
 pub(crate) async fn update(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
     Json(patch): Json<RulePatch>,
 ) -> Result<Json<Rule>, ApiError> {
@@ -113,7 +113,7 @@ pub(crate) async fn update(
     security(("bearer" = []))
 )]
 pub(crate) async fn delete(
-    State(state): State<ApiState>,
+    Scoped(state): Scoped,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     if !state.desk.delete_rule(id).await.map_err(desk_error)? {
