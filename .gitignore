@@ -6,3 +6,5 @@ lighthouse.toml
 *.key
 lcov.info
 .DS_Store
+/web-dist
+/web-src

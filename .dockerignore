@@ -4,3 +4,4 @@ target
 .env
 lighthouse.toml
 *.key
+web-src
