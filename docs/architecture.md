@@ -96,7 +96,7 @@ see it, whatever their role. The admin token, agents and background work see eve
 | Device tokens | Personal | `device_tokens.user_id` |
 | Desktop agents (nodes), their Claude Code sessions, events, messages, usage and permission requests | Personal | `nodes.user_id`, set from the token that reports |
 | Conversations (Talk) | Personal | `talk_threads.user_id` |
-| Mail and calendar (connected items of the `mail` and `calendar` domains) | Personal | `synced_items.user_id` |
+| Mail and calendar (connected items of the `mail` and `calendar` domains), and every item of a personal source | Personal | `synced_items.user_id` |
 | Runs, their steps and approvals (decisions in Ready), drafts, briefs and recaps | Personal to the user a run works for | `runs.user_id` |
 | Brain, tasks, rules, memory (facts), alerts, automations, agents, organizations, issues, pull requests, deals, invoices, bank accounts, posts, decks, contracts, branding, settings and budget | Shared in the tenant | `tenant_id` only |
 | Model provider keys and connector tokens of the tenant (the vault) | Shared in the tenant; only owners and admins change them | `credentials.tenant_id` without `user_id` |
@@ -115,8 +115,9 @@ Live events go to the members of the tenant they happened in and carry IDs only,
 
 A run resolves providers, keys and connectors for the user it works for: their own entries over the tenant's over the
 instance's (see [configuration.md](configuration.md#layers)). A member who connects a connector for themselves gives
-only their own runs that account. Connected sources sync with the tenant's connector tokens, and their mail and
-calendar items belong to the tenant's first owner. Members bring no mail or calendar sources of their own yet.
+only their own runs that account. Shared connected sources sync with the tenant's connector tokens, and their mail and
+calendar items belong to the tenant's first owner. A member's own sources sync with their connectors and tokens, and
+all their items reach only that member, see [connected.md](connected.md#sources-in-layers).
 
 ### Settings in layers
 

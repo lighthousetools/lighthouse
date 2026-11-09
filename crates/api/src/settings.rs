@@ -80,7 +80,7 @@ pub async fn budget(state: &ApiState) -> Result<Budget, ApiError> {
 async fn view(state: &ApiState, budget: Budget) -> Result<BudgetView, ApiError> {
     let spent = state
         .audit
-        .cost_since(month_start(state.zone, Utc::now()))
+        .cost_since(month_start(state.tenant_zone, Utc::now()))
         .await
         .map_err(internal)?;
     Ok(BudgetView {

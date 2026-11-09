@@ -336,9 +336,11 @@ Single settings take the value as the JSON body:
 | Key | Value | Effect |
 |---|---|---|
 | `talk.agent` | An agent ID, or `null` so the Second Brain answers | Answers the person's conversations |
-| `notifications` | `{"deliver", "decisions", "done", "alerts"}` as in `[notifications]` | Pushes about a person's runs follow their setting, alerts and work without a user the tenant's. In a personal layer, `deliver` takes `owner` and `slack:<alias>`, not other mail addresses |
+| `notifications` | `{"deliver", "decisions", "done", "alerts"}` as in `[notifications]` | Pushes about a person's runs follow their setting, alerts and work without a user the tenant's. `owner` mails the person a run belongs to, and for alerts the tenant's first owner. In a personal layer, `deliver` takes `owner` and `slack:<alias>`, not other mail addresses |
 | `weather` | `{"latitude", "longitude", "location"}` | The weather in a person's brief. The weather service itself stays in `lighthouse.toml` |
-| `timezone` | An IANA name | The zone `GET /me` reports, for the apps. Schedules and months of the budget keep the zone of the server |
+| `timezone` | An IANA name | A person's day boundaries in the API and in prompts of their runs, and the zone `GET /me` reports. Budget months use the tenant's zone |
+| `accounts` | `{"<connector>": "<account name>"}` | Personal only. Their names in services, used by their sources and named in prompts of their runs |
+| `addresses` | A list of email addresses | Personal only. Further addresses of theirs, to recognize their own mail |
 | `language` | `en` or `de` | Kept for the apps, so a person's language follows them to other devices |
 
 Names are lower-case identifiers of up to 40 characters. Tasks are the ones the server routes (`text`). Prices are

@@ -132,6 +132,33 @@ pub struct SettingsView {
     pub routing: Vec<RouteView>,
     /// Connectors, including the ones switched off.
     pub connectors: Vec<ConnectorView>,
+    /// Connected sources, including the ones switched off.
+    pub sources: Vec<SourceView>,
+}
+
+/// A connected source as it applies to the caller.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct SourceView {
+    /// Its name.
+    pub name: String,
+    /// What items, refreshes and actions refer to it by.
+    pub key: String,
+    /// The connector whose tools fill it.
+    pub connector: String,
+    /// `mail`, `calendar`, `issues`, `code` and so on, if it names one itself.
+    pub domain: Option<String>,
+    /// The bundled preset it starts from.
+    pub preset: Option<String>,
+    /// Refresh interval, such as `15m`.
+    pub interval: Option<String>,
+    /// The layer that defines it.
+    pub source: Layer,
+    /// Whether it refreshes.
+    pub enabled: bool,
+    /// The layer that switched it off, if one did.
+    pub disabled_by: Option<Layer>,
+    /// Its settings as stored, absent for one of the instance.
+    pub definition: Option<serde_json::Value>,
 }
 
 /// A provider as one layer stores it.
@@ -433,6 +460,22 @@ fn view(
             .connectors
             .iter()
             .map(|(name, connector)| connector_view(name, connector, Some(stored)))
+            .collect(),
+        sources: effective
+            .sources
+            .values()
+            .map(|source| SourceView {
+                name: source.name.clone(),
+                key: source.key.clone(),
+                connector: source.config.connector.clone(),
+                domain: source.config.domain.clone(),
+                preset: source.config.preset.clone(),
+                interval: source.config.interval.clone(),
+                source: source.source,
+                enabled: source.enabled,
+                disabled_by: source.disabled_by,
+                definition: source.definition.clone(),
+            })
             .collect(),
     }
 }
@@ -825,6 +868,93 @@ pub(crate) async fn switch_connector(
     state
         .settings
         .switch_connector(owner, caller.user, &name, input.enabled)
+        .await
+        .map_err(settings_error)?;
+    changed(&state);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Adds or replaces a connected source of a layer. A shared source's mail and
+/// calendar items belong to the tenant's first owner; all items of a personal
+/// source belong to the caller and reach nobody else. It syncs with the
+/// connector and tokens its owner has, and may only call read-only tools.
+#[utoipa::path(
+    put,
+    path = "/settings/{layer}/sources/{name}",
+    params(("layer" = String, Path, description = "`tenant` or `me`"),
+        ("name" = String, Path, description = "Source name")),
+    request_body = lighthouse_settings::SourceInput,
+    responses((status = 204), (status = 403, description = "Needs the owner or admin role"),
+        (status = 409, description = "The name exists in a lower layer, or a limit is reached"),
+        (status = 422, description = "Invalid source, or a tool that is not read-only")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn put_source(
+    State(instance): State<Instance>,
+    Scoped(state): Scoped,
+    caller: Caller,
+    Path((layer, name)): Path<(String, String)>,
+    Json(input): Json<lighthouse_settings::SourceInput>,
+) -> Result<StatusCode, ApiError> {
+    let owner = may_change(&instance, &caller, &layer, "source").await?;
+    state
+        .settings
+        .set_source(owner, caller.user, &name, &input)
+        .await
+        .map_err(settings_error)?;
+    changed(&state);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deletes a connected source of a layer with its items.
+#[utoipa::path(
+    delete,
+    path = "/settings/{layer}/sources/{name}",
+    params(("layer" = String, Path, description = "`tenant` or `me`"),
+        ("name" = String, Path, description = "Source name")),
+    responses((status = 204), (status = 404, description = "Not in this layer")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn delete_source(
+    State(instance): State<Instance>,
+    Scoped(state): Scoped,
+    caller: Caller,
+    Path((layer, name)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let owner = may_change(&instance, &caller, &layer, "source").await?;
+    state
+        .settings
+        .delete_source(owner, caller.user, &name)
+        .await
+        .map_err(settings_error)?;
+    changed(&state);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Switches a source on or off: one of the layer itself, or for the tenant one
+/// of the instance. A person cannot switch a shared source off, since it keeps
+/// refreshing for the others.
+#[utoipa::path(
+    put,
+    path = "/settings/{layer}/sources/{name}/enabled",
+    params(("layer" = String, Path, description = "`tenant` or `me`"),
+        ("name" = String, Path, description = "Source name")),
+    request_body = SwitchInput,
+    responses((status = 204), (status = 404, description = "Unknown source"),
+        (status = 409, description = "A shared source")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn switch_source(
+    State(instance): State<Instance>,
+    Scoped(state): Scoped,
+    caller: Caller,
+    Path((layer, name)): Path<(String, String)>,
+    Json(input): Json<SwitchInput>,
+) -> Result<StatusCode, ApiError> {
+    let owner = may_change(&instance, &caller, &layer, "source").await?;
+    state
+        .settings
+        .switch_source(owner, caller.user, &name, input.enabled)
         .await
         .map_err(settings_error)?;
     changed(&state);

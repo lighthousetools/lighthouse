@@ -52,6 +52,7 @@ fn defaults() -> Defaults {
         )]),
         connectors: BTreeMap::from([("issues".to_owned(), connector)]),
         values: BTreeMap::new(),
+        sources: BTreeMap::new(),
     }
 }
 

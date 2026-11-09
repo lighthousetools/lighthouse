@@ -346,7 +346,7 @@ impl Runtime {
                     message,
                 } => {
                     let target = match to {
-                        Delivery::Owner => Delivery::Mail(self.owner_email.clone()),
+                        Delivery::Owner => Delivery::Mail(self.email()),
                         other => other.clone(),
                     };
                     let subject = subject.as_deref().map_or_else(

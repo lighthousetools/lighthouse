@@ -139,6 +139,7 @@ async fn fixture(script: Vec<ChatResponse>, fail_delivery: bool) -> Fixture {
         ..FakeNotifier::default()
     });
     let runtime = Runtime {
+        people: None,
         router: Arc::new(Arc::new(router)),
         tools: Arc::new(tools),
         policy: ToolPolicy::new(&BTreeMap::from([("linear".to_owned(), connector)])),

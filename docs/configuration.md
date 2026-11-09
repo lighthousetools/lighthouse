@@ -138,12 +138,13 @@ admin instead, to pass on in another way.
 | `providers` | `10` | Providers per tenant, and again per person |
 | `models` | `20` | Models per provider |
 | `connectors` | `25` | Connectors per tenant, and again per person |
+| `sources` | `10` | Connected sources per tenant, and again per person |
 | `tenant_entries` | `2000` | All entries of a tenant and its members together |
 
 Agent files in `paths.agents` and `paths.automations`, skills, sources and the instance's providers, routing and
 connectors apply to every tenant as defaults. Each tenant has its own vault, so connector tokens and provider keys are
-its own. `[owner] accounts` only apply to the default tenant; in other tenants, agents work for the tenant's first
-owner.
+its own. `[owner] accounts` only apply to the first owner of the default tenant; everyone else sets their own
+`accounts` and `addresses` in the apps.
 
 ## Layers
 
@@ -179,8 +180,10 @@ shown in the apps, plus the language of the apps, which has no entry in the file
 `[database]`, `[vault]`, `[tenancy]`, SMTP, `[paths]`, the Brain's directory, the weather service's `base_url` and
 `[extensions]`.
 
-Not in layers yet, and still only in the file: `[sources]`, `[publishing]`, the models of `[brain]`, `slack_channels` of
-`[delivery]` and `[owner] accounts`. Agents, automations and skills stay files per tenant.
+Connected sources follow the same layers too, see [connected.md](connected.md#sources-in-layers).
+
+Time zones: a person's `timezone` decides their day boundaries in the API and in prompts of their runs. Budget months
+stay per tenant, in the tenant's zone, because the budget is shared.
 
 Keys and tokens never sit in these settings. They stay in the vault:
 
@@ -200,7 +203,8 @@ Endpoints that tenants and people enter must be public `https` URLs. The server 
 loopback, private, link-local, shared and cloud metadata addresses, both when the setting is saved and on every
 connection, and it follows redirects only to public `https` URLs. `allow_private_endpoints` lifts this for
 self-hosted instances. Changes take effect on the next run without a restart, and each change is recorded with who
-made it (`GET /settings/tenant/changes`). Several server processes on one database pick up each other's changes
+made it (`GET /settings/tenant/changes`). A change runs in one database transaction under a lock per tenant, so a
+failed step leaves nothing behind and limits hold across server processes. Several server processes on one database pick up each other's changes
 within 15 seconds.
 
 The apps prefill forms from `GET /settings/presets`, which lists suggested providers, models with list prices and

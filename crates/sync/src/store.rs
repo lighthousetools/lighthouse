@@ -179,7 +179,8 @@ pub const PERSONAL_DOMAINS: [&str; 2] = ["mail", "calendar"];
 /// Whether the viewer, given as parameter `$n`, may see an item.
 fn visible(parameter: u8) -> String {
     format!(
-        "(domain NOT IN ('mail', 'calendar') OR ${parameter}::uuid IS NULL OR user_id = ${parameter})"
+        "(${parameter}::uuid IS NULL OR user_id = ${parameter} \
+         OR (user_id IS NULL AND domain NOT IN ('mail', 'calendar')))"
     )
 }
 
@@ -261,7 +262,8 @@ impl SyncStore {
                  starts_at, ends_at, data, raw, amount, currency, user_id) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
                  $18, $19, $20, $21, $22, \
-                 CASE WHEN $4 IN ('mail', 'calendar') THEN coalesce($23, tenant_primary_user($2)) END) \
+                 CASE WHEN $23::uuid IS NOT NULL THEN $23 \
+                 WHEN $4 IN ('mail', 'calendar') THEN tenant_primary_user($2) END) \
                  ON CONFLICT (tenant_id, source, kind, external_id) DO UPDATE SET \
                  parent_id = EXCLUDED.parent_id, title = EXCLUDED.title, summary = EXCLUDED.summary, \
                  author = EXCLUDED.author, assignee = EXCLUDED.assignee, state = EXCLUDED.state, \
@@ -460,7 +462,8 @@ impl SyncStore {
              AND ($16::text IS NULL OR source IN (SELECT unnest(o.sources) FROM organizations o \
                   WHERE o.tenant_id = $1 AND o.id = $16)) \
              AND ($17 OR snoozed_until IS NULL OR snoozed_until <= now()) \
-             AND (domain NOT IN ('mail', 'calendar') OR $18::uuid IS NULL OR user_id = $18)";
+             AND ($18::uuid IS NULL OR user_id = $18 \
+                  OR (user_id IS NULL AND domain NOT IN ('mail', 'calendar')))";
         let order = match filter.order {
             Order::Recent => "occurred_at DESC NULLS LAST, synced_at DESC, id",
             Order::Importance => "importance DESC, occurred_at DESC NULLS LAST, id",
@@ -735,6 +738,22 @@ impl SyncStore {
         .bind(self.tenant.as_uuid())
         .fetch_all(self.pool())
         .await
+    }
+
+    /// Forgets a source that was deleted: its items, status and history.
+    pub async fn forget_source(&self, source: &str) -> Result<(), sqlx::Error> {
+        for statement in [
+            "DELETE FROM synced_items WHERE tenant_id = $1 AND source = $2",
+            "DELETE FROM sync_state WHERE tenant_id = $1 AND source = $2",
+            "DELETE FROM sync_history WHERE tenant_id = $1 AND source = $2",
+        ] {
+            sqlx::query(statement)
+                .bind(self.tenant.as_uuid())
+                .bind(source)
+                .execute(self.pool())
+                .await?;
+        }
+        Ok(())
     }
 
     /// Returns busy blocks of calendar events between two times, merged.

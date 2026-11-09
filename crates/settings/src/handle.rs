@@ -1,12 +1,13 @@
 //! The settings of one tenant in memory, kept current.
 
-use crate::effective::{Defaults, Effective};
+use crate::effective::{Defaults, Effective, EffectiveSource};
 use crate::store::{ChangeRecord, SettingsStore, parse_auth};
 use crate::{
     ConnectorEntry, ConnectorInput, Layer, LayerData, ModelInput, Owner, ProviderInput, RouteInput,
     SettingsError, Snapshot, SwitchKind, validate,
 };
-use lighthouse_config::{Config, ModelConfig, RouteConfig, SettingsLimits};
+use crate::{SourceEntry, SourceInput};
+use lighthouse_config::{Config, ModelConfig, RouteConfig, SettingsLimits, SourceConfig};
 use lighthouse_core::TenantId;
 use lighthouse_store::Store;
 use std::sync::{Arc, RwLock};
@@ -36,8 +37,6 @@ struct Inner {
     defaults: Arc<Defaults>,
     options: Options,
     snapshot: RwLock<Arc<Snapshot>>,
-    /// One change at a time in this process, so checks see the latest state.
-    writing: tokio::sync::Mutex<()>,
 }
 
 /// The settings of one tenant: the instance defaults, the tenant layer and
@@ -59,6 +58,30 @@ fn conflict(message: impl Into<String>) -> SettingsError {
     SettingsError::Conflict(message.into())
 }
 
+/// Why a source cannot refresh with what a user may use, if it cannot: its
+/// connector is missing or switched off, or a collection calls a tool the
+/// connector does not list as read-only.
+pub fn source_problem(source: &lighthouse_sync::Source, view: &Effective) -> Option<String> {
+    let connector = view.connectors.get(&source.connector);
+    match connector {
+        None => return Some(format!("connector `{}` does not exist", source.connector)),
+        Some(connector) if !connector.enabled => {
+            return Some(format!("connector `{}` is switched off", source.connector));
+        }
+        Some(_) => {}
+    }
+    let policy = lighthouse_mcp::ToolPolicy::new(&view.enabled_connectors());
+    source.collections.iter().find_map(|(collection, config)| {
+        let tool = source.tool(&config.tool);
+        (policy.level(&tool) != lighthouse_core::agent::ToolLevel::Read).then(|| {
+            format!(
+                "collection `{collection}` calls `{tool}`, which is not in the connector's \
+                 read_tools. Refreshes only read."
+            )
+        })
+    })
+}
+
 fn layer_name(layer: Layer) -> &'static str {
     match layer {
         Layer::Instance => "the instance",
@@ -77,7 +100,6 @@ impl TenantSettings {
                 defaults,
                 options,
                 snapshot: RwLock::new(Arc::default()),
-                writing: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -114,12 +136,45 @@ impl TenantSettings {
     }
 
     fn resolve(&self, snapshot: &Snapshot, user: Option<Uuid>) -> Effective {
-        Effective::resolve(
+        let mut effective = Effective::resolve(
             &self.inner.defaults,
             Some(&snapshot.tenant),
             user.and_then(|user| snapshot.personal.get(&user)),
             self.inner.options.allow_private_endpoints,
-        )
+        );
+        if let Some(user) = user {
+            for source in effective.sources.values_mut() {
+                if source.source == Layer::Personal {
+                    source.owner = Some(user);
+                    source.key = lighthouse_sync::personal_key(&source.name, user);
+                }
+            }
+        }
+        effective
+    }
+
+    /// Every source of the tenant in use: the shared ones and those of each
+    /// member.
+    pub fn all_sources(&self) -> Vec<EffectiveSource> {
+        let snapshot = self.snapshot();
+        let mut sources: Vec<EffectiveSource> = self
+            .resolve(&snapshot, None)
+            .sources
+            .into_values()
+            .filter(|source| source.enabled)
+            .collect();
+        for member in &snapshot.members {
+            if !snapshot.personal.contains_key(&member.id) {
+                continue;
+            }
+            sources.extend(
+                self.resolve(&snapshot, Some(member.id))
+                    .sources
+                    .into_values()
+                    .filter(|source| source.enabled && source.source == Layer::Personal),
+            );
+        }
+        sources
     }
 
     /// What applies to a user, or to the tenant as a whole for `None`.
@@ -143,10 +198,13 @@ impl TenantSettings {
         Ok(())
     }
 
-    /// Reloads if another process changed something. Returns whether it did.
+    /// Reloads if another process changed something, or members came or went.
+    /// Returns whether it did.
     pub async fn refresh(&self) -> Result<bool, SettingsError> {
         let revision = self.inner.store.revision().await?;
-        if revision == self.snapshot().revision {
+        let members = self.inner.store.members().await?;
+        let current = self.snapshot();
+        if revision == current.revision && members == current.members {
             return Ok(false);
         }
         self.reload().await?;
@@ -188,29 +246,28 @@ impl TenantSettings {
         Ok(())
     }
 
-    /// Runs a change: checks against the latest state, writes, records and
-    /// swaps the new state in.
-    async fn change<F, Fut>(
+    /// Runs a change in one transaction: takes the tenant's lock, checks against
+    /// the latest state, writes and records. A failed step leaves nothing behind,
+    /// and the lock keeps limits from racing across server processes. The new
+    /// state is swapped in after the commit.
+    async fn change(
         &self,
         owner: Owner,
         actor: Option<Uuid>,
         area: &str,
         name: &str,
         action: &str,
-        write: F,
-    ) -> Result<(), SettingsError>
-    where
-        F: FnOnce(Arc<Snapshot>) -> Fut,
-        Fut: std::future::Future<Output = Result<(), SettingsError>>,
-    {
-        let _writing = self.inner.writing.lock().await;
-        self.refresh().await?;
-        write(self.snapshot()).await?;
-        self.inner
-            .store
-            .record(owner, actor, area, name, action)
+        write: impl AsyncFnOnce(Arc<Snapshot>, &mut sqlx::PgConnection) -> Result<(), SettingsError>,
+    ) -> Result<(), SettingsError> {
+        let store = &self.inner.store;
+        let mut transaction = store.pool().begin().await?;
+        store.bump(&mut transaction).await?;
+        let snapshot = Arc::new(store.load().await?);
+        write(snapshot, &mut transaction).await?;
+        store
+            .record(&mut transaction, owner, actor, area, name, action)
             .await?;
-        self.inner.store.bump().await?;
+        transaction.commit().await?;
         self.reload().await
     }
 
@@ -255,7 +312,7 @@ impl TenantSettings {
             }
             _ => None,
         };
-        self.change(owner, actor, "provider", name, "set", |snapshot| async move {
+        self.change(owner, actor, "provider", name, "set", async move |snapshot, conn| {
             if let Some(lower) = self.below(&snapshot, owner).providers.get(name)
                 && (lower.kind != kind || lower.base_url != base_url)
             {
@@ -276,7 +333,7 @@ impl TenantSettings {
             }
             self.inner
                 .store
-                .put_provider(owner, name, kind, base_url.as_deref())
+                .put_provider(conn, owner, name, kind, base_url.as_deref())
                 .await
         })
         .await
@@ -295,11 +352,11 @@ impl TenantSettings {
             "provider",
             name,
             "delete",
-            |snapshot| async move {
+            async move |snapshot, conn| {
                 self.routes_still_work(&snapshot, owner, |layer| {
                     layer.providers.remove(name);
                 })?;
-                if self.inner.store.delete_provider(owner, name).await? {
+                if self.inner.store.delete_provider(conn, owner, name).await? {
                     Ok(())
                 } else {
                     Err(SettingsError::NotFound("provider".to_owned()))
@@ -329,36 +386,49 @@ impl TenantSettings {
             output_eur_per_mtok: input.output_eur_per_mtok,
         };
         let name = format!("{provider}.{task}");
-        self.change(owner, actor, "model", &name, "set", |snapshot| async move {
-            let current = snapshot.layer(owner).cloned().unwrap_or_default();
-            match current.providers.get(provider) {
-                Some(entry) => {
-                    let limit = self.inner.options.limits.models;
-                    if !entry.models.contains_key(task) && entry.models.len() >= limit {
-                        return Err(SettingsError::Limit(format!(
-                            "at most {limit} models per provider"
-                        )));
+        self.change(
+            owner,
+            actor,
+            "model",
+            &name,
+            "set",
+            async move |snapshot, conn| {
+                let current = snapshot.layer(owner).cloned().unwrap_or_default();
+                match current.providers.get(provider) {
+                    Some(entry) => {
+                        let limit = self.inner.options.limits.models;
+                        if !entry.models.contains_key(task) && entry.models.len() >= limit {
+                            return Err(SettingsError::Limit(format!(
+                                "at most {limit} models per provider"
+                            )));
+                        }
+                    }
+                    None => {
+                        let lower = self.below(&snapshot, owner);
+                        let lower = lower
+                            .providers
+                            .get(provider)
+                            .ok_or_else(|| SettingsError::NotFound("provider".to_owned()))?;
+                        self.inner
+                            .store
+                            .put_provider(
+                                conn,
+                                owner,
+                                provider,
+                                lower.kind,
+                                lower.base_url.as_deref(),
+                            )
+                            .await?;
                     }
                 }
-                None => {
-                    let lower = self.below(&snapshot, owner);
-                    let lower = lower
-                        .providers
-                        .get(provider)
-                        .ok_or_else(|| SettingsError::NotFound("provider".to_owned()))?;
-                    self.inner
-                        .store
-                        .put_provider(owner, provider, lower.kind, lower.base_url.as_deref())
-                        .await?;
-                }
-            }
-            self.check_total(&snapshot)?;
-            self.inner
-                .store
-                .put_model(owner, provider, task, &model)
-                .await?;
-            Ok(())
-        })
+                self.check_total(&snapshot)?;
+                self.inner
+                    .store
+                    .put_model(conn, owner, provider, task, &model)
+                    .await?;
+                Ok(())
+            },
+        )
         .await
     }
 
@@ -377,13 +447,18 @@ impl TenantSettings {
             "model",
             &name,
             "delete",
-            |snapshot| async move {
+            async move |snapshot, conn| {
                 self.routes_still_work(&snapshot, owner, |layer| {
                     if let Some(entry) = layer.providers.get_mut(provider) {
                         entry.models.remove(task);
                     }
                 })?;
-                if self.inner.store.delete_model(owner, provider, task).await? {
+                if self
+                    .inner
+                    .store
+                    .delete_model(conn, owner, provider, task)
+                    .await?
+                {
                     Ok(())
                 } else {
                     Err(SettingsError::NotFound("model".to_owned()))
@@ -414,19 +489,26 @@ impl TenantSettings {
                 "the fallback must be another provider".to_owned(),
             ));
         }
-        self.change(owner, actor, "route", task, "set", |snapshot| async move {
-            let view = self.view(&snapshot, owner);
-            for name in std::iter::once(&route.provider).chain(&route.fallback) {
-                if view.model(name, task).is_none() {
-                    return Err(SettingsError::Invalid(format!(
-                        "`{}` has no model for `{task}`",
-                        name.chars().take(40).collect::<String>()
-                    )));
+        self.change(
+            owner,
+            actor,
+            "route",
+            task,
+            "set",
+            async move |snapshot, conn| {
+                let view = self.view(&snapshot, owner);
+                for name in std::iter::once(&route.provider).chain(&route.fallback) {
+                    if view.model(name, task).is_none() {
+                        return Err(SettingsError::Invalid(format!(
+                            "`{}` has no model for `{task}`",
+                            name.chars().take(40).collect::<String>()
+                        )));
+                    }
                 }
-            }
-            self.check_total(&snapshot)?;
-            self.inner.store.put_route(owner, task, &route).await
-        })
+                self.check_total(&snapshot)?;
+                self.inner.store.put_route(conn, owner, task, &route).await
+            },
+        )
         .await
     }
 
@@ -437,13 +519,20 @@ impl TenantSettings {
         actor: Option<Uuid>,
         task: &str,
     ) -> Result<(), SettingsError> {
-        self.change(owner, actor, "route", task, "delete", |_| async move {
-            if self.inner.store.delete_route(owner, task).await? {
-                Ok(())
-            } else {
-                Err(SettingsError::NotFound("route".to_owned()))
-            }
-        })
+        self.change(
+            owner,
+            actor,
+            "route",
+            task,
+            "delete",
+            async move |_, conn| {
+                if self.inner.store.delete_route(conn, owner, task).await? {
+                    Ok(())
+                } else {
+                    Err(SettingsError::NotFound("route".to_owned()))
+                }
+            },
+        )
         .await
     }
 
@@ -489,7 +578,7 @@ impl TenantSettings {
             "connector",
             name,
             "set",
-            |snapshot| async move {
+            async move |snapshot, conn| {
                 if let Some(lower) = self.below(&snapshot, owner).connectors.get(name) {
                     return Err(conflict(format!(
                         "`{name}` comes from {}; switch it off there or choose another name",
@@ -525,9 +614,150 @@ impl TenantSettings {
                     .get(name)
                     .is_none_or(|old| old.url != entry.url);
                 if owner.is_none() && moved {
-                    self.inner.store.remove_personal_tokens(None, name).await?;
+                    self.inner
+                        .store
+                        .remove_personal_tokens(conn, None, name)
+                        .await?;
                 }
-                self.inner.store.put_connector(owner, name, &entry).await
+                self.inner
+                    .store
+                    .put_connector(conn, owner, name, &entry)
+                    .await
+            },
+        )
+        .await
+    }
+
+    /// Adds or replaces a connected source of a layer. It may only call tools
+    /// its connector lists as read-only.
+    pub async fn set_source(
+        &self,
+        owner: Owner,
+        actor: Option<Uuid>,
+        name: &str,
+        input: &SourceInput,
+    ) -> Result<(), SettingsError> {
+        validate::name("source", name)?;
+        let config: SourceConfig = serde_json::from_value(input.definition.clone())
+            .map_err(|error| SettingsError::Invalid(format!("invalid source: {error}")))?;
+        let resolved = lighthouse_sync::sources::resolve(name, &config, Vec::new())
+            .map_err(|error| SettingsError::Invalid(error.to_string()))?;
+        let entry = SourceEntry {
+            definition: input.definition.clone(),
+            enabled: input.enabled,
+        };
+        self.change(
+            owner,
+            actor,
+            "source",
+            name,
+            "set",
+            async move |snapshot, conn| {
+                if let Some(lower) = self.below(&snapshot, owner).sources.get(name) {
+                    return Err(conflict(format!(
+                        "`{name}` comes from {}; choose another name",
+                        layer_name(lower.source)
+                    )));
+                }
+                let view = self.view(&snapshot, owner);
+                if let Some(problem) = source_problem(&resolved, &view) {
+                    return Err(SettingsError::Invalid(problem));
+                }
+                let current = snapshot.layer(owner).cloned().unwrap_or_default();
+                if !current.sources.contains_key(name) {
+                    let limit = self.inner.options.limits.sources;
+                    if current.sources.len() >= limit {
+                        return Err(SettingsError::Limit(format!(
+                            "at most {limit} sources per layer"
+                        )));
+                    }
+                    self.check_total(&snapshot)?;
+                }
+                self.inner.store.put_source(conn, owner, name, &entry).await
+            },
+        )
+        .await
+    }
+
+    /// Deletes a connected source of a layer, with its items.
+    pub async fn delete_source(
+        &self,
+        owner: Owner,
+        actor: Option<Uuid>,
+        name: &str,
+    ) -> Result<(), SettingsError> {
+        let key = match owner {
+            Some(user) => lighthouse_sync::personal_key(name, user),
+            None => name.to_owned(),
+        };
+        self.change(
+            owner,
+            actor,
+            "source",
+            name,
+            "delete",
+            async move |_, conn| {
+                if self
+                    .inner
+                    .store
+                    .delete_source(conn, owner, name, &key)
+                    .await?
+                {
+                    Ok(())
+                } else {
+                    Err(SettingsError::NotFound("source".to_owned()))
+                }
+            },
+        )
+        .await
+    }
+
+    /// Switches a source on or off: one of the layer itself, or one of the
+    /// instance for the whole tenant. A shared source keeps refreshing for the
+    /// others, so a person cannot switch it off.
+    pub async fn switch_source(
+        &self,
+        owner: Owner,
+        actor: Option<Uuid>,
+        name: &str,
+        enabled: bool,
+    ) -> Result<(), SettingsError> {
+        self.change(
+            owner,
+            actor,
+            "switch",
+            name,
+            "set",
+            async move |snapshot, conn| {
+                if let Some(mut entry) = snapshot
+                    .layer(owner)
+                    .and_then(|layer| layer.sources.get(name))
+                    .cloned()
+                {
+                    entry.enabled = enabled;
+                    return self.inner.store.put_source(conn, owner, name, &entry).await;
+                }
+                if !self.below(&snapshot, owner).sources.contains_key(name) {
+                    return Err(SettingsError::NotFound("source".to_owned()));
+                }
+                if owner.is_some() {
+                    return Err(conflict(
+                        "this source is shared in the workspace; owners and admins switch it",
+                    ));
+                }
+                if enabled {
+                    self.inner
+                        .store
+                        .delete_switch(conn, owner, SwitchKind::Source, name)
+                        .await?;
+                } else {
+                    self.check_total(&snapshot)?;
+                    self.inner
+                        .store
+                        .put_switch(conn, owner, SwitchKind::Source, name, false)
+                        .await?;
+                }
+                Ok(())
             },
         )
         .await
@@ -540,13 +770,23 @@ impl TenantSettings {
         actor: Option<Uuid>,
         name: &str,
     ) -> Result<(), SettingsError> {
-        self.change(owner, actor, "connector", name, "delete", |_| async move {
-            if self.inner.store.delete_connector(owner, name).await? {
-                self.inner.store.remove_personal_tokens(owner, name).await
-            } else {
-                Err(SettingsError::NotFound("connector".to_owned()))
-            }
-        })
+        self.change(
+            owner,
+            actor,
+            "connector",
+            name,
+            "delete",
+            async move |_, conn| {
+                if self.inner.store.delete_connector(conn, owner, name).await? {
+                    self.inner
+                        .store
+                        .remove_personal_tokens(conn, owner, name)
+                        .await
+                } else {
+                    Err(SettingsError::NotFound("connector".to_owned()))
+                }
+            },
+        )
         .await
     }
 
@@ -559,34 +799,41 @@ impl TenantSettings {
         name: &str,
         enabled: bool,
     ) -> Result<(), SettingsError> {
-        self.change(owner, actor, "switch", name, "set", |snapshot| async move {
-            let own = snapshot
-                .layer(owner)
-                .is_some_and(|layer| layer.connectors.contains_key(name));
-            if own {
-                self.inner
-                    .store
-                    .enable_connector(owner, name, enabled)
-                    .await?;
-                return Ok(());
-            }
-            if !self.below(&snapshot, owner).connectors.contains_key(name) {
-                return Err(SettingsError::NotFound("connector".to_owned()));
-            }
-            if enabled {
-                self.inner
-                    .store
-                    .delete_switch(owner, SwitchKind::Connector, name)
-                    .await?;
-            } else {
-                self.check_total(&snapshot)?;
-                self.inner
-                    .store
-                    .put_switch(owner, SwitchKind::Connector, name, false)
-                    .await?;
-            }
-            Ok(())
-        })
+        self.change(
+            owner,
+            actor,
+            "switch",
+            name,
+            "set",
+            async move |snapshot, conn| {
+                let own = snapshot
+                    .layer(owner)
+                    .is_some_and(|layer| layer.connectors.contains_key(name));
+                if own {
+                    self.inner
+                        .store
+                        .enable_connector(conn, owner, name, enabled)
+                        .await?;
+                    return Ok(());
+                }
+                if !self.below(&snapshot, owner).connectors.contains_key(name) {
+                    return Err(SettingsError::NotFound("connector".to_owned()));
+                }
+                if enabled {
+                    self.inner
+                        .store
+                        .delete_switch(conn, owner, SwitchKind::Connector, name)
+                        .await?;
+                } else {
+                    self.check_total(&snapshot)?;
+                    self.inner
+                        .store
+                        .put_switch(conn, owner, SwitchKind::Connector, name, false)
+                        .await?;
+                }
+                Ok(())
+            },
+        )
         .await
     }
 
@@ -598,15 +845,22 @@ impl TenantSettings {
         key: &str,
         value: &serde_json::Value,
     ) -> Result<(), SettingsError> {
-        self.change(owner, actor, "value", key, "set", |snapshot| async move {
-            if !snapshot
-                .layer(owner)
-                .is_some_and(|layer| layer.values.contains_key(key))
-            {
-                self.check_total(&snapshot)?;
-            }
-            self.inner.store.put_value(owner, key, value).await
-        })
+        self.change(
+            owner,
+            actor,
+            "value",
+            key,
+            "set",
+            async move |snapshot, conn| {
+                if !snapshot
+                    .layer(owner)
+                    .is_some_and(|layer| layer.values.contains_key(key))
+                {
+                    self.check_total(&snapshot)?;
+                }
+                self.inner.store.put_value(conn, owner, key, value).await
+            },
+        )
         .await
     }
 
@@ -617,13 +871,20 @@ impl TenantSettings {
         actor: Option<Uuid>,
         key: &str,
     ) -> Result<(), SettingsError> {
-        self.change(owner, actor, "value", key, "delete", |_| async move {
-            if self.inner.store.delete_value(owner, key).await? {
-                Ok(())
-            } else {
-                Err(SettingsError::NotFound("setting".to_owned()))
-            }
-        })
+        self.change(
+            owner,
+            actor,
+            "value",
+            key,
+            "delete",
+            async move |_, conn| {
+                if self.inner.store.delete_value(conn, owner, key).await? {
+                    Ok(())
+                } else {
+                    Err(SettingsError::NotFound("setting".to_owned()))
+                }
+            },
+        )
         .await
     }
 }

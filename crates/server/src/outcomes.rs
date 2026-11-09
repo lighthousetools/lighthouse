@@ -144,6 +144,7 @@ pub struct Outcomes {
     zone: chrono_tz::Tz,
     weather: Option<lighthouse_config::WeatherConfig>,
     settings: Option<lighthouse_settings::TenantSettings>,
+    people: Option<Arc<dyn lighthouse_runtime::People>>,
 }
 
 impl std::fmt::Debug for Outcomes {
@@ -177,6 +178,9 @@ pub struct OutcomeParts {
     /// Settings of the tenant and its members. Without them, the values above
     /// apply to everyone.
     pub settings: Option<lighthouse_settings::TenantSettings>,
+    /// Finds the person pushes to `owner` go to: the one a run works for, or
+    /// the tenant's first owner for what concerns the whole tenant.
+    pub people: Option<Arc<dyn lighthouse_runtime::People>>,
 }
 
 impl Outcomes {
@@ -193,6 +197,7 @@ impl Outcomes {
             zone: parts.zone,
             weather: parts.weather,
             settings: parts.settings,
+            people: parts.people,
         }
     }
 
@@ -234,7 +239,19 @@ impl Outcomes {
         let Some(limit) = budget.monthly_eur.filter(|limit| *limit > 0.0) else {
             return Ok(());
         };
-        let start = lighthouse_api::month_start(self.zone, Utc::now());
+        // Budget months are the same for all members: the tenant's zone.
+        let zone = self
+            .settings
+            .as_ref()
+            .and_then(|settings| {
+                settings
+                    .effective(None)
+                    .values
+                    .get(lighthouse_settings::TIMEZONE)
+                    .and_then(|(zone, _)| zone.as_str()?.parse().ok())
+            })
+            .unwrap_or(self.zone);
+        let start = lighthouse_api::month_start(zone, Utc::now());
         let spent = self.audit.cost_since(start).await?;
         let used = spent / limit * 100.0;
         let key = format!("budget:{}", start.format("%Y-%m"));
@@ -283,9 +300,19 @@ impl Outcomes {
             .unwrap_or_default()
     }
 
-    async fn push(&self, pushes: &Pushes, subject: &str, markdown: &str) {
+    async fn push(&self, pushes: &Pushes, user: Option<Uuid>, subject: &str, markdown: &str) {
         let subject = format!("{SUBJECT_PREFIX}: {subject}");
+        let person = match &self.people {
+            Some(people) => people.person(user).await,
+            None => None,
+        };
         for target in &pushes.targets {
+            let target = match (target, &person) {
+                (Delivery::Owner, Some(person)) if !person.email.is_empty() => {
+                    &Delivery::Mail(person.email.clone())
+                }
+                _ => target,
+            };
             if let Err(error) = self.notifier.deliver(target, &subject, markdown).await {
                 tracing::warn!(%error, "cannot push to the owner");
             }
@@ -308,7 +335,7 @@ impl Outcomes {
             if let Some(detail) = &alert.detail {
                 text.push_str(&format!("\n\n{detail}"));
             }
-            self.push(&pushes, &alert.title, &text).await;
+            self.push(&pushes, None, &alert.title, &text).await;
         }
         Ok(())
     }
@@ -354,7 +381,7 @@ impl Outcomes {
                     },
                     tools.join(", ")
                 );
-                self.push(&pushes, &format!("{name} needs a decision"), &text)
+                self.push(&pushes, user, &format!("{name} needs a decision"), &text)
                     .await;
             }
             return Ok(Some(record));
@@ -412,6 +439,7 @@ impl Outcomes {
             if pushes.done {
                 self.push(
                     &pushes,
+                    user,
                     &format!("{name} is done"),
                     &format!("{name} finished its run."),
                 )
@@ -525,6 +553,7 @@ mod tests {
             zone: chrono_tz::UTC,
             weather: None,
             settings: None,
+            people: None,
         });
         Fixture {
             outcomes,
@@ -626,6 +655,63 @@ mod tests {
                 ..NotificationsConfig::default()
             })
             .is_err()
+        );
+    }
+
+    struct Addresses;
+
+    #[async_trait]
+    impl lighthouse_runtime::People for Addresses {
+        async fn person(&self, user: Option<Uuid>) -> Option<lighthouse_runtime::Person> {
+            Some(lighthouse_runtime::Person {
+                context: String::new(),
+                email: user
+                    .map_or("first@example.com", |_| "member@example.com")
+                    .to_owned(),
+                zone: chrono_tz::UTC,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct Targets(Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl Notifier for Targets {
+        async fn deliver(&self, target: &Delivery, _: &str, _: &str) -> Result<(), NotifyError> {
+            self.0.lock().unwrap().push(format!("{target:?}"));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn owner_pushes_reach_the_member_a_run_belongs_to() {
+        let mut fixture = fixture(loud()).await;
+        let sam = Uuid::now_v7();
+        lighthouse_store::sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ($1, 'sam@example.com', 'Sam')",
+        )
+        .bind(sam)
+        .execute(fixture.store.pool())
+        .await
+        .unwrap();
+        let targets = Arc::new(Targets::default());
+        fixture.outcomes.notifier = targets.clone();
+        fixture.outcomes.people = Some(Arc::new(Addresses));
+        let as_sam = fixture.audit.for_user(Some(sam));
+        let run = finished(&as_sam, "brief", RunStatus::Succeeded, "").await;
+        fixture.outcomes.after_run(run).await.unwrap();
+        assert_eq!(
+            targets.0.lock().unwrap().as_slice(),
+            ["Mail(\"member@example.com\")"]
+        );
+        let reason = "connector `linear` is not authorized";
+        let run = finished(&fixture.audit, "brief", RunStatus::Failed, reason).await;
+        fixture.outcomes.after_run(run).await.unwrap();
+        assert_eq!(
+            targets.0.lock().unwrap().last().unwrap(),
+            "Mail(\"first@example.com\")",
+            "alerts concern the whole tenant"
         );
     }
 

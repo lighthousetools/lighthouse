@@ -126,6 +126,7 @@ async fn fixture() -> Fixture {
     let mailbox = Arc::new(Mailbox::default());
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime {
+        people: None,
         router: Arc::new(Arc::new(Router::default())),
         tools: Arc::new(Tools(calls.clone())),
         policy: ToolPolicy::new(&BTreeMap::from([

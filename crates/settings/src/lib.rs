@@ -27,12 +27,16 @@ mod values;
 
 pub use effective::{
     Defaults, Effective, EffectiveConnector, EffectiveModel, EffectiveProvider, EffectiveRoute,
+    EffectiveSource,
 };
-pub use handle::{Options, TenantSettings};
-pub use presets::{PresetConnector, PresetModel, PresetProvider, Presets, presets};
+pub use handle::{Options, TenantSettings, source_problem};
+pub use presets::{PresetConnector, PresetModel, PresetProvider, PresetSource, Presets, presets};
 pub use store::{ChangeRecord, SettingsStore};
 pub use validate::{KNOWN_TASKS, is_name};
-pub use values::{LANGUAGE, NOTIFICATIONS, TALK_AGENT, TIMEZONE, VALUE_KEYS, WEATHER, check_value};
+pub use values::{
+    ACCOUNTS, ADDRESSES, LANGUAGE, NOTIFICATIONS, TALK_AGENT, TIMEZONE, VALUE_KEYS, WEATHER,
+    check_value,
+};
 
 use lighthouse_config::{ConnectorAuth, ModelConfig, ProviderKind, RouteConfig};
 use serde::{Deserialize, Serialize};
@@ -176,6 +180,17 @@ pub struct LayerData {
     pub switches: BTreeMap<(SwitchKind, String), bool>,
     /// Single settings by key.
     pub values: BTreeMap<String, serde_json::Value>,
+    /// Connected sources by name.
+    pub sources: BTreeMap<String, SourceEntry>,
+}
+
+/// A connected source of the tenant or personal layer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceEntry {
+    /// The source as JSON, in the shape of `[sources.<name>]`.
+    pub definition: serde_json::Value,
+    /// Whether it refreshes.
+    pub enabled: bool,
 }
 
 impl LayerData {
@@ -191,7 +206,21 @@ impl LayerData {
             + self.connectors.len()
             + self.switches.len()
             + self.values.len()
+            + self.sources.len()
     }
+}
+
+/// A member of the tenant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Member {
+    /// The user.
+    pub id: Uuid,
+    /// Their email address.
+    pub email: String,
+    /// Their name.
+    pub name: String,
+    /// Whether they are an owner.
+    pub owner: bool,
 }
 
 /// Every stored layer of a tenant at one revision.
@@ -199,6 +228,8 @@ impl LayerData {
 pub struct Snapshot {
     /// Raised by every change.
     pub revision: i64,
+    /// The members, earliest first.
+    pub members: Vec<Member>,
     /// The tenant layer.
     pub tenant: LayerData,
     /// The personal layers by member.
@@ -206,6 +237,17 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// The person agents work for in the tenant when no one else is named:
+    /// its earliest owner.
+    pub fn primary(&self) -> Option<&Member> {
+        self.members.iter().find(|member| member.owner)
+    }
+
+    /// A member by user.
+    pub fn member(&self, user: Uuid) -> Option<&Member> {
+        self.members.iter().find(|member| member.id == user)
+    }
+
     /// The stored entries of an owner.
     pub fn layer(&self, owner: Owner) -> Option<&LayerData> {
         match owner {
@@ -290,6 +332,18 @@ fn default_auth() -> String {
 
 const fn enabled() -> bool {
     true
+}
+
+/// A connected source to add or replace.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct SourceInput {
+    /// The source in the shape of `[sources.<name>]`: `connector`, and `domain`,
+    /// `preset`, `service`, `account`, `interval`, `collections`, `actions`.
+    /// See `docs/connected.md`.
+    pub definition: serde_json::Value,
+    /// Whether it refreshes. Defaults to on.
+    #[serde(default = "enabled")]
+    pub enabled: bool,
 }
 
 /// Switches an entry on or off.

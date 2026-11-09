@@ -1,7 +1,8 @@
 //! Storage of the tenant and personal layers.
 
 use crate::{
-    ConnectorEntry, LayerData, Owner, ProviderEntry, SettingsError, Snapshot, SwitchKind, layer_of,
+    ConnectorEntry, LayerData, Member, Owner, ProviderEntry, SettingsError, Snapshot, SourceEntry,
+    SwitchKind, layer_of,
 };
 use chrono::{DateTime, Utc};
 use lighthouse_config::{ConnectorAuth, ModelConfig, ProviderKind, RouteConfig};
@@ -94,6 +95,7 @@ type ConnectorRow = (
 );
 type SwitchRow = (Option<Uuid>, String, String, bool);
 type ChangeRow = (DateTime<Utc>, Option<Uuid>, String, String, String);
+type SourceRow = (Option<Uuid>, String, serde_json::Value, bool);
 type ValueRow = (Option<Uuid>, String, serde_json::Value);
 
 impl SettingsStore {
@@ -102,7 +104,7 @@ impl SettingsStore {
         Self { store, tenant }
     }
 
-    fn pool(&self) -> &sqlx::PgPool {
+    pub(crate) fn pool(&self) -> &sqlx::PgPool {
         self.store.pool()
     }
 
@@ -120,17 +122,40 @@ impl SettingsStore {
         Ok(row.map_or(0, |(revision,)| revision))
     }
 
-    /// Raises the revision and returns the new one.
-    pub async fn bump(&self) -> Result<i64, SettingsError> {
+    /// Raises the revision and returns the new one. The row stays locked until
+    /// the transaction ends, so changes of a tenant run one at a time, across
+    /// server processes too.
+    pub async fn bump(&self, conn: &mut sqlx::PgConnection) -> Result<i64, SettingsError> {
         let (revision,): (i64,) = sqlx::query_as(
             "INSERT INTO settings_revisions (tenant_id, revision) VALUES ($1, 1) \
              ON CONFLICT (tenant_id) DO UPDATE SET revision = settings_revisions.revision + 1 \
              RETURNING revision",
         )
         .bind(self.id())
-        .fetch_one(self.pool())
+        .fetch_one(&mut *conn)
         .await?;
         Ok(revision)
+    }
+
+    /// The members of the tenant, earliest first.
+    pub async fn members(&self) -> Result<Vec<Member>, SettingsError> {
+        let rows: Vec<(Uuid, String, String, String)> = sqlx::query_as(
+            "SELECT m.user_id, u.email, u.name, m.role FROM memberships m \
+             JOIN users u ON u.id = m.user_id WHERE m.tenant_id = $1 \
+             ORDER BY m.created_at, m.user_id",
+        )
+        .bind(self.id())
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, email, name, role)| Member {
+                id,
+                email,
+                name,
+                owner: role == "owner",
+            })
+            .collect())
     }
 
     /// Reads every layer of the tenant.
@@ -235,12 +260,29 @@ impl SettingsStore {
         for (user, key, value) in values {
             layer(&mut snapshot, user).values.insert(key, value);
         }
+        let sources: Vec<SourceRow> = sqlx::query_as(
+            "SELECT user_id, name, definition, enabled FROM settings_sources WHERE tenant_id = $1",
+        )
+        .bind(self.id())
+        .fetch_all(self.pool())
+        .await?;
+        for (user, name, definition, enabled) in sources {
+            layer(&mut snapshot, user).sources.insert(
+                name,
+                SourceEntry {
+                    definition,
+                    enabled,
+                },
+            );
+        }
+        snapshot.members = self.members().await?;
         Ok(snapshot)
     }
 
     /// Adds a provider or changes its kind and URL. Its models stay.
     pub async fn put_provider(
         &self,
+        conn: &mut sqlx::PgConnection,
         owner: Owner,
         name: &str,
         kind: ProviderKind,
@@ -258,13 +300,18 @@ impl SettingsStore {
         .bind(name)
         .bind(kind_name(kind))
         .bind(base_url)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(())
     }
 
     /// Deletes a provider with its models. Returns whether it existed.
-    pub async fn delete_provider(&self, owner: Owner, name: &str) -> Result<bool, SettingsError> {
+    pub async fn delete_provider(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        owner: Owner,
+        name: &str,
+    ) -> Result<bool, SettingsError> {
         let result = sqlx::query(
             "DELETE FROM settings_providers WHERE tenant_id = $1 \
              AND user_id IS NOT DISTINCT FROM $2 AND name = $3",
@@ -272,7 +319,7 @@ impl SettingsStore {
         .bind(self.id())
         .bind(owner)
         .bind(name)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(result.rows_affected() > 0)
     }
@@ -281,6 +328,7 @@ impl SettingsStore {
     /// provider does not exist in this layer.
     pub async fn put_model(
         &self,
+        conn: &mut sqlx::PgConnection,
         owner: Owner,
         provider: &str,
         task: &str,
@@ -301,7 +349,7 @@ impl SettingsStore {
         .bind(&model.model)
         .bind(model.input_eur_per_mtok)
         .bind(model.output_eur_per_mtok)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(result.rows_affected() > 0)
     }
@@ -309,6 +357,7 @@ impl SettingsStore {
     /// Deletes the model of a provider for a task. Returns whether it existed.
     pub async fn delete_model(
         &self,
+        conn: &mut sqlx::PgConnection,
         owner: Owner,
         provider: &str,
         task: &str,
@@ -322,7 +371,7 @@ impl SettingsStore {
         .bind(owner)
         .bind(provider)
         .bind(task)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(result.rows_affected() > 0)
     }
@@ -330,6 +379,7 @@ impl SettingsStore {
     /// Sets the route of a task.
     pub async fn put_route(
         &self,
+        conn: &mut sqlx::PgConnection,
         owner: Owner,
         task: &str,
         route: &RouteConfig,
@@ -345,13 +395,18 @@ impl SettingsStore {
         .bind(task)
         .bind(&route.provider)
         .bind(&route.fallback)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(())
     }
 
     /// Deletes the route of a task. Returns whether it existed.
-    pub async fn delete_route(&self, owner: Owner, task: &str) -> Result<bool, SettingsError> {
+    pub async fn delete_route(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        owner: Owner,
+        task: &str,
+    ) -> Result<bool, SettingsError> {
         let result = sqlx::query(
             "DELETE FROM settings_routes WHERE tenant_id = $1 \
              AND user_id IS NOT DISTINCT FROM $2 AND task = $3",
@@ -359,7 +414,7 @@ impl SettingsStore {
         .bind(self.id())
         .bind(owner)
         .bind(task)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(result.rows_affected() > 0)
     }
@@ -367,6 +422,7 @@ impl SettingsStore {
     /// Adds or replaces a connector.
     pub async fn put_connector(
         &self,
+        conn: &mut sqlx::PgConnection,
         owner: Owner,
         name: &str,
         connector: &ConnectorEntry,
@@ -390,7 +446,7 @@ impl SettingsStore {
         .bind(&connector.read_tools)
         .bind(&connector.draft_tools)
         .bind(connector.enabled)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(())
     }
@@ -398,6 +454,7 @@ impl SettingsStore {
     /// Switches a connector of this layer on or off. Returns whether it exists.
     pub async fn enable_connector(
         &self,
+        conn: &mut sqlx::PgConnection,
         owner: Owner,
         name: &str,
         enabled: bool,
@@ -410,13 +467,18 @@ impl SettingsStore {
         .bind(owner)
         .bind(name)
         .bind(enabled)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(result.rows_affected() > 0)
     }
 
     /// Deletes a connector. Returns whether it existed.
-    pub async fn delete_connector(&self, owner: Owner, name: &str) -> Result<bool, SettingsError> {
+    pub async fn delete_connector(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        owner: Owner,
+        name: &str,
+    ) -> Result<bool, SettingsError> {
         let result = sqlx::query(
             "DELETE FROM settings_connectors WHERE tenant_id = $1 \
              AND user_id IS NOT DISTINCT FROM $2 AND name = $3",
@@ -424,7 +486,7 @@ impl SettingsStore {
         .bind(self.id())
         .bind(owner)
         .bind(name)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(result.rows_affected() > 0)
     }
@@ -433,6 +495,7 @@ impl SettingsStore {
     /// endpoint they did not connect to. With an owner, only theirs.
     pub async fn remove_personal_tokens(
         &self,
+        conn: &mut sqlx::PgConnection,
         owner: Owner,
         name: &str,
     ) -> Result<(), SettingsError> {
@@ -443,7 +506,7 @@ impl SettingsStore {
         .bind(self.id())
         .bind(owner)
         .bind([format!("mcp:{name}"), format!("oauth:{name}")].as_slice())
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(())
     }
@@ -451,6 +514,7 @@ impl SettingsStore {
     /// Switches an entry of a lower layer on or off for this layer.
     pub async fn put_switch(
         &self,
+        conn: &mut sqlx::PgConnection,
         owner: Owner,
         kind: SwitchKind,
         name: &str,
@@ -467,7 +531,7 @@ impl SettingsStore {
         .bind(kind.as_str())
         .bind(name)
         .bind(enabled)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(())
     }
@@ -475,6 +539,7 @@ impl SettingsStore {
     /// Removes a switch, so the entry is as the lower layer has it.
     pub async fn delete_switch(
         &self,
+        conn: &mut sqlx::PgConnection,
         owner: Owner,
         kind: SwitchKind,
         name: &str,
@@ -487,14 +552,71 @@ impl SettingsStore {
         .bind(owner)
         .bind(kind.as_str())
         .bind(name)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Adds or replaces a connected source.
+    pub async fn put_source(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        owner: Owner,
+        name: &str,
+        source: &SourceEntry,
+    ) -> Result<(), SettingsError> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO settings_sources (tenant_id, user_id, name, definition, enabled) \
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT {} \
+             DO UPDATE SET definition = $4, enabled = $5, updated_at = now()",
+            target("name")
+        )))
+        .bind(self.id())
+        .bind(owner)
+        .bind(name)
+        .bind(&source.definition)
+        .bind(source.enabled)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    /// Deletes a connected source with its items, status and history. Returns
+    /// whether it existed. `key` is what its items are stored under.
+    pub async fn delete_source(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        owner: Owner,
+        name: &str,
+        key: &str,
+    ) -> Result<bool, SettingsError> {
+        let result = sqlx::query(
+            "DELETE FROM settings_sources WHERE tenant_id = $1 \
+             AND user_id IS NOT DISTINCT FROM $2 AND name = $3",
+        )
+        .bind(self.id())
+        .bind(owner)
+        .bind(name)
+        .execute(&mut *conn)
+        .await?;
+        for statement in [
+            "DELETE FROM synced_items WHERE tenant_id = $1 AND source = $2",
+            "DELETE FROM sync_state WHERE tenant_id = $1 AND source = $2",
+            "DELETE FROM sync_history WHERE tenant_id = $1 AND source = $2",
+        ] {
+            sqlx::query(statement)
+                .bind(self.id())
+                .bind(key)
+                .execute(&mut *conn)
+                .await?;
+        }
         Ok(result.rows_affected() > 0)
     }
 
     /// Sets a single setting.
     pub async fn put_value(
         &self,
+        conn: &mut sqlx::PgConnection,
         owner: Owner,
         key: &str,
         value: &serde_json::Value,
@@ -508,13 +630,18 @@ impl SettingsStore {
         .bind(owner)
         .bind(key)
         .bind(value)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(())
     }
 
     /// Deletes a single setting. Returns whether it existed.
-    pub async fn delete_value(&self, owner: Owner, key: &str) -> Result<bool, SettingsError> {
+    pub async fn delete_value(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        owner: Owner,
+        key: &str,
+    ) -> Result<bool, SettingsError> {
         let result = sqlx::query(
             "DELETE FROM settings_values WHERE tenant_id = $1 \
              AND user_id IS NOT DISTINCT FROM $2 AND key = $3",
@@ -522,7 +649,7 @@ impl SettingsStore {
         .bind(self.id())
         .bind(owner)
         .bind(key)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         Ok(result.rows_affected() > 0)
     }
@@ -530,6 +657,7 @@ impl SettingsStore {
     /// Records a change. Values are not recorded.
     pub async fn record(
         &self,
+        conn: &mut sqlx::PgConnection,
         owner: Owner,
         actor: Option<Uuid>,
         area: &str,
@@ -547,7 +675,7 @@ impl SettingsStore {
         .bind(area)
         .bind(name)
         .bind(action)
-        .execute(self.pool())
+        .execute(&mut *conn)
         .await?;
         tracing::info!(
             tenant = %self.id(),

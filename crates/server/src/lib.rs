@@ -30,6 +30,7 @@ use lighthouse_sessions::Sessions;
 use lighthouse_settings::{Defaults, Effective, TenantSettings};
 use lighthouse_skills::SkillLibrary;
 use lighthouse_store::Store;
+use lighthouse_sync::SourceList;
 use lighthouse_vault::{MasterKey, Vault};
 use secrecy::ExposeSecret;
 use std::collections::{BTreeMap, HashMap};
@@ -1053,11 +1054,21 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
     )
     .await
     .context("cannot read the settings of the tenant")?;
-    let resolver = Arc::new(tenant_config::TenantConfig::new(
-        settings.clone(),
-        vault.clone(),
-        shared.key_fallback(tenant),
-    ));
+    let resolver = Arc::new(
+        tenant_config::TenantConfig::new(
+            settings.clone(),
+            vault.clone(),
+            shared.key_fallback(tenant),
+        )
+        .with_person_defaults(
+            (tenant == TenantId::DEFAULT).then(|| tenant_config::InstanceOwner {
+                name: owner.name.clone(),
+                email: owner.email.clone(),
+                accounts: owner.accounts.clone(),
+            }),
+            zone,
+        ),
+    );
     let mcp: Arc<dyn ToolHostFactory> = Arc::new(McpConnector::live(resolver.clone()));
     let sync_tools = mcp.clone();
     let runtime = Arc::new(Runtime {
@@ -1066,7 +1077,7 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
             brain.clone(),
             Arc::new(DeskToolFactory::new(desk.clone(), mcp)),
         )),
-        policy: ToolPolicy::live(resolver),
+        policy: ToolPolicy::live(resolver.clone()),
         skills: SkillLibrary::load(&config.paths.skills)?,
         audit: audit.clone(),
         notifier: Arc::new({
@@ -1084,6 +1095,7 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         owner_email: owner.email.clone(),
         zone,
         desk: desk.clone(),
+        people: Some(resolver.clone()),
     });
     let agents = Arc::new(AgentRegistry::load(
         config.paths.agents.clone(),
@@ -1107,6 +1119,7 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         zone,
         weather: config.weather.clone(),
         settings: Some(settings.clone()),
+        people: Some(resolver.clone()),
     }));
     let automation_files = Arc::new(AutomationRegistry::load(
         config.paths.automations.clone(),
@@ -1123,13 +1136,12 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         )
         .with_entitlements(tenant, shared.entitlements.clone()),
     );
-    let sources = resolve_sources(config, &shared.policy, &owner)?;
-    tracing::info!(count = sources.len(), "connected sources loaded");
+    tracing::info!(count = resolver.sources().len(), "connected sources loaded");
     let sync_store = lighthouse_sync::SyncStore::new(store.clone(), tenant);
-    let syncer = Arc::new(lighthouse_sync::Syncer::new(
+    let syncer = Arc::new(lighthouse_sync::Syncer::live(
         sync_store.clone(),
         sync_tools,
-        sources,
+        resolver.clone(),
     ));
     let connected = Arc::new(ConnectedService::new(
         syncer,
@@ -1185,6 +1197,7 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         events,
         desk,
         zone,
+        tenant_zone: zone,
         automations,
         sync: sync_store,
         connected,

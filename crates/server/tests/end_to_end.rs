@@ -1255,3 +1255,226 @@ async fn tenant_settings_take_effect_without_a_restart() {
     assert_eq!(detail["run"]["status"], "succeeded", "{detail}");
     assert_ne!(detail["run"]["report"], "from the tenant model");
 }
+
+const PASSWORD: &str = "a long enough password";
+
+/// Signs in the configured owner and returns their token.
+async fn owner_token(base: &str) -> String {
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{base}/auth/setup"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"password": PASSWORD}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 204);
+    let login: Value = client
+        .post(format!("{base}/auth/login"))
+        .json(&json!({"password": PASSWORD, "device_name": "test", "device_kind": "web"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    login["token"].as_str().unwrap().to_owned()
+}
+
+/// Invites someone as a member and returns their token.
+async fn member_token(base: &str, owner: &str, email: &str) -> String {
+    let client = reqwest::Client::new();
+    let invitation: Value = client
+        .post(format!("{base}/tenant/invitations"))
+        .bearer_auth(owner)
+        .json(&json!({"email": email, "role": "member"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let url = invitation["accept_url"].as_str().unwrap();
+    let token = url.split("token=").nth(1).unwrap();
+    let accepted: Value = client
+        .post(format!("{base}/auth/accept"))
+        .json(
+            &json!({"token": token, "name": "Robin", "password": PASSWORD,
+                      "device_name": "web", "device_kind": "web"}),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    accepted["token"].as_str().unwrap().to_owned()
+}
+
+/// Calls the API as someone and returns the status and body.
+async fn as_user(
+    base: &str,
+    token: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+) -> (u16, Value) {
+    let mut request = reqwest::Client::new()
+        .request(method, format!("{base}{path}"))
+        .bearer_auth(token);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await.unwrap();
+    let status = response.status().as_u16();
+    let text = response.text().await.unwrap();
+    (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+const MEMBER_TENANCY: &str = "[tenancy]\nsignup = \"invite\"\nallow_private_endpoints = true\n";
+
+/// The address of the demo MCP server, from the instance connector.
+async fn mcp_url(base: &str) -> String {
+    let view = get(base, "/settings/effective").await;
+    view["connectors"][0]["url"].as_str().unwrap().to_owned()
+}
+
+fn mail_source(connector: &str) -> Value {
+    json!({"definition": {"connector": connector, "domain": "mail", "service": "mail", "collections": {
+        "inbox": {"tool": "list_threads", "items": "threads", "kind": "thread", "fields": {
+            "external_id": "id", "title": "subject", "author": "from", "occurred_at": "date",
+            "unread": {"path": "labels", "contains": "UNREAD"}}}}}})
+}
+
+#[tokio::test]
+async fn a_member_who_connects_their_own_mail_sees_it_and_nobody_else_does() {
+    let (base, _dir, _database) = start_with(MEMBER_TENANCY).await;
+    let owner = owner_token(&base).await;
+    let robin = member_token(&base, &owner, "robin@example.com").await;
+    let sam = member_token(&base, &owner, "sam@example.com").await;
+    let url = mcp_url(&base).await;
+    let put = reqwest::Method::PUT;
+    let post = reqwest::Method::POST;
+    let fetch = reqwest::Method::GET;
+
+    // Without a listed read tool, or without a connector, there is no source.
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/sources/inbox",
+        Some(mail_source("mymail")),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/connectors/mymail",
+        Some(json!({"url": url, "auth": "none"})),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/sources/inbox",
+        Some(mail_source("mymail")),
+    )
+    .await;
+    assert_eq!(status, 422, "the tool is not listed as read-only: {body}");
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/connectors/mymail",
+        Some(json!({"url": url, "auth": "none", "read_tools": ["list_threads"]})),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/sources/inbox",
+        Some(mail_source("mymail")),
+    )
+    .await;
+    assert_eq!(status, 204, "{body}");
+    // Sam may use the same name for their own.
+    let (status, _) = as_user(
+        &base,
+        &sam,
+        put.clone(),
+        "/settings/tenant/sources/inbox",
+        Some(mail_source("mymail")),
+    )
+    .await;
+    assert_eq!(status, 403);
+
+    // Only the owner of a source sees it, refreshes it and acts on it.
+    let (_, sources) = as_user(&base, &robin, fetch.clone(), "/connected/sources", None).await;
+    let mine = sources
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["personal"] == true)
+        .unwrap();
+    assert_eq!(mine["label"], "inbox");
+    let key = mine["name"].as_str().unwrap().to_owned();
+    let (_, sources) = as_user(&base, &owner, fetch.clone(), "/connected/sources", None).await;
+    assert!(
+        sources
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|source| source["personal"] == false),
+        "{sources}"
+    );
+    let refresh = format!("/connected/sources/{key}/refresh");
+    let (status, _) = as_user(&base, &sam, post.clone(), &refresh, None).await;
+    assert_eq!(status, 404, "not Sam's");
+    let (status, body) = as_user(&base, &robin, post.clone(), &refresh, None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["errors"], json!([]), "{body}");
+    assert!(body["items"].as_u64().unwrap() > 0, "{body}");
+
+    // The mail reaches Robin's inbox, and only theirs.
+    let (status, threads) = as_user(&base, &robin, fetch.clone(), "/mail/threads", None).await;
+    assert_eq!(status, 200, "{threads}");
+    let items = threads["items"].as_array().unwrap();
+    assert!(!items.is_empty(), "{threads}");
+    let thread = items[0]["id"].as_str().unwrap().to_owned();
+    let (_, inbox) = as_user(&base, &robin, fetch.clone(), "/inbox", None).await;
+    assert!(inbox.to_string().contains(&thread), "{inbox}");
+    for other in [&owner, &sam] {
+        let (_, threads) = as_user(&base, other, fetch.clone(), "/mail/threads", None).await;
+        assert!(!threads.to_string().contains(&thread), "{threads}");
+        let (_, inbox) = as_user(&base, other, fetch.clone(), "/inbox", None).await;
+        assert!(!inbox.to_string().contains(&thread), "{inbox}");
+        let (status, _) = as_user(
+            &base,
+            other,
+            fetch.clone(),
+            &format!("/connected/items/{thread}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 404);
+    }
+
+    // Deleting the source takes its items with it.
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::DELETE,
+        "/settings/me/sources/inbox",
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (_, threads) = as_user(&base, &robin, fetch, "/mail/threads", None).await;
+    assert!(!threads.to_string().contains(&thread), "{threads}");
+}

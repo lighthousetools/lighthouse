@@ -3,7 +3,7 @@
 use crate::{ConnectorEntry, Layer, LayerData, SwitchKind};
 use lighthouse_config::{
     Config, ConnectorConfig, ConnectorTransport, ModelConfig, ProviderConfig, ProviderKind,
-    RouteConfig,
+    RouteConfig, SourceConfig,
 };
 use lighthouse_router::{PlannedProvider, RouterPlan};
 use std::collections::BTreeMap;
@@ -19,6 +19,8 @@ pub struct Defaults {
     pub connectors: BTreeMap<String, ConnectorConfig>,
     /// Single settings by key, as JSON.
     pub values: BTreeMap<String, serde_json::Value>,
+    /// Connected sources by name.
+    pub sources: BTreeMap<String, SourceConfig>,
 }
 
 impl Defaults {
@@ -29,6 +31,7 @@ impl Defaults {
             routing: config.routing.clone(),
             connectors: config.connectors.clone(),
             values: crate::values::instance_values(config),
+            sources: config.sources.clone(),
         }
     }
 
@@ -152,6 +155,27 @@ impl EffectiveConnector {
     }
 }
 
+/// A connected source as it applies to one user.
+#[derive(Clone, Debug)]
+pub struct EffectiveSource {
+    /// Its name.
+    pub name: String,
+    /// What items and statuses are stored under, unique in the tenant.
+    pub key: String,
+    /// Its settings.
+    pub config: SourceConfig,
+    /// Its settings as stored, absent for one of the instance.
+    pub definition: Option<serde_json::Value>,
+    /// The layer that defines it.
+    pub source: Layer,
+    /// The member it belongs to, for a personal one.
+    pub owner: Option<uuid::Uuid>,
+    /// Whether it refreshes.
+    pub enabled: bool,
+    /// The layer that switched it off, if one did.
+    pub disabled_by: Option<Layer>,
+}
+
 /// Everything that applies to one user in one tenant.
 #[derive(Clone, Debug, Default)]
 pub struct Effective {
@@ -163,6 +187,8 @@ pub struct Effective {
     pub connectors: BTreeMap<String, EffectiveConnector>,
     /// Single settings by key.
     pub values: BTreeMap<String, (serde_json::Value, Layer)>,
+    /// Connected sources by name, including the ones switched off.
+    pub sources: BTreeMap<String, EffectiveSource>,
 }
 
 /// A connector of the tenant or personal layer in the shape of the configuration.
@@ -237,6 +263,21 @@ impl Effective {
                 .values
                 .insert(key.clone(), (value.clone(), Layer::Instance));
         }
+        for (name, config) in &defaults.sources {
+            effective.sources.insert(
+                name.clone(),
+                EffectiveSource {
+                    name: name.clone(),
+                    key: name.clone(),
+                    config: config.clone(),
+                    definition: None,
+                    source: Layer::Instance,
+                    owner: None,
+                    enabled: true,
+                    disabled_by: None,
+                },
+            );
+        }
         for (layer, data) in [(Layer::Tenant, tenant), (Layer::Personal, personal)] {
             if let Some(data) = data {
                 effective.apply(layer, data, allow_private);
@@ -294,6 +335,37 @@ impl Effective {
                 connector.enabled = false;
                 connector.disabled_by = Some(layer);
             }
+        }
+        for ((kind, name), enabled) in &data.switches {
+            if *kind != SwitchKind::Source || *enabled {
+                continue;
+            }
+            if let Some(source) = self.sources.get_mut(name)
+                && source.enabled
+            {
+                source.enabled = false;
+                source.disabled_by = Some(layer);
+            }
+        }
+        for (name, entry) in &data.sources {
+            let Ok(config) = serde_json::from_value::<SourceConfig>(entry.definition.clone())
+            else {
+                tracing::warn!(source = %name, "cannot read a stored source");
+                continue;
+            };
+            self.sources.insert(
+                name.clone(),
+                EffectiveSource {
+                    name: name.clone(),
+                    key: name.clone(),
+                    config,
+                    definition: Some(entry.definition.clone()),
+                    source: layer,
+                    owner: None,
+                    enabled: entry.enabled,
+                    disabled_by: (!entry.enabled).then_some(layer),
+                },
+            );
         }
         for (name, entry) in &data.connectors {
             self.connectors.insert(
@@ -413,6 +485,7 @@ mod tests {
             )]),
             connectors: BTreeMap::from([("grafana".to_owned(), connector)]),
             values: BTreeMap::from([("talk.agent".to_owned(), serde_json::json!("brief"))]),
+            sources: BTreeMap::new(),
         }
     }
 

@@ -15,11 +15,25 @@ pub const WEATHER: &str = "weather";
 pub const TIMEZONE: &str = "timezone";
 /// Language of the apps: `en` or `de`.
 pub const LANGUAGE: &str = "language";
+/// A person's names in services, by connector: `{"linear": "alex"}`. Personal
+/// only. Sources use them to recognize what is the person's own.
+pub const ACCOUNTS: &str = "accounts";
+/// A person's further email addresses, to recognize their own mail. Personal only.
+pub const ADDRESSES: &str = "addresses";
 /// Every key that can be set.
-pub const VALUE_KEYS: &[&str] = &[TALK_AGENT, NOTIFICATIONS, WEATHER, TIMEZONE, LANGUAGE];
+pub const VALUE_KEYS: &[&str] = &[
+    TALK_AGENT,
+    NOTIFICATIONS,
+    WEATHER,
+    TIMEZONE,
+    LANGUAGE,
+    ACCOUNTS,
+    ADDRESSES,
+];
 
 const MAX_TARGETS: usize = 10;
 const MAX_TEXT: usize = 100;
+const MAX_ACCOUNTS: usize = 50;
 
 fn invalid(message: impl Into<String>) -> SettingsError {
     SettingsError::Invalid(message.into())
@@ -145,6 +159,48 @@ pub fn check_value(key: &str, value: &Value, personal: bool) -> Result<Value, Se
             Some("en" | "de") => Ok(value.clone()),
             _ => Err(invalid("`language` is `en` or `de`")),
         },
+        ACCOUNTS | ADDRESSES if !personal => Err(invalid(format!(
+            "`{key}` belongs to a person, not to the workspace"
+        ))),
+        ACCOUNTS => {
+            let accounts = value
+                .as_object()
+                .ok_or_else(|| invalid("`accounts` maps connectors to account names"))?;
+            if accounts.len() > MAX_ACCOUNTS {
+                return Err(invalid(format!("at most {MAX_ACCOUNTS} accounts")));
+            }
+            for (service, account) in accounts {
+                let valid = service.len() <= MAX_TEXT
+                    && account.as_str().is_some_and(|name| {
+                        !name.is_empty()
+                            && name.len() <= MAX_TEXT
+                            && !name.chars().any(char::is_control)
+                    });
+                if !valid {
+                    return Err(invalid("`accounts` maps connectors to account names"));
+                }
+            }
+            Ok(value.clone())
+        }
+        ADDRESSES => {
+            let addresses = value
+                .as_array()
+                .ok_or_else(|| invalid("`addresses` is a list of email addresses"))?;
+            if addresses.len() > MAX_ACCOUNTS {
+                return Err(invalid(format!("at most {MAX_ACCOUNTS} addresses")));
+            }
+            let valid = addresses.iter().all(|address| {
+                address.as_str().is_some_and(|text| {
+                    text.contains('@')
+                        && text.len() <= MAX_TEXT
+                        && !text.contains(char::is_whitespace)
+                })
+            });
+            if !valid {
+                return Err(invalid("`addresses` is a list of email addresses"));
+            }
+            Ok(value.clone())
+        }
         _ => Err(SettingsError::NotFound("setting".to_owned())),
     }
 }
@@ -198,6 +254,13 @@ mod tests {
         assert!(check_value(TIMEZONE, &json!("Mars/Base"), true).is_err());
         assert!(check_value(LANGUAGE, &json!("de"), true).is_ok());
         assert!(check_value(LANGUAGE, &json!("fr"), true).is_err());
+        assert!(check_value(ACCOUNTS, &json!({"linear": "alex"}), true).is_ok());
+        assert!(check_value(ACCOUNTS, &json!({"linear": "alex"}), false).is_err());
+        assert!(check_value(ACCOUNTS, &json!({"linear": 1}), true).is_err());
+        assert!(check_value(ACCOUNTS, &json!(["x"]), true).is_err());
+        assert!(check_value(ADDRESSES, &json!(["a@example.com"]), true).is_ok());
+        assert!(check_value(ADDRESSES, &json!(["nope"]), true).is_err());
+        assert!(check_value(ADDRESSES, &json!("a@example.com"), true).is_err());
         assert!(matches!(
             check_value("server.bind", &json!("x"), false),
             Err(SettingsError::NotFound(_))

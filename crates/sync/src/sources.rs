@@ -54,8 +54,18 @@ pub enum SourceError {
 /// A source with its preset applied.
 #[derive(Clone, Debug)]
 pub struct Source {
-    /// Source name.
+    /// Unique in the tenant: what items and statuses are stored under, and what
+    /// the API names it by. A shared source's is its name; a personal source's
+    /// is `<name>@<user>`, so members can name theirs alike.
     pub name: String,
+    /// The name people gave it.
+    pub label: String,
+    /// The member a personal source belongs to. Its items reach only them, and
+    /// it syncs with their connectors and tokens. `None` is shared in the tenant.
+    pub owner: Option<uuid::Uuid>,
+    /// Why it cannot refresh now, such as a connector that is switched off or
+    /// a tool that is no longer listed as read-only.
+    pub problem: Option<String>,
     /// Connector whose tools are called.
     pub connector: String,
     /// Domain.
@@ -77,6 +87,11 @@ impl Source {
     pub fn tool(&self, tool: &str) -> String {
         format!("{}.{tool}", self.connector)
     }
+}
+
+/// The key of a personal source of a member.
+pub fn personal_key(name: &str, user: uuid::Uuid) -> String {
+    format!("{name}@{user}")
 }
 
 /// Returns a bundled preset.
@@ -165,6 +180,9 @@ pub fn resolve(
         .unwrap_or_else(|| domain.clone());
     Ok(Source {
         name: name.to_owned(),
+        label: name.to_owned(),
+        owner: None,
+        problem: None,
         connector: config.connector.clone(),
         service,
         domain,

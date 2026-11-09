@@ -111,17 +111,30 @@ fn payload(source: &Source, kind: &str, stored_id: uuid::Uuid, item: &MappedItem
     })
 }
 
-/// Refreshes the configured sources.
+/// The sources that exist now. Implementations may change between calls, when
+/// tenants and people add or remove sources.
+pub trait SourceList: Send + Sync {
+    /// Every source of the tenant, shared and personal.
+    fn sources(&self) -> Arc<Vec<Source>>;
+}
+
+impl SourceList for Arc<Vec<Source>> {
+    fn sources(&self) -> Arc<Vec<Source>> {
+        self.clone()
+    }
+}
+
+/// Refreshes the sources of a tenant.
 pub struct Syncer {
     store: SyncStore,
     tools: Arc<dyn ToolHostFactory>,
-    sources: Vec<Source>,
+    sources: Arc<dyn SourceList>,
 }
 
 impl std::fmt::Debug for Syncer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Syncer")
-            .field("sources", &self.sources.len())
+            .field("sources", &self.sources.sources().len())
             .finish_non_exhaustive()
     }
 }
@@ -129,6 +142,15 @@ impl std::fmt::Debug for Syncer {
 impl Syncer {
     /// Creates a syncer. The tools should reach the connectors directly.
     pub fn new(store: SyncStore, tools: Arc<dyn ToolHostFactory>, sources: Vec<Source>) -> Self {
+        Self::live(store, tools, Arc::new(Arc::new(sources)))
+    }
+
+    /// Creates a syncer that asks for its sources on every call.
+    pub fn live(
+        store: SyncStore,
+        tools: Arc<dyn ToolHostFactory>,
+        sources: Arc<dyn SourceList>,
+    ) -> Self {
         Self {
             store,
             tools,
@@ -142,13 +164,17 @@ impl Syncer {
     }
 
     /// Returns the sources.
-    pub fn sources(&self) -> &[Source] {
-        &self.sources
+    pub fn sources(&self) -> Arc<Vec<Source>> {
+        self.sources.sources()
     }
 
     /// Returns a source.
-    pub fn source(&self, name: &str) -> Option<&Source> {
-        self.sources.iter().find(|source| source.name == name)
+    pub fn source(&self, name: &str) -> Option<Source> {
+        self.sources
+            .sources()
+            .iter()
+            .find(|source| source.name == name)
+            .cloned()
     }
 
     /// Returns the sources whose interval has passed since their last attempt.
@@ -156,6 +182,7 @@ impl Syncer {
         let statuses = self.store.statuses().await?;
         Ok(self
             .sources
+            .sources()
             .iter()
             .filter(|source| {
                 let last = statuses
@@ -174,6 +201,15 @@ impl Syncer {
         let source = self
             .source(name)
             .ok_or_else(|| SyncError::UnknownSource(name.to_owned()))?;
+        let source = &source;
+        if let Some(problem) = &source.problem {
+            self.store.record_sync(name, Err(problem)).await?;
+            return Ok(SyncReport {
+                source: name.to_owned(),
+                errors: vec![problem.clone()],
+                ..SyncReport::default()
+            });
+        }
         let last_success = self
             .store
             .statuses()
@@ -311,6 +347,7 @@ impl Syncer {
         managed.extend(DERIVED_FLAGS.iter().map(|flag| (*flag).to_owned()));
         let stored = self
             .store
+            .for_user(source.owner)
             .upsert(
                 &source.name,
                 &source.domain,

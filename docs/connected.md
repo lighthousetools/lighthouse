@@ -449,3 +449,35 @@ resolves when the check passes again.
 | `lht sources check` | Resolves every source with its preset, checks that collections only read and lists the actions |
 | `lht sources refresh [name]` | Refreshes one source, or all, on the running server |
 | `lht inbox` | Prints the unified inbox |
+
+## Sources in layers
+
+Sources come in the same three layers as providers and connectors (see
+[configuration.md](configuration.md#layers)): `[sources.*]` of `lighthouse.toml` as instance defaults, shared sources an
+owner or admin adds for the tenant, and personal sources each member adds for themselves.
+
+| Endpoint | Purpose |
+|---|---|
+| `PUT /settings/{layer}/sources/{name}` | Adds or replaces a source: `{"definition": {...}, "enabled": true}`. `definition` has the shape of `[sources.<name>]` |
+| `DELETE /settings/{layer}/sources/{name}` | Deletes a source with its items |
+| `PUT /settings/{layer}/sources/{name}/enabled` | Switches one of the layer on or off, or for the tenant one of the instance |
+| `GET /settings/presets` | Under `sources`, suggestions to start from, for GitHub, Linear, a mailbox and a calendar |
+
+A personal source belongs to the member who adds it:
+
+- All its items carry their `user_id`, in every domain. They reach only their inbox, lists, search and reviews.
+- It syncs with that member's connectors and tokens, including a connector only they have.
+- Its events reach only automations of that member, and it raises no shared alerts.
+- `GET /connected/sources` lists it only for them. Its `name` there is `<name>@<user>`, the key of its items and of the
+  refresh and action paths, and `label` is the name they gave it.
+
+A shared source works as before: its mail and calendar items belong to the tenant's first owner, and other items are
+shared. A person cannot switch a shared source off, since it keeps refreshing for the others.
+
+A source added in the apps can only be saved if each collection calls a tool its connector lists in `read_tools`. If
+that changes later, for example because the connector is switched off, the source stays listed with a `problem` and does
+not refresh until it is fixed.
+
+A person's `accounts` (names by connector) and `addresses` (further email addresses) are single settings of their
+own layer, see [api.md](api.md#providers-models-and-connectors). Their sources use them to recognize what is theirs, and
+system prompts of their runs name them. `[owner] accounts` only apply to the first owner of the default tenant.

@@ -56,8 +56,8 @@ pub use contracts::{ComposeRequest, Composed, NewTemplate, fill as fill_template
 pub use decks::{DeckAttachment, DeckBrief, NewDeck, render_html as render_deck};
 pub use holdings::{HoldingNotes, NewThesis, ReminderRequest, ReminderResult};
 pub use layers::{
-    ConnectorView, LayerView, ModelView, ProviderView, RouteView, SettingsView, StoredProvider,
-    StoredRoute, StoredSwitch, ValueView,
+    ConnectorView, LayerView, ModelView, ProviderView, RouteView, SettingsView, SourceView,
+    StoredProvider, StoredRoute, StoredSwitch, ValueView,
 };
 pub use pipeline::{DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult, median};
 pub use posts::{
@@ -289,8 +289,11 @@ pub struct ApiState {
     pub events: EventBus,
     /// Tasks, rules, memory, alerts and briefing documents.
     pub desk: Desk,
-    /// Time zone of the owner, for dates such as "today".
+    /// Time zone of the person a request is for, for dates such as "today".
     pub zone: chrono_tz::Tz,
+    /// Time zone of the tenant, for the months of its budget, which are the
+    /// same for all its members.
+    pub tenant_zone: chrono_tz::Tz,
     /// Automations.
     pub automations: Arc<dyn Automations>,
     /// Cache of mail, calendar, issues and pull requests.
@@ -310,11 +313,26 @@ pub struct ApiState {
     pub instance_vault: Option<Vault>,
 }
 
+/// The time zone a user has set, or the tenant's for `None`.
+fn zone_setting(
+    settings: &lighthouse_settings::TenantSettings,
+    user: Option<Uuid>,
+) -> Option<chrono_tz::Tz> {
+    settings
+        .effective(user)
+        .values
+        .get(lighthouse_settings::TIMEZONE)
+        .and_then(|(zone, _)| zone.as_str()?.parse().ok())
+}
+
 impl ApiState {
     /// The state as one user sees it: their personal data, and the shared
     /// data of the tenant. `None` is the admin token, which sees everything.
     pub fn for_user(&self, user: Option<Uuid>) -> Self {
+        let tenant_zone = self.tenant_zone;
         Self {
+            zone: zone_setting(&self.settings, user).unwrap_or(self.zone),
+            tenant_zone: zone_setting(&self.settings, None).unwrap_or(tenant_zone),
             audit: self.audit.for_user(user),
             desk: self.desk.for_user(user),
             sessions: self.sessions.for_user(user),
@@ -677,7 +695,8 @@ impl utoipa::Modify for SecurityAddon {
         ready::feed, ready::dismiss_draft, ready::snooze, ready::unsnooze, ready::rewrite,
         ready::edit_text, ready::run_basis, settings::get_budget, settings::set_budget,
         settings::models,
-        layers::values, layers::put_value, layers::delete_value,
+        layers::values, layers::put_value, layers::delete_value, layers::put_source,
+        layers::delete_source, layers::switch_source,
         layers::presets, layers::effective, layers::entries, layers::changes,
         layers::put_provider, layers::delete_provider, layers::put_model, layers::delete_model,
         layers::put_route, layers::delete_route, layers::put_connector, layers::delete_connector,
@@ -752,13 +771,13 @@ impl utoipa::Modify for SecurityAddon {
         DeckBrief, DeckAttachment, lighthouse_desk::Variant, NewTemplate, ComposeRequest, Composed,
         DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult, NewThesis, HoldingNotes, ReminderRequest,
         ReminderResult,
-        ValueView, SettingsView, ProviderView, ModelView, RouteView, ConnectorView, LayerView, StoredProvider,
+        ValueView, SourceView, lighthouse_settings::SourceInput, SettingsView, ProviderView, ModelView, RouteView, ConnectorView, LayerView, StoredProvider,
         StoredRoute, StoredSwitch, lighthouse_settings::Layer, lighthouse_settings::ProviderInput,
         lighthouse_settings::ModelInput, lighthouse_settings::RouteInput,
         lighthouse_settings::ConnectorInput, lighthouse_settings::SwitchInput,
         lighthouse_settings::ChangeRecord, lighthouse_settings::Presets,
         lighthouse_settings::PresetProvider, lighthouse_settings::PresetModel,
-        lighthouse_settings::PresetConnector,
+        lighthouse_settings::PresetConnector, lighthouse_settings::PresetSource,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -837,6 +856,14 @@ pub fn router_with(state: Instance, extensions: Extensions) -> Router {
         )
         .route("/settings/models", get(settings::models))
         .route("/settings/presets", get(layers::presets))
+        .route(
+            "/settings/{layer}/sources/{name}",
+            put(layers::put_source).delete(layers::delete_source),
+        )
+        .route(
+            "/settings/{layer}/sources/{name}/enabled",
+            put(layers::switch_source),
+        )
         .route("/settings/values", get(layers::values))
         .route(
             "/settings/{layer}/values/{key}",
@@ -1353,6 +1380,9 @@ mod tests {
         async fn sources(&self) -> Result<Vec<SourceInfo>, String> {
             Ok(vec![
                 SourceInfo {
+                    label: "github".to_owned(),
+                    personal: false,
+                    problem: None,
                     name: "github".to_owned(),
                     connector: "github".to_owned(),
                     domain: "code".to_owned(),
@@ -1365,6 +1395,9 @@ mod tests {
                     stale: true,
                 },
                 SourceInfo {
+                    label: "mail".to_owned(),
+                    personal: false,
+                    problem: None,
                     name: "mail".to_owned(),
                     connector: "mail".to_owned(),
                     domain: "mail".to_owned(),
@@ -1513,6 +1546,7 @@ mod tests {
             events: EventBus::new(),
             desk: Desk::new(store.clone(), tenant),
             zone: chrono_tz::Europe::Berlin,
+            tenant_zone: chrono_tz::Europe::Berlin,
             automations: Arc::new(FakeAutomations),
             sync: lighthouse_sync::SyncStore::new(store.clone(), tenant),
             connected: Arc::new(FakeConnected),

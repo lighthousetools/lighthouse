@@ -49,7 +49,27 @@ impl ConnectedService {
         }
     }
 
+    /// Whether the user the current task acts for may use a source. Background
+    /// work and the admin token, which act for nobody, may use every one.
+    fn usable(&self, source: &lighthouse_sync::Source) -> bool {
+        match (source.owner, lighthouse_audit::acting_user::current()) {
+            (None, _) | (_, None) => true,
+            (Some(owner), Some(user)) => owner == user,
+        }
+    }
+
     async fn handle(&self, report: &SyncReport) -> anyhow::Result<()> {
+        // What happens in a person's own source stays with them: shared
+        // automations and alerts would show it to the whole tenant.
+        let personal = self
+            .syncer
+            .source(&report.source)
+            .is_some_and(|source| source.owner.is_some());
+        if personal {
+            self.events
+                .emit("connected.changed", json!({"source": report.source}));
+            return Ok(());
+        }
         for event in &report.events {
             self.engine.emit(&event.name, event.payload.clone()).await;
         }
@@ -87,7 +107,12 @@ impl ConnectedService {
 
     /// Refreshes a source and passes on what changed.
     pub async fn refresh_source(&self, name: &str) -> anyhow::Result<SyncReport> {
-        let report = self.syncer.sync(name, Utc::now()).await?;
+        // A personal source syncs with its owner's connectors and tokens.
+        let owner = self.syncer.source(name).and_then(|source| source.owner);
+        let report = self
+            .runtime
+            .as_user(owner, self.syncer.sync(name, Utc::now()))
+            .await?;
         for error in &report.errors {
             tracing::warn!(source = %name, %error, "refresh failed in part");
         }
@@ -105,9 +130,6 @@ impl ConnectedService {
 
     /// Refreshes due sources until the process ends.
     pub async fn run(self: Arc<Self>) {
-        if self.syncer.sources().is_empty() {
-            return;
-        }
         let mut ticker = tokio::time::interval(TICK);
         loop {
             ticker.tick().await;
@@ -149,6 +171,7 @@ impl Connected for ConnectedService {
             .syncer
             .sources()
             .iter()
+            .filter(|source| self.usable(source))
             .map(|source| {
                 let status = statuses
                     .iter()
@@ -160,6 +183,9 @@ impl Connected for ConnectedService {
                     .and_then(|status| status.last_success_at)
                     .is_none_or(|time| now - time > limit);
                 SourceInfo {
+                    label: source.label.clone(),
+                    personal: source.owner.is_some(),
+                    problem: source.problem.clone(),
                     name: source.name.clone(),
                     connector: source.connector.clone(),
                     domain: source.domain.clone(),
@@ -194,12 +220,20 @@ impl Connected for ConnectedService {
 
     async fn refresh(&self, source: Option<&str>) -> Result<Vec<RefreshResult>, String> {
         let names: Vec<String> = match source {
-            Some(name) if self.syncer.source(name).is_none() => return Ok(Vec::new()),
+            Some(name)
+                if !self
+                    .syncer
+                    .source(name)
+                    .is_some_and(|source| self.usable(&source)) =>
+            {
+                return Ok(Vec::new());
+            }
             Some(name) => vec![name.to_owned()],
             None => self
                 .syncer
                 .sources()
                 .iter()
+                .filter(|source| self.usable(source))
                 .map(|source| source.name.clone())
                 .collect(),
         };
@@ -226,6 +260,13 @@ impl Connected for ConnectedService {
         item: Option<&SyncedItem>,
         input: Value,
     ) -> Result<ActionResult, ActionError> {
+        if self
+            .syncer
+            .source(source)
+            .is_some_and(|found| !self.usable(&found))
+        {
+            return Err(ActionError::Rejected(format!("unknown source `{source}`")));
+        }
         let prepared = self
             .syncer
             .prepare_action(source, action, item, &input)

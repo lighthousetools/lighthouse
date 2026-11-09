@@ -26,6 +26,15 @@ const INBOX_KINDS: [&str; 5] = ["thread", "message", "issue", "comment", "pull_r
 /// A configured source with its freshness.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct SourceInfo {
+    /// The name people gave it. `name` is what the API and items refer to it by.
+    #[serde(default)]
+    pub label: String,
+    /// Whether it belongs to the caller alone. Its items reach nobody else.
+    #[serde(default)]
+    pub personal: bool,
+    /// Why it cannot refresh now.
+    #[serde(default)]
+    pub problem: Option<String>,
     /// Source name.
     pub name: String,
     /// Connector it calls.

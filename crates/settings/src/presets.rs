@@ -66,6 +66,18 @@ pub struct PresetConnector {
     pub draft_tools: Vec<String>,
 }
 
+/// A suggested connected source.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PresetSource {
+    /// Suggested name.
+    pub id: String,
+    /// Display name.
+    pub label: String,
+    /// The source in the shape of `[sources.<name>]`, to edit.
+    pub definition: serde_json::Value,
+}
+
 /// Every suggestion.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -75,6 +87,9 @@ pub struct Presets {
     /// Connectors.
     #[serde(default)]
     pub connectors: Vec<PresetConnector>,
+    /// Connected sources.
+    #[serde(default)]
+    pub sources: Vec<PresetSource>,
 }
 
 /// The suggestions of `presets.toml`.
@@ -108,6 +123,13 @@ mod tests {
             lighthouse_router::net::check_url(&connector.url).unwrap();
             assert!(crate::store::parse_auth(&connector.auth).is_some());
             validate::tools("read_tools", &connector.read_tools).unwrap();
+        }
+        assert!(presets.sources.len() >= 4);
+        for source in &presets.sources {
+            validate::name("source", &source.id).unwrap();
+            let config: lighthouse_config::SourceConfig =
+                serde_json::from_value(source.definition.clone()).unwrap();
+            lighthouse_sync::sources::resolve(&source.id, &config, Vec::new()).unwrap();
         }
     }
 }

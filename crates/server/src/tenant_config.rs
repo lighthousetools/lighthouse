@@ -5,17 +5,26 @@
 //! `Runtime::as_run_user`). Background work without a user, such as source
 //! refreshes, sees the tenant layer. Each call answers from one snapshot of
 //! the settings, so a run that asked once keeps a consistent set.
+//!
+//! The same resolver names the person a run works for and lists the sources of
+//! a tenant, shared and personal, each resolved for the user it belongs to.
 
+use async_trait::async_trait;
+use chrono_tz::Tz;
 use lighthouse_audit::acting_user;
 use lighthouse_mcp::{Connection, ConnectorSource};
-use lighthouse_runtime::{KeyPlace, KeyedPlan, PlanSource};
-use lighthouse_settings::{Layer, TenantSettings};
+use lighthouse_runtime::{KeyPlace, KeyedPlan, People, Person, PlanSource};
+use lighthouse_settings::{
+    ACCOUNTS, ADDRESSES, EffectiveSource, Layer, Snapshot, TIMEZONE, TenantSettings, source_problem,
+};
+use lighthouse_sync::{Source, SourceList};
 use lighthouse_vault::Vault;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 type Connections = Arc<BTreeMap<String, Connection>>;
+type CachedSources = (Arc<Snapshot>, Arc<Vec<Source>>);
 
 /// Resolves providers and connectors of one tenant per user.
 pub struct TenantConfig {
@@ -23,6 +32,29 @@ pub struct TenantConfig {
     vault: Vault,
     instance: Option<Vault>,
     connections: Mutex<HashMap<Option<Uuid>, (i64, Connections)>>,
+    /// The person of `[owner]`, in the default tenant.
+    instance_owner: Option<InstanceOwner>,
+    zone: Tz,
+    sources: Mutex<Option<CachedSources>>,
+}
+
+/// What `[owner]` says about the first owner of the default tenant.
+#[derive(Clone, Debug, Default)]
+pub struct InstanceOwner {
+    /// Display name.
+    pub name: String,
+    /// Email address.
+    pub email: String,
+    /// Account names by connector.
+    pub accounts: BTreeMap<String, String>,
+}
+
+/// One person with what identifies them in services.
+struct Identity {
+    name: String,
+    email: String,
+    accounts: BTreeMap<String, String>,
+    addresses: Vec<String>,
 }
 
 impl TenantConfig {
@@ -34,7 +66,95 @@ impl TenantConfig {
             vault,
             instance,
             connections: Mutex::default(),
+            instance_owner: None,
+            zone: chrono_tz::UTC,
+            sources: Mutex::default(),
         }
+    }
+
+    /// Names the person of `[owner]` and the default time zone.
+    #[must_use]
+    pub fn with_person_defaults(mut self, owner: Option<InstanceOwner>, zone: Tz) -> Self {
+        self.instance_owner = owner;
+        self.zone = zone;
+        self
+    }
+
+    /// Who a user is, or the person the tenant works for without one.
+    fn identity(&self, snapshot: &Snapshot, user: Option<Uuid>) -> Option<Identity> {
+        let member = match user {
+            Some(user) => snapshot.member(user),
+            None => snapshot.primary(),
+        };
+        let primary = snapshot.primary().map(|primary| primary.id);
+        let owner = self
+            .instance_owner
+            .as_ref()
+            .filter(|_| member.is_none_or(|member| Some(member.id) == primary));
+        let mut identity = match (member, owner) {
+            (Some(member), Some(owner)) => Identity {
+                name: member.name.clone(),
+                email: member.email.clone(),
+                accounts: owner.accounts.clone(),
+                addresses: Vec::new(),
+            },
+            (Some(member), None) => Identity {
+                name: member.name.clone(),
+                email: member.email.clone(),
+                accounts: BTreeMap::new(),
+                addresses: Vec::new(),
+            },
+            (None, Some(owner)) => Identity {
+                name: owner.name.clone(),
+                email: owner.email.clone(),
+                accounts: owner.accounts.clone(),
+                addresses: Vec::new(),
+            },
+            (None, None) => return None,
+        };
+        let values = member.and_then(|member| snapshot.personal.get(&member.id));
+        if let Some(values) = values.map(|layer| &layer.values) {
+            if let Some(accounts) = values.get(ACCOUNTS).and_then(|value| value.as_object()) {
+                for (service, account) in accounts {
+                    if let Some(account) = account.as_str() {
+                        identity
+                            .accounts
+                            .insert(service.clone(), account.to_owned());
+                    }
+                }
+            }
+            if let Some(addresses) = values.get(ADDRESSES).and_then(|value| value.as_array()) {
+                identity.addresses = addresses
+                    .iter()
+                    .filter_map(|address| address.as_str().map(str::to_owned))
+                    .collect();
+            }
+        }
+        Some(identity)
+    }
+
+    fn resolve_source(&self, snapshot: &Snapshot, source: &EffectiveSource) -> Option<Source> {
+        let identity = self.identity(snapshot, source.owner);
+        let mut accounts = Vec::new();
+        if let Some(identity) = identity {
+            accounts.extend(identity.accounts.get(&source.config.connector).cloned());
+            if !identity.email.is_empty() {
+                accounts.push(identity.email);
+            }
+            accounts.extend(identity.addresses);
+        }
+        let mut resolved =
+            match lighthouse_sync::sources::resolve(&source.key, &source.config, accounts) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    tracing::warn!(source = %source.key, %error, "cannot use a source");
+                    return None;
+                }
+            };
+        resolved.label.clone_from(&source.name);
+        resolved.owner = source.owner;
+        resolved.problem = source_problem(&resolved, &self.settings.effective(source.owner));
+        Some(resolved)
     }
 
     /// The settings it reads.
@@ -70,6 +190,60 @@ impl TenantConfig {
                 })
                 .collect(),
         )
+    }
+}
+
+impl SourceList for TenantConfig {
+    fn sources(&self) -> Arc<Vec<Source>> {
+        let snapshot = self.settings.snapshot();
+        let mut cache = self
+            .sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((cached, sources)) = cache.as_ref()
+            && Arc::ptr_eq(cached, &snapshot)
+        {
+            return sources.clone();
+        }
+        let sources: Arc<Vec<Source>> = Arc::new(
+            self.settings
+                .all_sources()
+                .iter()
+                .filter_map(|source| self.resolve_source(&snapshot, source))
+                .collect(),
+        );
+        *cache = Some((snapshot, sources.clone()));
+        sources
+    }
+}
+
+#[async_trait]
+impl People for TenantConfig {
+    async fn person(&self, user: Option<Uuid>) -> Option<Person> {
+        // Someone who just joined may not be in the snapshot yet.
+        if user.is_some_and(|user| self.settings.snapshot().member(user).is_none())
+            && let Err(error) = self.settings.reload().await
+        {
+            tracing::warn!(%error, "cannot reload the settings");
+        }
+        let snapshot = self.settings.snapshot();
+        let identity = self.identity(&snapshot, user)?;
+        let mut context = format!("You work for {} ({}).", identity.name, identity.email);
+        for (service, account) in &identity.accounts {
+            context.push_str(&format!(" Their {service} account is {account}."));
+        }
+        let zone = self
+            .settings
+            .effective(user)
+            .values
+            .get(TIMEZONE)
+            .and_then(|(zone, _)| zone.as_str()?.parse().ok())
+            .unwrap_or(self.zone);
+        Some(Person {
+            context,
+            email: identity.email,
+            zone,
+        })
     }
 }
 
@@ -199,5 +373,154 @@ mod tests {
             "cached until the next change"
         );
         assert_eq!(config.settings().snapshot().revision, 3);
+    }
+
+    #[tokio::test]
+    async fn people_and_their_sources_resolve_from_their_own_settings() {
+        let store = fresh_store().await;
+        for (id, email, role) in [
+            (Uuid::from_u128(1), "alex@example.com", "owner"),
+            (Uuid::from_u128(2), "sam@example.com", "member"),
+        ] {
+            lighthouse_store::sqlx::query(
+                "INSERT INTO users (id, email, name) VALUES ($1, $2, 'Person')",
+            )
+            .bind(id)
+            .bind(email)
+            .execute(store.pool())
+            .await
+            .unwrap();
+            lighthouse_store::sqlx::query(
+                "INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, $3)",
+            )
+            .bind(TenantId::DEFAULT.as_uuid())
+            .bind(id)
+            .bind(role)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        }
+        let (alex, sam) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let key = base64::engine::general_purpose::STANDARD.encode([3u8; 32]);
+        let vault = Vault::new(
+            store.clone(),
+            TenantId::DEFAULT,
+            &MasterKey::from_base64(&key).unwrap(),
+        );
+        let settings = TenantSettings::open(
+            store.clone(),
+            TenantId::DEFAULT,
+            Arc::new(Defaults::default()),
+            Options {
+                allow_private_endpoints: true,
+                ..Options::default()
+            },
+        )
+        .await
+        .unwrap();
+        settings
+            .set_value(
+                Some(sam),
+                Some(sam),
+                ACCOUNTS,
+                &serde_json::json!({"mail": "sam-99"}),
+            )
+            .await
+            .unwrap();
+        settings
+            .set_value(
+                Some(sam),
+                Some(sam),
+                ADDRESSES,
+                &serde_json::json!(["sam@home.example.com"]),
+            )
+            .await
+            .unwrap();
+        settings
+            .set_value(
+                Some(sam),
+                Some(sam),
+                TIMEZONE,
+                &serde_json::json!("Asia/Tokyo"),
+            )
+            .await
+            .unwrap();
+        let connector = ConnectorInput {
+            url: "http://10.0.0.1/mcp".to_owned(),
+            auth: "none".to_owned(),
+            client_id: None,
+            scopes: Vec::new(),
+            read_tools: vec!["list".to_owned()],
+            draft_tools: Vec::new(),
+            enabled: true,
+        };
+        settings
+            .set_connector(Some(sam), Some(sam), "mail", &connector)
+            .await
+            .unwrap();
+        let definition = serde_json::json!({"connector": "mail", "domain": "mail", "collections": {
+            "inbox": {"tool": "list", "kind": "thread", "fields": {"external_id": "id"}}}});
+        settings
+            .set_source(
+                Some(sam),
+                Some(sam),
+                "inbox",
+                &lighthouse_settings::SourceInput {
+                    definition: definition.clone(),
+                    enabled: true,
+                },
+            )
+            .await
+            .unwrap();
+        let owner = InstanceOwner {
+            name: "Configured".to_owned(),
+            email: "configured@example.com".to_owned(),
+            accounts: BTreeMap::from([("linear".to_owned(), "alex-account".to_owned())]),
+        };
+        let config = TenantConfig::new(settings.clone(), vault, None)
+            .with_person_defaults(Some(owner), chrono_tz::Europe::Berlin);
+        let first = config.person(None).await.unwrap();
+        assert_eq!(first.email, "alex@example.com");
+        assert!(
+            first.context.contains("linear account is alex-account"),
+            "{}",
+            first.context
+        );
+        assert_eq!(first.zone, chrono_tz::Europe::Berlin);
+        let them = config.person(Some(sam)).await.unwrap();
+        assert_eq!(them.email, "sam@example.com");
+        assert!(
+            them.context.contains("mail account is sam-99"),
+            "{}",
+            them.context
+        );
+        assert!(!them.context.contains("alex-account"), "{}", them.context);
+        assert_eq!(them.zone, chrono_tz::Asia::Tokyo);
+        assert!(config.person(Some(alex)).await.is_some());
+        let sources = config.sources();
+        assert_eq!(sources.len(), 1);
+        let source = &sources[0];
+        assert_eq!((source.label.as_str(), source.owner), ("inbox", Some(sam)));
+        assert_eq!(source.name, format!("inbox@{sam}"));
+        assert!(source.problem.is_none(), "{:?}", source.problem);
+        assert_eq!(
+            source.accounts,
+            ["sam-99", "sam@example.com", "sam@home.example.com"]
+        );
+        assert!(
+            Arc::ptr_eq(&sources, &config.sources()),
+            "cached until a change"
+        );
+        settings
+            .switch_connector(Some(sam), Some(sam), "mail", false)
+            .await
+            .unwrap();
+        assert!(
+            config.sources()[0]
+                .problem
+                .as_deref()
+                .unwrap()
+                .contains("switched off")
+        );
     }
 }

@@ -418,6 +418,7 @@ async fn limits_hold_per_layer_and_per_tenant() {
         providers: 1,
         models: 1,
         connectors: 1,
+        sources: 1,
         tenant_entries: 4,
     };
     let settings = settings(
@@ -599,4 +600,52 @@ async fn members_tokens_never_reach_a_url_they_did_not_connect_to() {
     token(Some(sam), "mcp:own").await;
     settings.delete_connector(None, None, "own").await.unwrap();
     assert_eq!(count(Some(sam)).await, 0);
+}
+
+#[tokio::test]
+async fn a_failed_step_leaves_nothing_and_limits_hold_across_processes() {
+    let store = fresh_store().await;
+    let limits = SettingsLimits {
+        tenant_entries: 3,
+        ..SettingsLimits::default()
+    };
+    let options = Options {
+        allow_private_endpoints: true,
+        limits,
+    };
+    let first = settings(&store, TenantId::DEFAULT, options).await;
+    let second = settings(&store, TenantId::DEFAULT, options).await;
+    first
+        .set_provider(None, None, "one", &provider("openai", None))
+        .await
+        .unwrap();
+    first
+        .set_provider(None, None, "two", &provider("openai", None))
+        .await
+        .unwrap();
+    first
+        .set_model(None, None, "two", "text", &model("m"))
+        .await
+        .unwrap();
+    // Above the limit: the provider entry for the lower layer's name is rolled back too.
+    let revision = first.snapshot().revision;
+    assert!(matches!(
+        first
+            .set_model(None, None, "anthropic", "text", &model("x"))
+            .await,
+        Err(SettingsError::Limit(_))
+    ));
+    first.reload().await.unwrap();
+    assert!(!first.snapshot().tenant.providers.contains_key("anthropic"));
+    assert_eq!(first.snapshot().revision, revision, "nothing happened");
+    // Two processes that see old snapshots still count what the other wrote.
+    first.delete_model(None, None, "two", "text").await.unwrap();
+    let input = provider("openai", None);
+    let (a, b) = tokio::join!(
+        first.set_provider(None, None, "race-a", &input),
+        second.set_provider(None, None, "race-b", &input),
+    );
+    assert_eq!([a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count(), 1);
+    second.reload().await.unwrap();
+    assert_eq!(second.snapshot().entries(), 3);
 }
