@@ -2,6 +2,7 @@
 
 mod client;
 mod demo;
+mod import;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
@@ -96,6 +97,9 @@ enum Command {
         /// Tenant ID, see `lht tenants`.
         tenant: uuid::Uuid,
     },
+    /// Imports what Claude Code knows about you: memories become rules, facts and Brain entries.
+    #[command(subcommand)]
+    Import(ImportCommand),
     /// Invites someone to the current tenant.
     Invite {
         /// Email address.
@@ -104,6 +108,80 @@ enum Command {
         #[arg(long, default_value = "member")]
         role: String,
     },
+}
+
+#[derive(Subcommand)]
+enum ImportCommand {
+    /// Reads memories and skills from a Claude Code folder.
+    Claude {
+        /// The Claude Code folder.
+        #[arg(long, default_value = "~/.claude")]
+        dir: String,
+        /// Only show what would be imported.
+        #[arg(long)]
+        dry_run: bool,
+        /// Write the plan as JSON to review or edit, then import it with `lht import file`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Copy the skills into this folder, for a server that reads skills from it.
+        #[arg(long)]
+        skills_dir: Option<PathBuf>,
+    },
+    /// Imports a plan from a JSON file with `rules`, `facts` and `brain`.
+    File {
+        /// The JSON file.
+        path: PathBuf,
+        /// Only show what would be imported.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+fn expand(path: &str) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => home_dir().join(rest),
+        None => PathBuf::from(path),
+    }
+}
+
+fn print_plan(plan: &import::Plan) {
+    println!(
+        "{} rules, {} facts, {} Brain entries, {} skills",
+        plan.rules.len(),
+        plan.facts.len(),
+        plan.brain.len(),
+        plan.skills.len()
+    );
+    for rule in &plan.rules {
+        println!("rule   {}", rule.text);
+    }
+    for fact in &plan.facts {
+        println!("fact   {}", fact.text);
+    }
+    for entry in &plan.brain {
+        println!(
+            "brain  {} ({} characters)",
+            entry.title,
+            entry.body.chars().count()
+        );
+    }
+    for skill in &plan.skills {
+        let note = if skill.has_references {
+            " (has reference files, which are not loaded)"
+        } else {
+            ""
+        };
+        println!("skill  {}{note}", skill.name);
+    }
+    for warning in &plan.warnings {
+        println!("note   {warning}");
+    }
 }
 
 #[derive(Subcommand)]
@@ -606,6 +684,50 @@ async fn main() -> anyhow::Result<()> {
                     println!("  error: {}", error.as_str().unwrap_or_default());
                 }
             }
+            Ok(())
+        }
+        Command::Import(command) => {
+            let (plan, dry_run) = match command {
+                ImportCommand::Claude {
+                    dir,
+                    dry_run,
+                    out,
+                    skills_dir,
+                } => {
+                    let plan = import::from_claude(&expand(&dir), &home_dir())?;
+                    if let Some(target) = skills_dir {
+                        println!(
+                            "copied {} skills to {}",
+                            import::copy_skills(&plan, &target)?,
+                            target.display()
+                        );
+                    }
+                    if let Some(out) = out {
+                        std::fs::write(&out, serde_json::to_string_pretty(&plan)?)?;
+                        println!("wrote the plan to {}", out.display());
+                        return Ok(());
+                    }
+                    (plan, dry_run)
+                }
+                ImportCommand::File { path, dry_run } => {
+                    let text = std::fs::read_to_string(&path)
+                        .with_context(|| format!("cannot read {}", path.display()))?;
+                    (
+                        serde_json::from_str(&text).context("not an import plan")?,
+                        dry_run,
+                    )
+                }
+            };
+            print_plan(&plan);
+            if dry_run {
+                return Ok(());
+            }
+            let outcome = import::apply(&remote.client(&config)?, &plan).await?;
+            let [rules, facts, entries] = outcome.created;
+            println!(
+                "created {rules} rules, {facts} facts and {entries} Brain entries, skipped {} that exist",
+                outcome.skipped
+            );
             Ok(())
         }
         Command::Inbox { limit } => {
