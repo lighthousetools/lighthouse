@@ -477,7 +477,7 @@ pub(crate) async fn send_message(
         // instead of waiting for a stop that never comes.
         sessions.take_messages(node, &id).await.map_err(internal)?;
         let resume = NewLaunch {
-            node,
+            node: node.to_string(),
             cwd: earlier.cwd,
             prompt: message.text.clone(),
             resume: Some(id.clone()),

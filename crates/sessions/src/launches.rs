@@ -23,8 +23,8 @@ const LAUNCH_COLUMNS: &str = "id, node_id, cwd, prompt, resume, model, status, c
 /// A session to start or resume.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct NewLaunch {
-    /// The machine that runs it.
-    pub node: Uuid,
+    /// The machine that runs it: its ID, or its name. A name that several machines share picks the one seen last.
+    pub node: String,
     /// Working directory on that machine.
     pub cwd: String,
     /// The instruction.
@@ -109,13 +109,14 @@ impl Sessions {
         let query = format!(
             "INSERT INTO session_launches (id, tenant_id, node_id, cwd, prompt, resume, model, status) \
              SELECT $1, $2, n.id, $4, $5, $6, $7, 'queued' FROM nodes n \
-             WHERE n.id = $3 AND n.tenant_id = $2 AND {} RETURNING {LAUNCH_COLUMNS}",
+             WHERE (n.id::text = $3 OR n.name = $3) AND n.tenant_id = $2 AND {} \
+             ORDER BY (n.id::text = $3) DESC, n.last_seen_at DESC LIMIT 1 RETURNING {LAUNCH_COLUMNS}",
             Self::own_node(8)
         );
         Ok(sqlx::query_as(sqlx::AssertSqlSafe(query))
             .bind(Uuid::now_v7())
             .bind(self.tenant.as_uuid())
-            .bind(new.node)
+            .bind(new.node.trim())
             .bind(new.cwd.trim())
             .bind(clip(new.prompt.trim()))
             .bind(new.resume.as_deref().filter(|id| !id.is_empty()))
@@ -292,7 +293,7 @@ mod tests {
 
     fn new(node: Uuid) -> NewLaunch {
         NewLaunch {
-            node,
+            node: node.to_string(),
             cwd: "/work/app".to_owned(),
             prompt: "Run the tests".to_owned(),
             resume: None,

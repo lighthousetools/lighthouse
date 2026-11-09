@@ -73,6 +73,15 @@ pub enum AutomationStep {
         /// Text in Markdown. May hold placeholders.
         message: String,
     },
+    /// Starts a Claude Code session on a machine with the desktop agent, without waiting for it.
+    Launch {
+        /// Name or ID of the machine.
+        node: String,
+        /// Working directory on that machine.
+        cwd: String,
+        /// The instruction. May hold placeholders.
+        prompt: String,
+    },
     /// Stops the automation unless the condition holds.
     If(Condition),
     /// Runs `then` if the condition holds and `otherwise` if not, then goes on.
@@ -142,12 +151,13 @@ fn count(steps: &[AutomationStep]) -> usize {
 }
 
 impl AutomationStep {
-    /// Returns the kind name: `agent`, `tool`, `notify` or `if`.
+    /// Returns the kind name: `agent`, `tool`, `notify`, `launch`, `if` or `branch`.
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::Agent(_) => "agent",
             Self::Tool { .. } => "tool",
             Self::Notify { .. } => "notify",
+            Self::Launch { .. } => "launch",
             Self::If(_) => "if",
             Self::Branch { .. } => "branch",
         }
@@ -206,6 +216,14 @@ struct RawNotify {
     message: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLaunch {
+    node: String,
+    cwd: String,
+    prompt: String,
+}
+
 fn owner() -> String {
     "owner".to_owned()
 }
@@ -227,6 +245,7 @@ enum RawStep {
     Agent(String),
     Tool(RawTool),
     Notify(RawNotify),
+    Launch(RawLaunch),
     If(RawCondition),
 }
 
@@ -327,6 +346,19 @@ fn parse_step(raw: RawStep) -> Result<AutomationStep, AgentError> {
                 input: tool
                     .input
                     .unwrap_or_else(|| Value::Object(Default::default())),
+            }
+        }
+        RawStep::Launch(launch) => {
+            if launch.node.trim().is_empty()
+                || launch.cwd.trim().is_empty()
+                || launch.prompt.trim().is_empty()
+            {
+                return Err(field("steps.launch", "needs node, cwd and prompt"));
+            }
+            AutomationStep::Launch {
+                node: launch.node,
+                cwd: launch.cwd,
+                prompt: launch.prompt,
             }
         }
         RawStep::Notify(notify) => {
@@ -550,6 +582,16 @@ Looks into failed briefs.
             with(nested.trim_end()).is_err(),
             "branches count toward the limit"
         );
+    }
+
+    #[test]
+    fn a_launch_step_needs_node_cwd_and_prompt() {
+        let automation = with(
+            "name: A\ntrigger:\n  cron: \"0 15 * * MON\"\nsteps:\n  - launch:\n      node: studio\n      cwd: ~/work\n      prompt: Build it",
+        )
+        .unwrap();
+        assert_eq!(automation.steps[0].kind(), "launch");
+        assert!(with("name: A\ntrigger:\n  manual: true\nsteps:\n  - launch:\n      node: studio\n      cwd: ~/work\n      prompt: \" \"").is_err());
     }
 
     #[test]

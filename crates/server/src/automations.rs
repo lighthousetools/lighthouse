@@ -33,6 +33,7 @@ pub struct AutomationEngine {
     outcomes: Arc<Outcomes>,
     desk: Desk,
     limits: Option<(TenantId, Arc<dyn Entitlements>)>,
+    sessions: Option<lighthouse_sessions::Sessions>,
 }
 
 impl std::fmt::Debug for AutomationEngine {
@@ -66,7 +67,15 @@ impl AutomationEngine {
             outcomes,
             desk,
             limits: None,
+            sessions: None,
         }
+    }
+
+    /// Lets launch steps start sessions on the machines of the tenant.
+    #[must_use]
+    pub fn with_sessions(mut self, sessions: lighthouse_sessions::Sessions) -> Self {
+        self.sessions = Some(sessions);
+        self
     }
 
     /// Asks the entitlements of the tenant before every agent step.
@@ -360,6 +369,26 @@ impl AgentSteps for AutomationEngine {
             reason: record.reason,
         })
     }
+
+    async fn launch_session(&self, node: &str, cwd: &str, prompt: &str) -> Result<String, String> {
+        let sessions = self
+            .sessions
+            .as_ref()
+            .ok_or_else(|| "this server cannot launch sessions".to_owned())?;
+        let new = lighthouse_sessions::NewLaunch {
+            node: node.to_owned(),
+            cwd: cwd.to_owned(),
+            prompt: prompt.to_owned(),
+            resume: None,
+            model: None,
+        };
+        let launch = sessions
+            .launch(&new)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("no machine named `{node}`"))?;
+        Ok(format!("launch {} queued on {node} in {cwd}", launch.id))
+    }
 }
 
 /// Placeholder output of steps a dry run does not run.
@@ -399,6 +428,10 @@ fn plan_steps(
             AutomationStep::Notify { to, message, .. } => {
                 entry.summary = format!("notify {}", crate::delivery_name(to));
                 entry.message = Some(lighthouse_core::automation::render(message, &values, event));
+            }
+            AutomationStep::Launch { node, cwd, prompt } => {
+                entry.summary = format!("start a Claude Code session on {node} in {cwd}");
+                entry.message = Some(lighthouse_core::automation::render(prompt, &values, event));
             }
             AutomationStep::If(condition) => entry.summary = condition_summary(condition),
             AutomationStep::Branch {
@@ -522,6 +555,10 @@ impl ServerAutomations {
                         AutomationStep::Notify { to, .. } => {
                             (format!("notify {}", crate::delivery_name(to)), false)
                         }
+                        AutomationStep::Launch { node, cwd, .. } => (
+                            format!("start a Claude Code session on {node} in {cwd}"),
+                            false,
+                        ),
                         AutomationStep::If(condition) => (condition_summary(condition), false),
                         AutomationStep::Branch { condition, .. } => {
                             (format!("branch: {}", condition_summary(condition)), false)

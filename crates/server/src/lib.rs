@@ -1569,7 +1569,8 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
             outcomes.clone(),
             desk.clone(),
         )
-        .with_entitlements(tenant, shared.entitlements.clone()),
+        .with_entitlements(tenant, shared.entitlements.clone())
+        .with_sessions(lighthouse_sessions::Sessions::new(store.clone(), tenant)),
     );
     tracing::info!(count = resolver.sources().len(), "connected sources loaded");
     let sync_store = lighthouse_sync::SyncStore::new(store.clone(), tenant);

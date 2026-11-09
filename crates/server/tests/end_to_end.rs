@@ -2650,3 +2650,64 @@ async fn lighthouse_launches_sessions_and_hands_them_their_context() {
     .await;
     assert_eq!(cancelled["status"], "cancelled");
 }
+
+#[tokio::test]
+async fn an_automation_launches_a_session_on_a_machine_by_name() {
+    use reqwest::Method;
+    let (base, _dir, _store) = start().await;
+    let owner = owner_token(&base).await;
+    let (_, issued) = call_json(
+        &base,
+        &owner,
+        Method::POST,
+        "/auth/tokens",
+        Some(json!({"name": "mac", "kind": "node"})),
+    )
+    .await;
+    let node_token = issued["token"].as_str().unwrap().to_owned();
+    call_json(
+        &base,
+        &node_token,
+        Method::POST,
+        "/node/report",
+        Some(json!({"name": "studio", "sessions": []})),
+    )
+    .await;
+
+    let (status, _) = call_json(
+        &base,
+        &owner,
+        Method::POST,
+        "/sessions/launch",
+        Some(json!({"node": "nobody", "cwd": "/work", "prompt": "Hello"})),
+    )
+    .await;
+    assert_eq!(status, 404);
+
+    let source = "---\nname: Weekly report\ntrigger:\n  manual: true\nsteps:\n  - launch:\n      node: studio\n      cwd: /work/sales\n      prompt: \"Build the report for {{event.week}}\"\n---\nBuilds the weekly report on the machine.\n";
+    let (status, created) = call_json(
+        &base,
+        &owner,
+        Method::POST,
+        "/automations",
+        Some(json!({"source": source})),
+    )
+    .await;
+    assert!(status.is_success(), "{created}");
+    let (status, started) = call_json(
+        &base,
+        &owner,
+        Method::POST,
+        "/automations/weekly-report/run",
+        Some(json!({"payload": {"week": "KW45"}})),
+    )
+    .await;
+    assert!(status.is_success(), "{started}");
+    let launches = wait_for(&base, "/sessions/launches", |body| {
+        body.as_array().is_some_and(|list| !list.is_empty())
+    })
+    .await;
+    assert_eq!(launches[0]["cwd"], "/work/sales");
+    assert_eq!(launches[0]["prompt"], "Build the report for KW45");
+    assert_eq!(launches[0]["status"], "queued");
+}

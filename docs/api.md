@@ -419,7 +419,7 @@ Lighthouse starts and resumes Claude Code sessions on a desktop agent that allow
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /sessions/launch` | `{"node", "cwd", "prompt", "resume", "model"}` queues a launch. `202` with the launch, `404` for an unknown node |
+| `POST /sessions/launch` | `{"node", "cwd", "prompt", "resume", "model"}` queues a launch. `node` is the ID or the name of the machine. `202` with the launch, `404` for an unknown node |
 | `GET /sessions/launches?node=&limit=` | Launches, newest first |
 | `GET /sessions/launches/{id}` | One launch: `status` (`queued`, `started`, `running`, `succeeded`, `failed`, `cancelled`), `session_id`, `result`, `cost_usd` |
 | `DELETE /sessions/launches/{id}` | Cancels it. `404` once it is over |

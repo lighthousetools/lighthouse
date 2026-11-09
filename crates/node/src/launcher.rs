@@ -179,9 +179,18 @@ impl Launcher {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        if let Some(session) = &launch.resume {
-            command.args(["--resume", session]);
-        }
+        // A new session gets its ID up front, so Lighthouse knows it while it runs and its hooks match it.
+        let session = match &launch.resume {
+            Some(session) => {
+                command.args(["--resume", session]);
+                session.clone()
+            }
+            None => {
+                let session = uuid::Uuid::new_v4().to_string();
+                command.args(["--session-id", &session]);
+                session
+            }
+        };
         if let Some(model) = &launch.model {
             command.args(["--model", model]);
         }
@@ -200,7 +209,7 @@ impl Launcher {
             launch.id,
             LaunchReport {
                 status: "running".to_owned(),
-                session_id: launch.resume.clone(),
+                session_id: Some(session.clone()),
                 result: None,
                 cost_usd: None,
             },
@@ -228,7 +237,7 @@ impl Launcher {
                 let _ = child.kill().await;
                 return LaunchReport {
                     status: "cancelled".to_owned(),
-                    session_id: launch.resume.clone(),
+                    session_id: Some(session.clone()),
                     result: Some("stopped from Lighthouse".to_owned()),
                     cost_usd: None,
                 };
@@ -236,11 +245,13 @@ impl Launcher {
         };
         let stdout = read_out.await.unwrap_or_default();
         let stderr = read_err.await.unwrap_or_default();
-        outcome(
+        let mut report = outcome(
             &stdout,
             status.is_some_and(|status| status.success()),
             &stderr,
-        )
+        );
+        report.session_id = report.session_id.or(Some(session));
+        report
     }
 
     /// Stops a running launch. Returns whether it was running here.
@@ -351,6 +362,25 @@ mod tests {
             result.contains("-p Run the tests --output-format json --resume s8"),
             "{result}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_new_session_gets_its_id_before_it_starts() {
+        let server = mock().await;
+        let root = tempfile::tempdir().unwrap();
+        let program = fake_claude(
+            root.path(),
+            r#"echo "{\"type\":\"result\",\"is_error\":false,\"result\":\"$*\"}""#,
+        );
+        let roots = vec![root.path().to_string_lossy().into_owned()];
+        let launcher = Launcher::new(Server::new(&server.uri(), "t"), &roots, &program);
+        launcher.run_one(launch(root.path(), None)).await;
+        let sent = reports(&server).await;
+        let id = sent[0]["session_id"].as_str().unwrap().to_owned();
+        assert!(uuid::Uuid::parse_str(&id).is_ok(), "{id}");
+        assert_eq!(sent[1]["session_id"], id.as_str());
+        let result = sent[1]["result"].as_str().unwrap();
+        assert!(result.contains(&format!("--session-id {id}")), "{result}");
     }
 
     #[tokio::test]

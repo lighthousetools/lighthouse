@@ -63,6 +63,7 @@ Webhooks and events need a bearer token like every endpoint. Issue a device toke
 | `agent: <id>` | Runs the agent to its end. It gets the event and the output of the previous step as untrusted context |
 | `tool: {name, input}` | Calls a tool. A `read` or `draft` tool runs directly. Every other tool proposes the call and the run waits for your approval, like an agent's |
 | `notify: {to, subject, message}` | Sends a message to `owner`, `mail:<address>` or `slack:<alias>` |
+| `launch: {node, cwd, prompt}` | Starts a Claude Code session on a machine with the [desktop agent](desktop-agent.md#launches), by its name or ID, and goes on without waiting. The output is the launch ID. The machine must allow launches in that folder |
 | `if: {contains: <text>}` | Goes on only if the previous output contains the text, ignoring case. Also `not_contains: <text>` and `status: succeeded` or `status: failed` |
 
 ### Branches
@@ -81,8 +82,8 @@ An `if` with `then` and `else` takes one of two ways and then goes on with the n
 
 An `if` without `then` and `else` stops the automation when the condition does not hold. Branches can be nested.
 
-An automation has 1 to 20 steps, branches included. Each step sees the output and status of the one before. Strings in `input`, `subject`
-and `message` can use placeholders:
+An automation has 1 to 20 steps, branches included. Each step sees the output and status of the one before. Strings in `input`, `subject`,
+`message`, `cwd` and `prompt` can use placeholders:
 
 | Placeholder | Value |
 |---|---|
@@ -91,6 +92,18 @@ and `message` can use placeholders:
 | `{{automation}}` | Name of the automation |
 | `{{event}}` | The whole payload as JSON |
 | `{{event.<field>}}` | One field of the payload |
+
+A weekly report that needs the repositories and tools on a machine:
+
+```yaml
+trigger:
+  cron: "0 15 * * MON"
+steps:
+  - launch:
+      node: MacBook
+      cwd: ~/reports
+      prompt: "Build this week's report. Follow the weekly-report skill."
+```
 
 ## Runs
 

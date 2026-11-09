@@ -44,6 +44,13 @@ pub trait AgentSteps: Send + Sync {
         trigger: &str,
         context: &str,
     ) -> Result<AgentOutcome, String>;
+
+    /// Starts a Claude Code session on a machine and returns what to report, such as the launch ID. It does not wait
+    /// for the session to end.
+    async fn launch_session(&self, node: &str, cwd: &str, prompt: &str) -> Result<String, String> {
+        let _ = (node, cwd, prompt);
+        Err("this server cannot launch sessions".to_owned())
+    }
 }
 
 /// A tool call that waits for the owner.
@@ -366,6 +373,23 @@ impl Runtime {
                             record.status = "error".to_owned();
                             record.detail = Some(error.to_string());
                             state.status = FAILED.to_owned();
+                        }
+                    }
+                    self.audit.record_step(run, &record).await?;
+                }
+                AutomationStep::Launch { node, cwd, prompt } => {
+                    let cwd = render(cwd, &values, &state.event);
+                    let prompt = render(prompt, &values, &state.event);
+                    let mut record = step("launch", node, "ok");
+                    match agents.launch_session(node, &cwd, &prompt).await {
+                        Ok(output) => {
+                            record.detail = Some(output.clone());
+                            state.set(true, output);
+                        }
+                        Err(error) => {
+                            record.status = "error".to_owned();
+                            record.detail = Some(error.clone());
+                            state.set(false, error);
                         }
                     }
                     self.audit.record_step(run, &record).await?;

@@ -117,11 +117,13 @@ launch_roots = ["~/code"]   # launched sessions may only work below these direct
 claude = "claude"           # the Claude Code binary, optional
 ```
 
-`POST /sessions/launch` with `{"node", "cwd", "prompt", "resume", "model"}` queues a launch. The agent takes it through
-`GET /node/launches`, checks that `cwd` lies below one of the roots after resolving links, and runs
-`claude -p <prompt> --output-format json` in that directory, with `--resume <id>` and `--model` when given. At most three
-run at once. It reports `running`, then `succeeded` or `failed` with the final answer (cut at 20,000 characters), the
-session ID and the costs. The session's own hooks report it like any other session, and its permission prompts reach
+`POST /sessions/launch` with `{"node", "cwd", "prompt", "resume", "model"}` queues a launch. `node` is the machine's ID
+or its name; a name that several machines share picks the one seen last. Automations start launches with a
+[`launch` step](automations.md#steps). The agent takes it through `GET /node/launches`, checks that `cwd` lies below one
+of the roots after resolving links, and runs `claude -p <prompt> --output-format json` in that directory, with
+`--resume <id>` and `--model` when given. A new session gets its ID up front with `--session-id`, so the launch shows
+it while it runs. At most three run at once. It reports `running`, then `succeeded` or `failed` with the final answer
+(cut at 20,000 characters), the session ID and the costs. The session's own hooks report it like any other session, and its permission prompts reach
 your devices as usual. A directory outside the roots fails at once.
 
 `DELETE /sessions/launches/{id}` cancels a queued launch at once. A running one is stopped by the agent with its next
