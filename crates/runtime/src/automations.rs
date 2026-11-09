@@ -115,11 +115,26 @@ impl Runtime {
             pending: None,
             waiting_run: None,
         };
-        self.drive_automation(run, automation, state, agents).await
+        self.as_run_user(run, self.drive_automation(run, automation, state, agents))
+            .await
     }
 
     /// Continues an automation run after the decision on its tool call.
     pub async fn resume_automation(
+        &self,
+        run: RunId,
+        automation: &Automation,
+        saved: Value,
+        agents: &dyn AgentSteps,
+    ) -> Result<(), AuditError> {
+        self.as_run_user(
+            run,
+            self.resume_automation_as_user(run, automation, saved, agents),
+        )
+        .await
+    }
+
+    async fn resume_automation_as_user(
         &self,
         run: RunId,
         automation: &Automation,

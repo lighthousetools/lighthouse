@@ -291,6 +291,17 @@ impl AuditLog {
         self.viewer
     }
 
+    /// The user a run works for, if it has one.
+    pub async fn run_user(&self, run: Uuid) -> Result<Option<Uuid>, AuditError> {
+        let row: Option<(Option<Uuid>,)> =
+            sqlx::query_as("SELECT user_id FROM runs WHERE tenant_id = $1 AND id = $2")
+                .bind(self.tenant.as_uuid())
+                .bind(run)
+                .fetch_optional(self.store.pool())
+                .await?;
+        Ok(row.and_then(|(user,)| user))
+    }
+
     /// Records the start of a run.
     pub async fn start_run(
         &self,

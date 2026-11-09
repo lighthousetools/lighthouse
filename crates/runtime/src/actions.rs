@@ -107,6 +107,11 @@ impl Runtime {
 
     /// Continues an action after the decision on it.
     pub async fn resume_action(&self, run: RunId, state: Value) -> Result<(), AuditError> {
+        self.as_run_user(run, self.resume_action_as_user(run, state))
+            .await
+    }
+
+    async fn resume_action_as_user(&self, run: RunId, state: Value) -> Result<(), AuditError> {
         let Ok(pending) = serde_json::from_value::<PendingAction>(state) else {
             return self
                 .end_action(run, false, "the saved action cannot be read")

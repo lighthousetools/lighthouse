@@ -121,6 +121,69 @@ impl RouterSource for VaultRouterSource {
     }
 }
 
+/// Where a provider's key is: the vault entry and the vaults to read it from,
+/// the first that has it wins.
+#[derive(Clone, Debug)]
+pub struct KeyPlace {
+    /// Name of the vault entry.
+    pub entry: String,
+    /// Vaults in order.
+    pub vaults: Vec<Vault>,
+}
+
+/// The providers, routes and key places that apply now.
+#[derive(Clone, Debug, Default)]
+pub struct KeyedPlan {
+    /// Providers and routes.
+    pub plan: lighthouse_router::RouterPlan,
+    /// Key places by provider name.
+    pub keys: HashMap<String, KeyPlace>,
+}
+
+/// Tells a [`LiveRouterSource`] which providers apply now.
+pub trait PlanSource: Send + Sync {
+    /// The plan for the work the current task does. Implementations may
+    /// answer per user.
+    fn plan(&self) -> KeyedPlan;
+}
+
+/// Builds the router for every run from a plan, so changes to providers,
+/// models, routes and keys take effect without a restart. A run keeps the
+/// router it started with.
+pub struct LiveRouterSource {
+    source: Arc<dyn PlanSource>,
+}
+
+impl std::fmt::Debug for LiveRouterSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveRouterSource").finish_non_exhaustive()
+    }
+}
+
+impl LiveRouterSource {
+    /// Creates the source.
+    pub fn new(source: Arc<dyn PlanSource>) -> Self {
+        Self { source }
+    }
+}
+
+#[async_trait]
+impl RouterSource for LiveRouterSource {
+    async fn router(&self) -> Result<Arc<Router>, RouterError> {
+        let KeyedPlan { plan, keys } = self.source.plan();
+        let mut found = HashMap::new();
+        for (name, place) in keys {
+            for vault in &place.vaults {
+                if let Ok(Some(key)) = vault.get(&place.entry).await {
+                    found.insert(name.clone(), key);
+                    break;
+                }
+            }
+        }
+        Ok(Arc::new(Router::from_plan(&plan, &found)))
+    }
+}
+
 /// Everything a run needs.
 pub struct Runtime {
     /// Model access.
@@ -1117,9 +1180,32 @@ impl Runtime {
         self.execute_with_context(run, agent, None).await
     }
 
+    /// Runs a future on behalf of the user a run works for, so settings,
+    /// keys and connectors resolve for that person.
+    pub async fn as_run_user<F: std::future::Future>(&self, run: RunId, future: F) -> F::Output {
+        let user = match self.audit.run_user(run.as_uuid()).await {
+            Ok(user) => user,
+            Err(error) => {
+                tracing::warn!(%error, "cannot read the user of a run");
+                None
+            }
+        };
+        lighthouse_audit::acting_user::scope(user, future).await
+    }
+
     /// Executes a registered run with context from outside, such as an
     /// automation event. The context reaches the model as untrusted content.
     pub async fn execute_with_context(
+        &self,
+        run: RunId,
+        agent: &AgentDefinition,
+        context: Option<&str>,
+    ) -> Result<(), lighthouse_audit::AuditError> {
+        self.as_run_user(run, self.execute_as_user(run, agent, context))
+            .await
+    }
+
+    async fn execute_as_user(
         &self,
         run: RunId,
         agent: &AgentDefinition,
@@ -1164,7 +1250,7 @@ impl Runtime {
         state: Value,
     ) -> Result<(), lighthouse_audit::AuditError> {
         match serde_json::from_value(state) {
-            Ok(state) => self.drive(run, agent, state).await,
+            Ok(state) => self.as_run_user(run, self.drive(run, agent, state)).await,
             Err(error) => {
                 let reason = format!("cannot read the saved state: {error}");
                 self.audit
