@@ -2119,7 +2119,7 @@ async fn a_member_connects_with_oauth_and_only_their_runs_use_the_tokens() {
     let (status, _) = as_user(
         &base,
         &robin,
-        put,
+        put.clone(),
         "/me/credentials/mcp:keyed",
         Some(json!({"value": OAUTH_TOKEN})),
     )
@@ -2127,4 +2127,73 @@ async fn a_member_connects_with_oauth_and_only_their_runs_use_the_tokens() {
     assert_eq!(status, 204);
     let detail = run_as(&base, &robin, "keyed").await;
     assert_eq!(detail["run"]["status"], "succeeded", "{detail}");
+
+    // A personal source never reads through the account a workspace shares.
+    let shared =
+        json!({"url": format!("{auth}/mcp"), "auth": "bearer", "read_tools": ["list_threads"]});
+    let (status, _) = as_user(
+        &base,
+        &owner,
+        put.clone(),
+        "/settings/tenant/connectors/team",
+        Some(shared),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, _) = as_user(
+        &base,
+        &owner,
+        put.clone(),
+        "/credentials/mcp:team",
+        Some(json!({"value": OAUTH_TOKEN})),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/sources/inbox",
+        Some(mail_source("team")),
+    )
+    .await;
+    assert_eq!(status, 204, "{body}");
+    let (_, sources) = as_user(&base, &robin, fetch.clone(), "/connected/sources", None).await;
+    let key = sources
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["label"] == "inbox")
+        .unwrap()["name"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refresh = format!("/connected/sources/{key}/refresh");
+    let (status, body) = as_user(&base, &robin, post.clone(), &refresh, None).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body["errors"]
+            .to_string()
+            .contains("connect your own account"),
+        "{body}"
+    );
+    let (_, threads) = as_user(&base, &robin, fetch.clone(), "/mail/threads", None).await;
+    assert_eq!(threads["items"], json!([]), "{threads}");
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        put,
+        "/me/credentials/mcp:team",
+        Some(json!({"value": OAUTH_TOKEN})),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, body) = as_user(&base, &robin, post, &refresh, None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["errors"], json!([]), "{body}");
+    let (_, threads) = as_user(&base, &robin, fetch, "/mail/threads", None).await;
+    assert!(
+        !threads["items"].as_array().unwrap().is_empty(),
+        "{threads}"
+    );
 }

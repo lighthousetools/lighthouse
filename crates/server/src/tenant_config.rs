@@ -134,6 +134,33 @@ impl TenantConfig {
         Some(identity)
     }
 
+    /// Whether a personal source would read through the tenant's shared account.
+    /// A shared mailbox is its first owner's: a member's own source must use
+    /// their own account on a shared connector, or its items would show them
+    /// what the shared account sees.
+    pub async fn needs_own_token(
+        &self,
+        source: &Source,
+    ) -> Result<bool, lighthouse_vault::VaultError> {
+        let Some(owner) = source.owner else {
+            return Ok(false);
+        };
+        let effective = self.settings.effective(Some(owner));
+        let Some(connector) = effective.connectors.get(&source.connector) else {
+            return Ok(false);
+        };
+        let lighthouse_config::ConnectorTransport::Http { auth, .. } = &connector.config.transport
+        else {
+            return Ok(false);
+        };
+        let entry = match auth {
+            lighthouse_config::ConnectorAuth::None => return Ok(false),
+            lighthouse_config::ConnectorAuth::Bearer => format!("mcp:{}", source.connector),
+            lighthouse_config::ConnectorAuth::Oauth => format!("oauth:{}", source.connector),
+        };
+        Ok(self.vault.personal(owner).get(&entry).await?.is_none())
+    }
+
     /// The time zone of a user, or the tenant's for `None`.
     pub fn zone_of(&self, user: Option<Uuid>) -> Tz {
         self.settings

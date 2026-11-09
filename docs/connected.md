@@ -466,7 +466,9 @@ owner or admin adds for the tenant, and personal sources each member adds for th
 A personal source belongs to the member who adds it:
 
 - All its items carry their `user_id`, in every domain. They reach only their inbox, lists, search and reviews.
-- It syncs with that member's connectors and tokens, including a connector only they have.
+- It syncs with that member's connectors and tokens, including a connector only they have. On a shared HTTP connector
+  that signs in, it needs the member's own token: it does not read through the account the workspace shares, which
+  would show them that account's mail.
 - Its events reach only automations of that member, and it raises no shared alerts.
 - `GET /connected/sources` lists it only for them. Its `name` there is `<name>@<user>`, the key of its items and of the
   refresh and action paths, and `label` is the name they gave it.

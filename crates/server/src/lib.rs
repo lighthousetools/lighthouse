@@ -1517,13 +1517,16 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         sync_tools,
         resolver.clone(),
     ));
-    let connected = Arc::new(ConnectedService::new(
-        syncer,
-        runtime.clone(),
-        engine.clone(),
-        outcomes.clone(),
-        events.clone(),
-    ));
+    let connected = Arc::new(
+        ConnectedService::new(
+            syncer,
+            runtime.clone(),
+            engine.clone(),
+            outcomes.clone(),
+            events.clone(),
+        )
+        .with_resolver(resolver.clone()),
+    );
     let publisher = Arc::new(publishing::ServerPublisher::new(
         runtime.clone(),
         outcomes.clone(),

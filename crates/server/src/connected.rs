@@ -23,6 +23,7 @@ pub struct ConnectedService {
     engine: Arc<AutomationEngine>,
     outcomes: Arc<Outcomes>,
     events: EventBus,
+    resolver: Option<Arc<crate::tenant_config::TenantConfig>>,
 }
 
 impl std::fmt::Debug for ConnectedService {
@@ -46,7 +47,15 @@ impl ConnectedService {
             engine,
             outcomes,
             events,
+            resolver: None,
         }
+    }
+
+    /// Checks that personal sources do not read through shared accounts.
+    #[must_use]
+    pub fn with_resolver(mut self, resolver: Arc<crate::tenant_config::TenantConfig>) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     /// Whether the user the current task acts for may use a source. Background
@@ -113,7 +122,23 @@ impl ConnectedService {
     /// Refreshes a source and passes on what changed.
     pub async fn refresh_source(&self, name: &str) -> anyhow::Result<SyncReport> {
         // A personal source syncs with its owner's connectors and tokens.
-        let owner = self.syncer.source(name).and_then(|source| source.owner);
+        let source = self.syncer.source(name);
+        let owner = source.as_ref().and_then(|source| source.owner);
+        if let (Some(source), Some(resolver)) = (&source, &self.resolver)
+            && resolver.needs_own_token(source).await?
+        {
+            let error = format!(
+                "connect your own account to `{}` first: this source is yours alone, so it does \
+                 not read through the account the workspace shares",
+                source.connector
+            );
+            self.syncer.store().record_sync(name, Err(&error)).await?;
+            return Ok(SyncReport {
+                source: name.to_owned(),
+                errors: vec![error],
+                ..SyncReport::default()
+            });
+        }
         let report = self
             .runtime
             .as_user(owner, self.syncer.sync(name, Utc::now()))
