@@ -17,6 +17,7 @@ lighthouse-core.workspace = true
 lighthouse-store.workspace = true
 secrecy.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 lighthouse-store = { workspace = true, features = ["testing"] }

@@ -77,18 +77,29 @@ impl MasterKey {
     }
 }
 
-/// Encrypted key-value storage for one tenant.
+/// Encrypted key-value storage for one tenant, or for one person in a tenant.
+///
+/// The tenant's vault holds what its members share, such as provider keys and
+/// connector tokens that owners and admins set. [`Vault::personal`] opens the
+/// part of one member: their own keys and tokens, which no other member's
+/// vault can read.
 #[derive(Clone)]
 pub struct Vault {
     store: Store,
     tenant: TenantId,
+    user: Option<uuid::Uuid>,
     cipher: Aes256Gcm,
 }
+
+/// The conflict target of a vault entry: its tenant, its person, its name.
+const ENTRY: &str =
+    "(tenant_id, (COALESCE(user_id, '00000000-0000-0000-0000-000000000000'::uuid)), name)";
 
 impl std::fmt::Debug for Vault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Vault")
             .field("tenant", &self.tenant)
+            .field("user", &self.user)
             .finish_non_exhaustive()
     }
 }
@@ -100,12 +111,44 @@ impl Vault {
         Self {
             store,
             tenant,
+            user: None,
             cipher,
         }
     }
 
+    /// The personal vault of a member in the same tenant.
+    #[must_use]
+    pub fn personal(&self, user: uuid::Uuid) -> Self {
+        Self {
+            user: Some(user),
+            ..self.clone()
+        }
+    }
+
+    /// The vault the tenant shares, from a personal one.
+    #[must_use]
+    pub fn shared(&self) -> Self {
+        Self {
+            user: None,
+            ..self.clone()
+        }
+    }
+
+    /// The person of a personal vault, `None` for the tenant's.
+    pub fn user(&self) -> Option<uuid::Uuid> {
+        self.user
+    }
+
+    /// The tenant of the vault.
+    pub fn tenant(&self) -> TenantId {
+        self.tenant
+    }
+
     fn aad(&self, name: &str) -> Vec<u8> {
-        format!("{}:{name}", self.tenant.as_uuid()).into_bytes()
+        match self.user {
+            None => format!("{}:{name}", self.tenant.as_uuid()).into_bytes(),
+            Some(user) => format!("{}:{user}:{name}", self.tenant.as_uuid()).into_bytes(),
+        }
     }
 
     /// Stores a value, replacing any previous value.
@@ -122,15 +165,16 @@ impl Vault {
                 },
             )
             .map_err(|_| VaultError::Encrypt(name.to_owned()))?;
-        sqlx::query(
-            "INSERT INTO credentials (tenant_id, name, nonce, ciphertext) VALUES ($1, $2, $3, $4)
-             ON CONFLICT (tenant_id, name)
-             DO UPDATE SET nonce = $3, ciphertext = $4, updated_at = now()",
-        )
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO credentials (tenant_id, name, nonce, ciphertext, user_id) \
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT {ENTRY} \
+             DO UPDATE SET nonce = $3, ciphertext = $4, updated_at = now()"
+        )))
         .bind(self.tenant.as_uuid())
         .bind(name)
         .bind(nonce.as_slice())
         .bind(ciphertext)
+        .bind(self.user)
         .execute(self.store.pool())
         .await?;
         Ok(())
@@ -139,10 +183,12 @@ impl Vault {
     /// Reads a value.
     pub async fn get(&self, name: &str) -> Result<Option<SecretString>, VaultError> {
         let row = sqlx::query(
-            "SELECT nonce, ciphertext FROM credentials WHERE tenant_id = $1 AND name = $2",
+            "SELECT nonce, ciphertext FROM credentials WHERE tenant_id = $1 AND name = $2 \
+             AND user_id IS NOT DISTINCT FROM $3",
         )
         .bind(self.tenant.as_uuid())
         .bind(name)
+        .bind(self.user)
         .fetch_optional(self.store.pool())
         .await?;
         let Some(row) = row else { return Ok(None) };
@@ -168,20 +214,28 @@ impl Vault {
 
     /// Deletes a value. Returns whether it existed.
     pub async fn delete(&self, name: &str) -> Result<bool, VaultError> {
-        let result = sqlx::query("DELETE FROM credentials WHERE tenant_id = $1 AND name = $2")
-            .bind(self.tenant.as_uuid())
-            .bind(name)
-            .execute(self.store.pool())
-            .await?;
+        let result = sqlx::query(
+            "DELETE FROM credentials WHERE tenant_id = $1 AND name = $2 \
+             AND user_id IS NOT DISTINCT FROM $3",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(name)
+        .bind(self.user)
+        .execute(self.store.pool())
+        .await?;
         Ok(result.rows_affected() > 0)
     }
 
     /// Lists the names of all entries.
     pub async fn list(&self) -> Result<Vec<String>, VaultError> {
-        let rows = sqlx::query("SELECT name FROM credentials WHERE tenant_id = $1 ORDER BY name")
-            .bind(self.tenant.as_uuid())
-            .fetch_all(self.store.pool())
-            .await?;
+        let rows = sqlx::query(
+            "SELECT name FROM credentials WHERE tenant_id = $1 \
+             AND user_id IS NOT DISTINCT FROM $2 ORDER BY name",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(self.user)
+        .fetch_all(self.store.pool())
+        .await?;
         rows.iter()
             .map(|row| row.try_get("name").map_err(VaultError::from))
             .collect()
@@ -262,6 +316,54 @@ mod tests {
             .unwrap();
         assert!(matches!(
             vault.get("openai").await,
+            Err(VaultError::Decrypt(_))
+        ));
+    }
+
+    async fn user(store: &Store, email: &str) -> uuid::Uuid {
+        let id = uuid::Uuid::now_v7();
+        sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, 'x')")
+            .bind(id)
+            .bind(email)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn personal_entries_belong_to_one_member() {
+        let store = fresh_store().await;
+        let shared = Vault::new(store.clone(), TenantId::DEFAULT, &key(1));
+        let alex = shared.personal(user(&store, "alex@example.com").await);
+        let sam = shared.personal(user(&store, "sam@example.com").await);
+        shared.put("anthropic", &secret("tenant")).await.unwrap();
+        alex.put("anthropic", &secret("alex")).await.unwrap();
+        alex.put("mcp:mail", &secret("token")).await.unwrap();
+        let read = |vault: Vault| async move {
+            vault
+                .get("anthropic")
+                .await
+                .unwrap()
+                .map(|value| value.expose_secret().to_owned())
+        };
+        assert_eq!(read(shared.clone()).await.as_deref(), Some("tenant"));
+        assert_eq!(read(alex.clone()).await.as_deref(), Some("alex"));
+        assert_eq!(read(sam.clone()).await, None);
+        assert_eq!(shared.list().await.unwrap(), ["anthropic"]);
+        assert_eq!(alex.list().await.unwrap(), ["anthropic", "mcp:mail"]);
+        assert!(sam.list().await.unwrap().is_empty());
+        assert!(!sam.delete("mcp:mail").await.unwrap());
+        assert!(alex.delete("anthropic").await.unwrap());
+        assert_eq!(read(shared.clone()).await.as_deref(), Some("tenant"));
+        assert_eq!(alex.shared().user(), None);
+        assert_eq!(alex.tenant(), TenantId::DEFAULT);
+        sqlx::query("UPDATE credentials SET user_id = NULL WHERE name = 'mcp:mail'")
+            .execute(store.pool())
+            .await
+            .unwrap();
+        assert!(matches!(
+            shared.get("mcp:mail").await,
             Err(VaultError::Decrypt(_))
         ));
     }
