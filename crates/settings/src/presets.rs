@@ -11,8 +11,9 @@ const PRESETS: &str = include_str!("../presets.toml");
 /// Remote MCP servers run by their vendors, checked by hand.
 const CATALOG: &str = include_str!("../catalog.toml");
 
-/// Groups of the catalog.
-pub const CATEGORIES: [&str; 33] = [
+/// Groups of the catalog, checked by the tests.
+#[cfg(test)]
+const CATEGORIES: [&str; 33] = [
     "accounting", "advertising", "ai", "analytics", "automation", "ci", "cloud", "code", "commerce",
     "communication", "crm", "database", "design", "docs", "documents", "finance", "health", "hr",
     "knowledge", "maps", "marketing", "media", "meetings", "observability", "payments", "productivity",
