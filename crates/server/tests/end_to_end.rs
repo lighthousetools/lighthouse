@@ -1478,3 +1478,317 @@ async fn a_member_who_connects_their_own_mail_sees_it_and_nobody_else_does() {
     let (_, threads) = as_user(&base, &robin, fetch, "/mail/threads", None).await;
     assert!(!threads.to_string().contains(&thread), "{threads}");
 }
+
+/// An OpenAI compatible model for one key: it calls the first tool it is
+/// offered, then answers with what the tool returned.
+async fn tool_model(key: &'static str) -> String {
+    let complete = move |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| async move {
+        use axum::response::IntoResponse;
+        if headers
+            .get("authorization")
+            .is_none_or(|value| value != format!("Bearer {key}").as_str())
+        {
+            return axum::http::StatusCode::UNAUTHORIZED.into_response();
+        }
+        let messages = body["messages"].as_array().unwrap();
+        let last = messages.last().unwrap();
+        let message = if last["role"] == "tool" {
+            json!({"content": format!("the tool said: {}", last["content"])})
+        } else {
+            let tool = body["tools"][0]["function"]["name"].as_str().unwrap();
+            json!({"content": null, "tool_calls": [{"id": "call-1", "type": "function",
+                   "function": {"name": tool, "arguments": "{}"}}]})
+        };
+        axum::Json(json!({
+            "choices": [{"message": message}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 10},
+        }))
+        .into_response()
+    };
+    serve(Router::new().route("/v1/chat/completions", axum::routing::post(complete))).await
+}
+
+fn personal_agent(tool: &str) -> String {
+    format!(
+        "---\nname: Mine\nscope: org\ntrigger:\n  manual: true\ntools:\n  - {tool}\n---\nRead my mail.\n"
+    )
+}
+
+async fn run_as(base: &str, token: &str, agent: &str) -> Value {
+    let (status, started) = as_user(
+        base,
+        token,
+        reqwest::Method::POST,
+        &format!("/agents/{agent}/run"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 202, "{started}");
+    let id = started["id"].as_str().unwrap().to_owned();
+    for _ in 0..200 {
+        let (_, detail) = as_user(
+            base,
+            token,
+            reqwest::Method::GET,
+            &format!("/runs/{id}"),
+            None,
+        )
+        .await;
+        if detail["run"]["status"] != "running" {
+            return detail;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("run did not finish");
+}
+
+#[tokio::test]
+async fn a_member_runs_their_own_agent_with_their_own_key_and_connector() {
+    let (base, _dir, _database) = start_with(MEMBER_TENANCY).await;
+    let owner = owner_token(&base).await;
+    let robin = member_token(&base, &owner, "robin@example.com").await;
+    let sam = member_token(&base, &owner, "sam@example.com").await;
+    let model = tool_model("robins-key").await;
+    let url = mcp_url(&base).await;
+    let put = reqwest::Method::PUT;
+    for (path, body) in [
+        (
+            "/settings/me/providers/own",
+            json!({"kind": "openai", "base_url": model}),
+        ),
+        (
+            "/settings/me/providers/own/models/text",
+            json!({"model": "robins-model", "input_eur_per_mtok": 1.0, "output_eur_per_mtok": 1.0}),
+        ),
+        ("/settings/me/routing/text", json!({"provider": "own"})),
+        (
+            "/me/credentials/provider:own",
+            json!({"value": "robins-key"}),
+        ),
+        (
+            "/settings/me/connectors/mymail",
+            json!({"url": url, "auth": "bearer", "read_tools": ["list_threads"]}),
+        ),
+        (
+            "/me/credentials/mcp:mymail",
+            json!({"value": "robins-token"}),
+        ),
+    ] {
+        let (status, body) = as_user(&base, &robin, put.clone(), path, Some(body)).await;
+        assert_eq!(status, 204, "{path}: {body}");
+    }
+    let (status, agent) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::POST,
+        "/agents",
+        Some(json!({"source": personal_agent("mymail.list_threads")})),
+    )
+    .await;
+    assert_eq!(status, 200, "{agent}");
+    assert_eq!(agent["layer"], "personal");
+    assert_eq!(agent["blocked"], json!([]), "{agent}");
+
+    let detail = run_as(&base, &robin, "mine").await;
+    assert_eq!(detail["run"]["status"], "succeeded", "{detail}");
+    let report = detail["run"]["report"].as_str().unwrap();
+    assert!(
+        report.starts_with("the tool said:") && report.contains("threads"),
+        "{report}"
+    );
+    let steps = detail["steps"].to_string();
+    assert!(steps.contains("provider=own"), "{steps}");
+    assert!(steps.contains("mymail.list_threads"), "{steps}");
+
+    // Nobody else has the agent, the route, the key or the connector.
+    for other in [&owner, &sam] {
+        let (status, _) = as_user(&base, other, reqwest::Method::GET, "/agents/mine", None).await;
+        assert_eq!(status, 404);
+        let (status, _) = as_user(
+            &base,
+            other,
+            reqwest::Method::POST,
+            "/agents/mine/run",
+            None,
+        )
+        .await;
+        assert_eq!(status, 404);
+        let (_, runs) = as_user(&base, other, reqwest::Method::GET, "/runs", None).await;
+        assert!(!runs.to_string().contains("\"mine\""), "{runs}");
+        let detail = run_as(&base, other, "reader").await;
+        assert_eq!(detail["run"]["status"], "succeeded", "{detail}");
+        assert!(
+            detail["steps"].to_string().contains("provider=mock"),
+            "{detail}"
+        );
+    }
+    // Robin's other runs use Robin's model too.
+    let detail = run_as(&base, &robin, "reader").await;
+    assert!(
+        detail["steps"].to_string().contains("provider=own"),
+        "{detail}"
+    );
+
+    // Members keep their hands off shared agents; the switches work per layer.
+    let source = "---\nname: Shared\nscope: org\ntrigger:\n  manual: true\n---\nGo.\n";
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::POST,
+        "/agents?layer=tenant",
+        Some(json!({"source": source})),
+    )
+    .await;
+    assert_eq!(status, 403);
+    let (status, _) = as_user(
+        &base,
+        &owner,
+        reqwest::Method::POST,
+        "/agents",
+        Some(json!({"source": source})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::DELETE,
+        "/agents/shared",
+        None,
+    )
+    .await;
+    assert_eq!(status, 403);
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/agents/shared/enabled",
+        Some(json!({"enabled": false})),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::POST,
+        "/agents/shared/run",
+        None,
+    )
+    .await;
+    assert_eq!(status, 409, "switched off for Robin");
+    let detail = run_as(&base, &sam, "shared").await;
+    assert_eq!(detail["run"]["status"], "succeeded", "{detail}");
+    let (status, _) = as_user(
+        &base,
+        &owner,
+        put.clone(),
+        "/settings/tenant/agents/reader/enabled",
+        Some(json!({"enabled": false})),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, _) = as_user(
+        &base,
+        &sam,
+        reqwest::Method::POST,
+        "/agents/reader/run",
+        None,
+    )
+    .await;
+    assert_eq!(status, 409, "the tenant switched a built-in agent off");
+    let (status, _) = as_user(
+        &base,
+        &owner,
+        put.clone(),
+        "/settings/tenant/agents/nothing/enabled",
+        Some(json!({"enabled": false})),
+    )
+    .await;
+    assert_eq!(status, 404);
+    // A member's agent cannot mail others.
+    let relay = "---\nname: Relay\nscope: org\ntrigger:\n  manual: true\ndeliver: [mail:someone@example.com]\n---\nGo.\n";
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::POST,
+        "/agents",
+        Some(json!({"source": relay})),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+
+    // Automations and skills work the same way.
+    let automation =
+        "---\nname: Daily\ntrigger:\n  event: mine.happened\nsteps:\n  - agent: mine\n---\nMine.\n";
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::POST,
+        "/automations",
+        Some(json!({"source": automation})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["layer"], "personal");
+    let (_, list) = as_user(&base, &sam, reqwest::Method::GET, "/automations", None).await;
+    assert!(!list.to_string().contains("daily"), "{list}");
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/automations/daily/enabled",
+        Some(json!({"enabled": false})),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (_, one) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::GET,
+        "/automations/daily",
+        None,
+    )
+    .await;
+    assert_eq!(one["enabled"], false, "{one}");
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::DELETE,
+        "/automations/daily",
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+    let skill = "---\nname: tone\ndescription: How I write\n---\nBe brief.\n";
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/skills/tone",
+        Some(json!({"source": skill})),
+    )
+    .await;
+    assert_eq!(status, 204, "{body}");
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/skills/other",
+        Some(json!({"source": skill})),
+    )
+    .await;
+    assert_eq!(status, 422);
+    let (_, skills) = as_user(&base, &robin, reqwest::Method::GET, "/skills", None).await;
+    assert_eq!(skills[0]["layer"], "personal", "{skills}");
+    let (_, skills) = as_user(&base, &sam, reqwest::Method::GET, "/skills", None).await;
+    assert!(!skills.to_string().contains("tone"), "{skills}");
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::DELETE,
+        "/settings/me/skills/tone",
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+}

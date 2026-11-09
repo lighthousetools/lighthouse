@@ -15,7 +15,7 @@ use lighthouse_audit::{AuditError, AuditLog, RunEnd, RunStatus};
 use lighthouse_auth::Accounts;
 use lighthouse_brain::{Brain, BrainToolFactory, Embedder, MediaError, MediaReader, SearchHit};
 use lighthouse_config::{Config, ConnectorAuth, ConnectorTransport};
-use lighthouse_core::agent::{AgentDefinition, Delivery, ToolLevel, Trigger, parse_cron};
+use lighthouse_core::agent::{AgentDefinition, Delivery, ToolLevel, Trigger, parse_cron, slugify};
 use lighthouse_core::{RunId, TenantId};
 use lighthouse_desk::Desk;
 use lighthouse_mcp::{McpConnector, OAuthFlows, ToolHostFactory, ToolPolicy};
@@ -27,7 +27,7 @@ use lighthouse_runtime::{
 };
 use lighthouse_scheduler::{AgentRunner, ScheduleHandle, Scheduler};
 use lighthouse_sessions::Sessions;
-use lighthouse_settings::{Defaults, Effective, TenantSettings};
+use lighthouse_settings::{Defaults, Effective, FileKind, Layer, TenantSettings};
 use lighthouse_skills::SkillLibrary;
 use lighthouse_store::Store;
 use lighthouse_sync::SourceList;
@@ -177,9 +177,10 @@ impl AgentPool {
                 .await;
             return Ok(());
         }
+        let user = audit.run_user(run).await?;
         let Some(agent) = self
             .agents
-            .get(&checkpoint.agent_id)
+            .get_for(user, &checkpoint.agent_id)
             .map(|known| known.agent)
         else {
             let reason = format!("the agent `{}` no longer exists", checkpoint.agent_id);
@@ -238,6 +239,11 @@ impl RunTrigger for AgentPool {
             .agents
             .get(agent_id)
             .ok_or_else(|| TriggerError::UnknownAgent(agent_id.to_owned()))?;
+        if !known.enabled {
+            return Err(TriggerError::Refused(format!(
+                "the agent `{agent_id}` is switched off"
+            )));
+        }
         self.allowed(agent_id).await?;
         let run = self
             .spawn(known.agent, "manual")
@@ -255,6 +261,11 @@ impl RunTrigger for AgentPool {
             .agents
             .get(agent_id)
             .ok_or_else(|| TriggerError::UnknownAgent(agent_id.to_owned()))?;
+        if !known.enabled {
+            return Err(TriggerError::Refused(format!(
+                "the agent `{agent_id}` is switched off"
+            )));
+        }
         self.allowed(agent_id).await?;
         let run = self
             .spawn_with(known.agent, "task", Some(context.to_owned()))
@@ -272,21 +283,141 @@ impl RunTrigger for AgentPool {
 
 #[async_trait]
 impl AgentRunner for AgentPool {
-    async fn start(&self, agent_id: &str, trigger: &str) {
-        if agent_id.starts_with(RUN_PREFIX) {
-            self.engine.start_scheduled(agent_id).await;
+    async fn start(&self, job: &str, trigger: &str) {
+        // A personal job names its person, and works for them.
+        let (id, user) = split_job(job);
+        if id.starts_with(RUN_PREFIX) {
+            self.engine.start_scheduled(id, user).await;
             return;
         }
-        let Some(known) = self.agents.get(agent_id) else {
+        let Some(known) = self.agents.get_for(user, id).filter(|known| known.enabled) else {
             return;
         };
-        if let Err(error) = self.allowed(agent_id).await {
-            tracing::warn!(agent = %agent_id, %error, "run not allowed");
+        if let Err(error) = self.allowed(id).await {
+            tracing::warn!(agent = %id, %error, "run not allowed");
             return;
         }
-        if let Err(error) = self.spawn(known.agent, trigger).await {
-            tracing::error!(agent = %agent_id, %error, "cannot start run");
+        let started = self
+            .runtime
+            .as_user(user, self.spawn(known.agent, trigger))
+            .await;
+        if let Err(error) = started {
+            tracing::error!(agent = %id, %error, "cannot start run");
         }
+    }
+}
+
+/// Splits a scheduled job into what it fires and the person it is for.
+fn split_job(job: &str) -> (&str, Option<Uuid>) {
+    match job.rsplit_once('@').map(|(id, user)| (id, user.parse())) {
+        Some((id, Ok(user))) => (id, Some(user)),
+        _ => (job, None),
+    }
+}
+
+/// Keeps the scheduler in line with the agents and automations of a tenant and
+/// the time zones of the people they run for.
+struct ScheduleSync {
+    settings: TenantSettings,
+    resolver: Arc<tenant_config::TenantConfig>,
+    agents: Arc<AgentRegistry>,
+    automations: Arc<AutomationRegistry>,
+    schedules: ScheduleHandle,
+}
+
+impl ScheduleSync {
+    fn cron_of(trigger: &Trigger) -> Option<&String> {
+        match trigger {
+            Trigger::Cron(expression) => Some(expression),
+            Trigger::Manual => None,
+        }
+    }
+
+    fn automation_cron(
+        trigger: &lighthouse_core::automation::AutomationTrigger,
+    ) -> Option<&String> {
+        match trigger {
+            lighthouse_core::automation::AutomationTrigger::Cron(cron) => Some(cron),
+            _ => None,
+        }
+    }
+
+    /// The jobs of the tenant, which work for its first owner, and of each
+    /// member's own agents and automations. What the first owner replaced or
+    /// switched off for themselves does not run a second time for the tenant.
+    fn jobs(&self) -> Vec<lighthouse_scheduler::Job> {
+        let snapshot = self.settings.snapshot();
+        let primary = snapshot.primary().map(|member| member.id);
+        let mut jobs = Vec::new();
+        let zone = self.resolver.zone_of(primary);
+        let as_primary_agents = self.agents.for_user(primary);
+        for known in self.agents.for_user(None).values() {
+            let theirs = as_primary_agents.get(&known.agent.id);
+            let replaced =
+                theirs.is_some_and(|theirs| theirs.layer == lighthouse_settings::Layer::Personal);
+            let off = !known.enabled || theirs.is_some_and(|theirs| !theirs.enabled);
+            if let (Some(cron), false, false) = (Self::cron_of(&known.agent.trigger), replaced, off)
+            {
+                jobs.push(lighthouse_scheduler::Job {
+                    id: known.agent.id.clone(),
+                    cron: cron.clone(),
+                    zone,
+                });
+            }
+        }
+        let as_primary_automations = self.automations.for_user(primary);
+        for known in self.automations.for_user(None).values() {
+            let theirs = as_primary_automations.get(&known.automation.id);
+            let replaced =
+                theirs.is_some_and(|theirs| theirs.layer == lighthouse_settings::Layer::Personal);
+            let off = !known.enabled || theirs.is_some_and(|theirs| !theirs.enabled);
+            if let (Some(cron), false, false) = (
+                Self::automation_cron(&known.automation.trigger),
+                replaced,
+                off,
+            ) {
+                jobs.push(lighthouse_scheduler::Job {
+                    id: format!("{RUN_PREFIX}{}", known.automation.id),
+                    cron: cron.clone(),
+                    zone,
+                });
+            }
+        }
+        for user in snapshot.members.iter().map(|member| member.id) {
+            if !snapshot.personal.contains_key(&user) {
+                continue;
+            }
+            let zone = self.resolver.zone_of(Some(user));
+            for known in self.agents.for_user(Some(user)).values() {
+                if known.layer != lighthouse_settings::Layer::Personal || !known.enabled {
+                    continue;
+                }
+                if let Some(cron) = Self::cron_of(&known.agent.trigger) {
+                    jobs.push(lighthouse_scheduler::Job {
+                        id: format!("{}@{user}", known.agent.id),
+                        cron: cron.clone(),
+                        zone,
+                    });
+                }
+            }
+            for known in self.automations.for_user(Some(user)).values() {
+                if known.layer != lighthouse_settings::Layer::Personal || !known.enabled {
+                    continue;
+                }
+                if let Some(cron) = Self::automation_cron(&known.automation.trigger) {
+                    jobs.push(lighthouse_scheduler::Job {
+                        id: format!("{RUN_PREFIX}{}@{user}", known.automation.id),
+                        cron: cron.clone(),
+                        zone,
+                    });
+                }
+            }
+        }
+        jobs
+    }
+
+    fn refresh(&self) {
+        self.schedules.replace(self.jobs());
     }
 }
 
@@ -296,8 +427,8 @@ struct ServerCatalog {
     vault: Vault,
     runtime: Arc<Runtime>,
     agents: Arc<AgentRegistry>,
-    schedules: ScheduleHandle,
-    zone: Tz,
+    schedule: Arc<ScheduleSync>,
+    resolver: Arc<tenant_config::TenantConfig>,
 }
 
 /// The provider and model of a task, from the effective routing and providers.
@@ -341,7 +472,10 @@ impl ServerCatalog {
     }
 
     fn next_run(&self, expression: &str) -> Option<DateTime<Utc>> {
-        let now = Utc::now().with_timezone(&self.zone);
+        let zone = self
+            .resolver
+            .zone_of(lighthouse_audit::acting_user::current());
+        let now = Utc::now().with_timezone(&zone);
         let next = parse_cron(expression)
             .ok()?
             .find_next_occurrence(&now, false)
@@ -384,19 +518,10 @@ impl ServerCatalog {
                 .collect(),
             editable: known.editable,
             source: known.source.clone(),
+            layer: known.layer.as_str().to_owned(),
+            enabled: known.enabled,
+            disabled_by: known.disabled_by.map(|layer| layer.as_str().to_owned()),
         }
-    }
-
-    fn refresh_schedules(&self) -> Result<(), AgentChangeError> {
-        let agents: Vec<AgentDefinition> = self
-            .agents
-            .list()
-            .iter()
-            .map(|known| (*known.agent).clone())
-            .collect();
-        self.schedules
-            .update(&agents)
-            .map_err(|error| AgentChangeError::Failed(error.to_string()))
     }
 
     fn known_tools(&self) -> Vec<String> {
@@ -427,9 +552,10 @@ impl ServerCatalog {
     }
 }
 
-fn registry_error(error: RegistryError) -> AgentChangeError {
+pub(crate) fn settings_failure(error: lighthouse_settings::SettingsError) -> AgentChangeError {
+    use lighthouse_settings::SettingsError;
     match error {
-        RegistryError::Io(_) => AgentChangeError::Failed(error.to_string()),
+        SettingsError::Database(_) => AgentChangeError::Failed(error.to_string()),
         other => AgentChangeError::Rejected(other.to_string()),
     }
 }
@@ -454,19 +580,145 @@ impl Catalog for ServerCatalog {
             .await
     }
 
-    async fn save_agent(&self, source: &str) -> Result<AgentInfo, AgentChangeError> {
-        let agent = self.agents.save(source).map_err(registry_error)?;
-        self.refresh_schedules()?;
+    async fn save_agent(
+        &self,
+        source: &str,
+        owner: Option<Uuid>,
+    ) -> Result<AgentInfo, AgentChangeError> {
+        let agent = AgentDefinition::parse(source)
+            .map_err(|error| AgentChangeError::Rejected(error.to_string()))?;
+        if slugify(&agent.id) != agent.id || agent.id.is_empty() {
+            return Err(AgentChangeError::Rejected(
+                RegistryError::BadId(agent.id).to_string(),
+            ));
+        }
+        if owner.is_some()
+            && agent
+                .deliver
+                .iter()
+                .any(|target| matches!(target, Delivery::Mail(_)))
+        {
+            return Err(AgentChangeError::Rejected(
+                "your own agents deliver to `owner` or a Slack alias, not to other addresses"
+                    .to_owned(),
+            ));
+        }
+        self.settings
+            .set_file(
+                owner,
+                lighthouse_audit::acting_user::current(),
+                FileKind::Agent,
+                &agent.id,
+                source,
+            )
+            .await
+            .map_err(settings_failure)?;
+        self.schedule.refresh();
         self.agents
-            .get(&agent.id)
+            .get_for(owner, &agent.id)
             .map(|known| self.info(&known))
             .ok_or_else(|| AgentChangeError::Failed("the agent did not load".to_owned()))
     }
 
-    async fn delete_agent(&self, id: &str) -> Result<bool, AgentChangeError> {
-        let deleted = self.agents.delete(id).map_err(registry_error)?;
-        self.refresh_schedules()?;
-        Ok(deleted)
+    async fn delete_agent(&self, id: &str, owner: Option<Uuid>) -> Result<bool, AgentChangeError> {
+        let Some(known) = self.agents.get_for(owner, id) else {
+            return Ok(false);
+        };
+        let wanted = if owner.is_some() {
+            Layer::Personal
+        } else {
+            Layer::Tenant
+        };
+        if known.layer != wanted {
+            return Err(AgentChangeError::Rejected(
+                RegistryError::ReadOnly(id.to_owned()).to_string(),
+            ));
+        }
+        self.settings
+            .delete_file(
+                owner,
+                lighthouse_audit::acting_user::current(),
+                FileKind::Agent,
+                id,
+            )
+            .await
+            .map_err(settings_failure)?;
+        self.schedule.refresh();
+        Ok(true)
+    }
+
+    async fn switch(
+        &self,
+        kind: &str,
+        id: &str,
+        owner: Option<Uuid>,
+        enabled: bool,
+    ) -> Result<bool, AgentChangeError> {
+        let actor = lighthouse_audit::acting_user::current();
+        let (kind, exists) = match kind {
+            "agent" => (FileKind::Agent, self.agents.get_for(owner, id).is_some()),
+            "automation" => (
+                FileKind::Automation,
+                self.schedule.automations.get_for(owner, id).is_some(),
+            ),
+            _ => (FileKind::Skill, self.runtime.skills.exists(id)),
+        };
+        if !exists {
+            return Ok(false);
+        }
+        self.settings
+            .switch_file(owner, actor, kind, id, enabled)
+            .await
+            .map_err(settings_failure)?;
+        self.schedule.refresh();
+        Ok(true)
+    }
+
+    async fn save_skill(
+        &self,
+        name: &str,
+        source: &str,
+        owner: Option<Uuid>,
+    ) -> Result<(), AgentChangeError> {
+        let skill = lighthouse_skills::parse(source, name)
+            .map_err(|error| AgentChangeError::Rejected(error.to_string()))?;
+        if skill.name != name {
+            return Err(AgentChangeError::Rejected(format!(
+                "the file names the skill `{}`, not `{name}`",
+                skill.name
+            )));
+        }
+        self.settings
+            .set_file(
+                owner,
+                lighthouse_audit::acting_user::current(),
+                FileKind::Skill,
+                name,
+                source,
+            )
+            .await
+            .map_err(settings_failure)
+    }
+
+    async fn delete_skill(
+        &self,
+        name: &str,
+        owner: Option<Uuid>,
+    ) -> Result<bool, AgentChangeError> {
+        match self
+            .settings
+            .delete_file(
+                owner,
+                lighthouse_audit::acting_user::current(),
+                FileKind::Skill,
+                name,
+            )
+            .await
+        {
+            Ok(()) => Ok(true),
+            Err(lighthouse_settings::SettingsError::NotFound(_)) => Ok(false),
+            Err(error) => Err(settings_failure(error)),
+        }
     }
 
     async fn connectors(&self) -> Result<Vec<ConnectorInfo>, String> {
@@ -515,13 +767,17 @@ impl Catalog for ServerCatalog {
     }
 
     fn skills(&self) -> Vec<SkillInfo> {
-        let library = &self.runtime.skills;
-        library
-            .names()
-            .filter_map(|name| library.get(name))
-            .map(|skill| SkillInfo {
-                name: skill.name.clone(),
-                description: skill.description.clone(),
+        self.runtime
+            .skills
+            .all()
+            .into_iter()
+            .map(|known| SkillInfo {
+                name: known.skill.name,
+                description: known.skill.description,
+                layer: known.layer.as_str().to_owned(),
+                enabled: known.enabled,
+                disabled_by: known.disabled_by.map(|layer| layer.as_str().to_owned()),
+                source: known.source,
             })
             .collect()
     }
@@ -833,6 +1089,7 @@ pub struct Workspace {
     state: ApiState,
     pool: Arc<AgentPool>,
     settings: TenantSettings,
+    schedule: Arc<ScheduleSync>,
     scheduler: std::sync::Mutex<Option<Scheduler>>,
     tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -861,7 +1118,10 @@ impl Workspace {
         let mut tasks = self.tasks.lock().expect("tasks lock");
         tasks.push(tokio::spawn(scheduler.run()));
         tasks.push(tokio::spawn(self.pool.clone().run_maintenance()));
-        tasks.push(tokio::spawn(follow_settings(self.settings.clone())));
+        tasks.push(tokio::spawn(follow_settings(
+            self.settings.clone(),
+            self.schedule.clone(),
+        )));
     }
 
     fn stop(&self) {
@@ -871,15 +1131,66 @@ impl Workspace {
     }
 }
 
-/// Picks up settings that another server process changed.
-async fn follow_settings(settings: TenantSettings) {
+/// Picks up settings that another server process changed, and brings the
+/// schedules in line after every change.
+async fn follow_settings(settings: TenantSettings, schedule: Arc<ScheduleSync>) {
     let mut ticker = tokio::time::interval(SETTINGS_INTERVAL);
+    let mut changes = settings.subscribe();
     loop {
-        ticker.tick().await;
-        if let Err(error) = settings.refresh().await {
-            tracing::warn!(%error, "cannot refresh the settings");
+        tokio::select! {
+            _ = ticker.tick() => {
+                if let Err(error) = settings.refresh().await {
+                    tracing::warn!(%error, "cannot refresh the settings");
+                }
+            }
+            changed = changes.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                schedule.refresh();
+            }
         }
     }
+}
+
+/// Takes over agents or automations created as files before they moved to the
+/// database, into the tenant layer, and sets the directory aside. What is
+/// already in the database stays. Failing to move the directory changes nothing:
+/// the next start finds the same files and keeps what is there.
+async fn import_created(
+    settings: &TenantSettings,
+    directory: &std::path::Path,
+    kind: FileKind,
+) -> anyhow::Result<()> {
+    if !directory.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.extension().is_none_or(|extension| extension != "md") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path)?;
+        let id = match kind {
+            FileKind::Agent => AgentDefinition::parse(&source).map(|agent| agent.id).ok(),
+            _ => lighthouse_core::automation::Automation::parse(&source)
+                .map(|automation| automation.id)
+                .ok(),
+        };
+        let Some(id) = id else {
+            tracing::warn!(path = %path.display(), "leaving an invalid file behind");
+            continue;
+        };
+        if settings.import_file(kind, &id, &source).await? {
+            tracing::info!(%id, kind = kind.as_str(), "imported a created file");
+        }
+    }
+    let mut moved = directory.as_os_str().to_owned();
+    moved.push(".imported");
+    if let Err(error) = std::fs::rename(directory, &moved) {
+        tracing::warn!(%error, path = %directory.display(), "cannot set the imported directory aside");
+    }
+    Ok(())
 }
 
 impl Drop for Workspace {
@@ -1078,7 +1389,8 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
             Arc::new(DeskToolFactory::new(desk.clone(), mcp)),
         )),
         policy: ToolPolicy::live(resolver.clone()),
-        skills: SkillLibrary::load(&config.paths.skills)?,
+        skills: lighthouse_runtime::SkillRegistry::from(SkillLibrary::load(&config.paths.skills)?)
+            .layered(settings.clone()),
         audit: audit.clone(),
         notifier: Arc::new({
             let notifier = ChannelNotifier::with_vaults(
@@ -1097,9 +1409,11 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         desk: desk.clone(),
         people: Some(resolver.clone()),
     });
-    let agents = Arc::new(AgentRegistry::load(
+    import_created(&settings, &paths.created_agents, FileKind::Agent).await?;
+    import_created(&settings, &paths.created_automations, FileKind::Automation).await?;
+    let agents = Arc::new(AgentRegistry::layered(
         config.paths.agents.clone(),
-        paths.created_agents,
+        settings.clone(),
     )?);
     let definitions: Vec<AgentDefinition> = agents
         .list()
@@ -1121,16 +1435,16 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         settings: Some(settings.clone()),
         people: Some(resolver.clone()),
     }));
-    let automation_files = Arc::new(AutomationRegistry::load(
+    let automation_files = Arc::new(AutomationRegistry::layered(
         config.paths.automations.clone(),
-        paths.created_automations,
+        settings.clone(),
     )?);
     tracing::info!(count = automation_files.list().len(), "automations loaded");
     let engine = Arc::new(
         AutomationEngine::new(
             runtime.clone(),
             agents.clone(),
-            automation_files,
+            automation_files.clone(),
             outcomes.clone(),
             desk.clone(),
         )
@@ -1172,14 +1486,26 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         &definitions,
         pool.clone(),
     )?;
-    let automations = Arc::new(ServerAutomations::new(engine, scheduler.handle(), zone)?);
+    let schedule = Arc::new(ScheduleSync {
+        settings: settings.clone(),
+        resolver: resolver.clone(),
+        agents: agents.clone(),
+        automations: automation_files,
+        schedules: scheduler.handle(),
+    });
+    schedule.refresh();
+    let automations = Arc::new(ServerAutomations::new(
+        engine,
+        schedule.clone(),
+        resolver.clone(),
+    ));
     let catalog = Arc::new(ServerCatalog {
         settings: settings.clone(),
         vault: vault.clone(),
         runtime: pool.runtime.clone(),
         agents,
-        schedules: scheduler.handle(),
-        zone,
+        schedule: schedule.clone(),
+        resolver: resolver.clone(),
     });
     let assistant = Arc::new(BrainAssistant {
         brain: brain.clone(),
@@ -1212,6 +1538,7 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         state,
         pool,
         settings,
+        schedule,
         scheduler: std::sync::Mutex::new(Some(scheduler)),
         tasks: std::sync::Mutex::default(),
     })
@@ -1380,6 +1707,200 @@ mod tests {
         assert!(config.delivery.smtp.is_none());
         let error = build_with(config, Hooks::default()).await.err().unwrap();
         assert!(error.to_string().contains("needs mail"), "{error}");
+    }
+
+    async fn store_with_people() -> (Store, Uuid, Uuid) {
+        let store = lighthouse_store::testing::fresh_store().await;
+        let (first, second) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        for (id, email, role) in [
+            (first, "a@example.com", "owner"),
+            (second, "b@example.com", "member"),
+        ] {
+            lighthouse_store::sqlx::query(
+                "INSERT INTO users (id, email, name) VALUES ($1, $2, 'x')",
+            )
+            .bind(id)
+            .bind(email)
+            .execute(store.pool())
+            .await
+            .unwrap();
+            lighthouse_store::sqlx::query(
+                "INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, $3)",
+            )
+            .bind(TenantId::DEFAULT.as_uuid())
+            .bind(id)
+            .bind(role)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        }
+        (store, first, second)
+    }
+
+    fn scheduled(name: &str, cron: &str) -> String {
+        format!("---\nname: {name}\nscope: org\ntrigger:\n  cron: \"{cron}\"\n---\nGo.\n")
+    }
+
+    #[tokio::test]
+    async fn schedules_run_for_their_person_in_their_time_zone() {
+        let (store, first, second) = store_with_people().await;
+        let dir = tempfile::tempdir().unwrap();
+        let managed = dir.path().join("agents");
+        std::fs::create_dir(&managed).unwrap();
+        std::fs::write(
+            managed.join("built-in.md"),
+            scheduled("Built in", "0 7 * * *"),
+        )
+        .unwrap();
+        std::fs::write(
+            managed.join("skipped.md"),
+            scheduled("Skipped", "0 7 * * *"),
+        )
+        .unwrap();
+        let settings = TenantSettings::open(
+            store.clone(),
+            TenantId::DEFAULT,
+            Arc::default(),
+            lighthouse_settings::Options::default(),
+        )
+        .await
+        .unwrap();
+        let key =
+            MasterKey::from_base64(&"QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=".to_owned())
+                .unwrap();
+        let resolver = Arc::new(
+            tenant_config::TenantConfig::new(
+                settings.clone(),
+                Vault::new(store.clone(), TenantId::DEFAULT, &key),
+                None,
+            )
+            .with_person_defaults(None, chrono_tz::Europe::Berlin),
+        );
+        let agents = Arc::new(AgentRegistry::layered(managed, settings.clone()).unwrap());
+        let automations = Arc::new(
+            AutomationRegistry::layered(dir.path().join("automations"), settings.clone()).unwrap(),
+        );
+        struct Runner;
+        #[async_trait]
+        impl AgentRunner for Runner {
+            async fn start(&self, _: &str, _: &str) {}
+        }
+        let scheduler =
+            Scheduler::new(store, TenantId::DEFAULT, "UTC", &[], Arc::new(Runner)).unwrap();
+        let sync = ScheduleSync {
+            settings: settings.clone(),
+            resolver,
+            agents,
+            automations,
+            schedules: scheduler.handle(),
+        };
+        let tokyo = serde_json::json!("Asia/Tokyo");
+        settings
+            .set_value(
+                Some(second),
+                Some(second),
+                lighthouse_settings::TIMEZONE,
+                &tokyo,
+            )
+            .await
+            .unwrap();
+        settings
+            .set_file(
+                Some(second),
+                Some(second),
+                FileKind::Agent,
+                "own",
+                &scheduled("Own", "0 8 * * *"),
+            )
+            .await
+            .unwrap();
+        settings
+            .set_file(
+                Some(first),
+                Some(first),
+                FileKind::Agent,
+                "built-in",
+                &scheduled("Built in", "0 9 * * *"),
+            )
+            .await
+            .unwrap();
+        settings
+            .switch_file(None, None, FileKind::Agent, "skipped", false)
+            .await
+            .unwrap();
+        let automation =
+            "---\nname: Nightly\ntrigger:\n  cron: \"0 1 * * *\"\nsteps:\n  - agent: own\n---\nx\n";
+        settings
+            .set_file(
+                Some(second),
+                Some(second),
+                FileKind::Automation,
+                "nightly",
+                automation,
+            )
+            .await
+            .unwrap();
+        let jobs = sync.jobs();
+        let job = |id: String| jobs.iter().find(|job| job.id == id).cloned();
+        let own = job(format!("own@{second}")).unwrap();
+        assert_eq!(
+            (own.cron.as_str(), own.zone),
+            ("0 8 * * *", chrono_tz::Asia::Tokyo)
+        );
+        assert_eq!(
+            job(format!("{RUN_PREFIX}nightly@{second}")).unwrap().zone,
+            chrono_tz::Asia::Tokyo
+        );
+        let replaced = job(format!("built-in@{first}")).unwrap();
+        assert_eq!(
+            (replaced.cron.as_str(), replaced.zone),
+            ("0 9 * * *", chrono_tz::Europe::Berlin)
+        );
+        assert!(
+            job("built-in".to_owned()).is_none(),
+            "not a second time for the tenant"
+        );
+        assert!(
+            job("skipped".to_owned()).is_none(),
+            "the tenant switched it off"
+        );
+        assert_eq!(split_job(&format!("own@{second}")), ("own", Some(second)));
+        assert_eq!(split_job("brief"), ("brief", None));
+        sync.refresh();
+    }
+
+    #[tokio::test]
+    async fn files_created_before_are_taken_over_once() {
+        let (store, _, _) = store_with_people().await;
+        let settings = TenantSettings::open(
+            store,
+            TenantId::DEFAULT,
+            Arc::default(),
+            lighthouse_settings::Options::default(),
+        )
+        .await
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let created = dir.path().join("created");
+        std::fs::create_dir(&created).unwrap();
+        std::fs::write(created.join("old.md"), scheduled("Old", "0 7 * * *")).unwrap();
+        std::fs::write(created.join("bad.md"), "nonsense").unwrap();
+        import_created(&settings, &created, FileKind::Agent)
+            .await
+            .unwrap();
+        let layer = settings.layer(None);
+        assert_eq!(layer.files.len(), 1);
+        assert!(
+            layer
+                .files
+                .contains_key(&(FileKind::Agent, "old".to_owned()))
+        );
+        assert!(!created.exists(), "set aside");
+        assert!(dir.path().join("created.imported/old.md").exists());
+        import_created(&settings, &created, FileKind::Agent)
+            .await
+            .unwrap();
+        assert_eq!(settings.layer(None).files.len(), 1);
     }
 
     #[test]

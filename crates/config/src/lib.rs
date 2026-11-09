@@ -170,8 +170,12 @@ pub struct SettingsLimits {
     /// Connected sources per tenant, and again per person.
     #[serde(default = "default_source_limit")]
     pub sources: usize,
+    /// Agents, automations and skills per tenant, and again per person.
+    #[serde(default = "default_file_limit")]
+    pub files: usize,
     /// Entries of all layers of one tenant together: providers, models,
-    /// routes, connectors, sources and settings of the tenant and all its members.
+    /// routes, connectors, sources, files and settings of the tenant and all
+    /// its members.
     #[serde(default = "default_tenant_entry_limit")]
     pub tenant_entries: usize,
 }
@@ -192,6 +196,10 @@ const fn default_source_limit() -> usize {
     10
 }
 
+const fn default_file_limit() -> usize {
+    200
+}
+
 const fn default_tenant_entry_limit() -> usize {
     2000
 }
@@ -203,6 +211,7 @@ impl Default for SettingsLimits {
             models: default_model_limit(),
             connectors: default_connector_limit(),
             sources: default_source_limit(),
+            files: default_file_limit(),
             tenant_entries: default_tenant_entry_limit(),
         }
     }

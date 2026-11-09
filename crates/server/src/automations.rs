@@ -3,14 +3,13 @@
 use crate::outcomes::Outcomes;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
 use lighthouse_api::hooks::{Action, Entitlements};
 use lighthouse_api::{
     AgentChangeError, AutomationDryRun, AutomationInfo, AutomationStepInfo, AutomationTriggerInfo,
     Automations, DryRunRequest, PlannedStep, TriggerError,
 };
 use lighthouse_audit::{AuditError, RunRecord};
-use lighthouse_core::agent::{ToolLevel, parse_cron};
+use lighthouse_core::agent::{ToolLevel, parse_cron, slugify};
 use lighthouse_core::automation::{
     Automation, AutomationStep, AutomationTrigger, Condition, RUN_PREFIX, matches,
 };
@@ -20,7 +19,7 @@ use lighthouse_runtime::{
     AgentOutcome, AgentRegistry, AgentSteps, AutomationRegistry, LoadedAutomation, RegistryError,
     Runtime,
 };
-use lighthouse_scheduler::ScheduleHandle;
+use lighthouse_settings::FileKind;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -91,11 +90,19 @@ impl AutomationEngine {
         }
     }
 
-    fn enabled(switches: &HashMap<String, bool>, automation: &Automation) -> bool {
+    /// Whether an automation may run: no layer switched it off, and for a
+    /// shared one the tenant's switch is on, or its file says so.
+    fn enabled(switches: &HashMap<String, bool>, known: &LoadedAutomation) -> bool {
+        if !known.enabled {
+            return false;
+        }
+        if known.layer == lighthouse_settings::Layer::Personal {
+            return known.automation.enabled;
+        }
         switches
-            .get(&automation.id)
+            .get(&known.automation.id)
             .copied()
-            .unwrap_or(automation.enabled)
+            .unwrap_or(known.automation.enabled)
     }
 
     /// Registers a run of an automation and runs it in the background.
@@ -133,7 +140,14 @@ impl AutomationEngine {
     /// Continues a paused automation run.
     pub async fn resume(self: &Arc<Self>, run: RunId, agent_id: &str, state: Value) {
         let id = agent_id.strip_prefix(RUN_PREFIX).unwrap_or(agent_id);
-        let Some(known) = self.automations.get(id) else {
+        let user = self
+            .runtime
+            .audit
+            .run_user(run.as_uuid())
+            .await
+            .ok()
+            .flatten();
+        let Some(known) = self.automations.get_for(user, id) else {
             let reason = format!("the automation `{id}` no longer exists");
             let end = lighthouse_audit::RunEnd {
                 status: lighthouse_audit::RunStatus::Failed,
@@ -187,24 +201,60 @@ impl AutomationEngine {
     }
 
     /// Starts a scheduled automation, given as `automation:<id>`.
-    pub async fn start_scheduled(self: &Arc<Self>, scheduled: &str) {
+    pub async fn start_scheduled(self: &Arc<Self>, scheduled: &str, user: Option<Uuid>) {
         let id = scheduled.strip_prefix(RUN_PREFIX).unwrap_or(scheduled);
-        let Some(known) = self.automations.get(id) else {
+        let Some(known) = self.automations.get_for(user, id) else {
             return;
         };
-        if !Self::enabled(&self.switches().await, &known.automation) {
+        if !Self::enabled(&self.switches().await, &known) {
             return;
         }
-        if let Err(error) = self.start(known.automation, "cron", Value::Null).await {
+        let started = self
+            .runtime
+            .as_user(user, self.start(known.automation, "cron", Value::Null))
+            .await;
+        if let Err(error) = started {
             tracing::error!(automation = %id, %error, "cannot start the automation");
         }
     }
 
+    /// Starts the automations a person made for themselves that wait for an
+    /// event of theirs, such as one from their own source. Shared automations
+    /// never hear of it.
+    pub async fn emit_personal(
+        self: &Arc<Self>,
+        user: Uuid,
+        name: &str,
+        payload: Value,
+    ) -> Vec<Uuid> {
+        let known: Vec<LoadedAutomation> = self
+            .automations
+            .for_user(Some(user))
+            .values()
+            .filter(|known| known.layer == lighthouse_settings::Layer::Personal)
+            .cloned()
+            .collect();
+        self.runtime
+            .as_user(Some(user), self.start_matching(known, name, payload))
+            .await
+    }
+
     /// Starts every enabled automation that waits for this event.
     pub async fn emit(self: &Arc<Self>, name: &str, payload: Value) -> Vec<Uuid> {
+        let known = self.automations.list();
+        self.start_matching(known, name, payload).await
+    }
+
+    async fn start_matching(
+        self: &Arc<Self>,
+        known: Vec<LoadedAutomation>,
+        name: &str,
+        payload: Value,
+    ) -> Vec<Uuid> {
         let switches = self.switches().await;
         let mut runs = Vec::new();
-        for known in self.automations.list() {
+        for known in known {
+            let enabled = Self::enabled(&switches, &known);
             let automation = known.automation;
             let AutomationTrigger::Event {
                 name: wanted,
@@ -213,10 +263,7 @@ impl AutomationEngine {
             else {
                 continue;
             };
-            if wanted != name
-                || !Self::enabled(&switches, &automation)
-                || !matches(filter, &payload)
-            {
+            if wanted != name || !enabled || !matches(filter, &payload) {
                 continue;
             }
             let trigger = format!("event:{name}");
@@ -255,7 +302,20 @@ impl AutomationEngine {
             "reason": record.reason,
             "trigger": record.trigger,
         });
-        self.emit(event, payload).await;
+        // A person's own agent concerns only them; other runs concern the
+        // tenant, and the person they worked for hears of them too.
+        let user = self.runtime.audit.run_user(record.id).await.ok().flatten();
+        let own = user.is_some_and(|user| {
+            self.agents
+                .get_for(Some(user), &record.agent_id)
+                .is_some_and(|known| known.layer == lighthouse_settings::Layer::Personal)
+        });
+        if !own {
+            self.emit(event, payload.clone()).await;
+        }
+        if let Some(user) = user {
+            self.emit_personal(user, event, payload).await;
+        }
     }
 }
 
@@ -360,8 +420,21 @@ fn plan_steps(
 /// Serves the automations to the apps.
 pub struct ServerAutomations {
     engine: Arc<AutomationEngine>,
-    schedules: ScheduleHandle,
-    zone: Tz,
+    schedule: Arc<crate::ScheduleSync>,
+    resolver: Arc<crate::tenant_config::TenantConfig>,
+}
+
+/// Whether a step of an automation mails an address directly.
+fn notifies_mail(steps: &[AutomationStep]) -> bool {
+    steps.iter().any(|step| match step {
+        AutomationStep::Notify { to, .. } => {
+            matches!(to, lighthouse_core::agent::Delivery::Mail(_))
+        }
+        AutomationStep::Branch {
+            then, otherwise, ..
+        } => notifies_mail(then) || notifies_mail(otherwise),
+        _ => false,
+    })
 }
 
 fn registry_error(error: RegistryError) -> AgentChangeError {
@@ -382,41 +455,24 @@ fn condition_summary(condition: &Condition) -> String {
 }
 
 impl ServerAutomations {
-    /// Serves the automations of an engine and keeps their schedules current.
-    pub fn new(
+    /// Serves the automations of an engine.
+    pub(crate) fn new(
         engine: Arc<AutomationEngine>,
-        schedules: ScheduleHandle,
-        zone: Tz,
-    ) -> anyhow::Result<Self> {
-        let automations = Self {
+        schedule: Arc<crate::ScheduleSync>,
+        resolver: Arc<crate::tenant_config::TenantConfig>,
+    ) -> Self {
+        Self {
             engine,
-            schedules,
-            zone,
-        };
-        automations
-            .refresh_schedules()
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
-        Ok(automations)
-    }
-
-    fn refresh_schedules(&self) -> Result<(), AgentChangeError> {
-        let entries: Vec<(String, String)> = self
-            .engine
-            .automations
-            .list()
-            .into_iter()
-            .filter_map(|known| match &known.automation.trigger {
-                AutomationTrigger::Cron(cron) => Some((known.automation.id.clone(), cron.clone())),
-                _ => None,
-            })
-            .collect();
-        self.schedules
-            .update_automations(&entries)
-            .map_err(|error| AgentChangeError::Failed(error.to_string()))
+            schedule,
+            resolver,
+        }
     }
 
     fn next_run(&self, expression: &str) -> Option<DateTime<Utc>> {
-        let now = Utc::now().with_timezone(&self.zone);
+        let zone = self
+            .resolver
+            .zone_of(lighthouse_audit::acting_user::current());
+        let now = Utc::now().with_timezone(&zone);
         let next = parse_cron(expression)
             .ok()?
             .find_next_occurrence(&now, false)
@@ -435,8 +491,10 @@ impl ServerAutomations {
             AutomationTrigger::Webhook { filter } => ("webhook", None, None, filter.clone()),
             AutomationTrigger::Manual => ("manual", None, None, Default::default()),
         };
-        let enabled = AutomationEngine::enabled(switches, automation);
+        let enabled = AutomationEngine::enabled(switches, known);
         AutomationInfo {
+            layer: known.layer.as_str().to_owned(),
+            disabled_by: known.disabled_by.map(|layer| layer.as_str().to_owned()),
             id: automation.id.clone(),
             name: automation.name.clone(),
             description: automation.description.clone(),
@@ -481,6 +539,13 @@ impl ServerAutomations {
         }
     }
 
+    fn settings(&self) -> Result<&lighthouse_settings::TenantSettings, AgentChangeError> {
+        self.engine
+            .automations
+            .settings()
+            .ok_or_else(|| AgentChangeError::Failed("no settings".to_owned()))
+    }
+
     fn known(&self, id: &str) -> Result<LoadedAutomation, TriggerError> {
         self.engine
             .automations
@@ -511,23 +576,64 @@ impl Automations for ServerAutomations {
             .map(|known| self.info(&known, &switches)))
     }
 
-    async fn save(&self, source: &str) -> Result<AutomationInfo, AgentChangeError> {
-        let automation = self
-            .engine
-            .automations
-            .save(source)
-            .map_err(registry_error)?;
-        self.refresh_schedules()?;
-        self.get(&automation.id)
+    async fn save(
+        &self,
+        source: &str,
+        owner: Option<Uuid>,
+    ) -> Result<AutomationInfo, AgentChangeError> {
+        let automation = Automation::parse(source)
+            .map_err(|error| AgentChangeError::Rejected(error.to_string()))?;
+        if slugify(&automation.id) != automation.id {
+            return Err(registry_error(RegistryError::BadId(automation.id)));
+        }
+        if owner.is_some() && notifies_mail(&automation.steps) {
+            return Err(AgentChangeError::Rejected(
+                "your own automations notify `owner` or a Slack alias, not other addresses"
+                    .to_owned(),
+            ));
+        }
+        self.settings()?
+            .set_file(
+                owner,
+                lighthouse_audit::acting_user::current(),
+                FileKind::Automation,
+                &automation.id,
+                source,
+            )
             .await
-            .map_err(AgentChangeError::Failed)?
+            .map_err(crate::settings_failure)?;
+        self.schedule.refresh();
+        let switches = self.engine.switches().await;
+        self.engine
+            .automations
+            .get_for(owner, &automation.id)
+            .map(|known| self.info(&known, &switches))
             .ok_or_else(|| AgentChangeError::Failed("the automation did not load".to_owned()))
     }
 
-    async fn delete(&self, id: &str) -> Result<bool, AgentChangeError> {
-        let deleted = self.engine.automations.delete(id).map_err(registry_error)?;
-        self.refresh_schedules()?;
-        Ok(deleted)
+    async fn delete(&self, id: &str, owner: Option<Uuid>) -> Result<bool, AgentChangeError> {
+        let Some(known) = self.engine.automations.get_for(owner, id) else {
+            return Ok(false);
+        };
+        let wanted = if owner.is_some() {
+            lighthouse_settings::Layer::Personal
+        } else {
+            lighthouse_settings::Layer::Tenant
+        };
+        if known.layer != wanted {
+            return Err(registry_error(RegistryError::ReadOnly(id.to_owned())));
+        }
+        self.settings()?
+            .delete_file(
+                owner,
+                lighthouse_audit::acting_user::current(),
+                FileKind::Automation,
+                id,
+            )
+            .await
+            .map_err(crate::settings_failure)?;
+        self.schedule.refresh();
+        Ok(true)
     }
 
     async fn set_enabled(
@@ -535,8 +641,22 @@ impl Automations for ServerAutomations {
         id: &str,
         enabled: bool,
     ) -> Result<Option<AutomationInfo>, AgentChangeError> {
-        if self.engine.automations.get(id).is_none() {
+        let Some(known) = self.engine.automations.get(id) else {
             return Ok(None);
+        };
+        if known.layer == lighthouse_settings::Layer::Personal {
+            self.settings()?
+                .switch_file(
+                    lighthouse_audit::acting_user::current(),
+                    lighthouse_audit::acting_user::current(),
+                    FileKind::Automation,
+                    id,
+                    enabled,
+                )
+                .await
+                .map_err(crate::settings_failure)?;
+            self.schedule.refresh();
+            return self.get(id).await.map_err(AgentChangeError::Failed);
         }
         self.engine
             .desk
@@ -563,7 +683,7 @@ impl Automations for ServerAutomations {
                 "the automation `{id}` has no webhook trigger"
             )));
         };
-        if !AutomationEngine::enabled(&self.engine.switches().await, &known.automation) {
+        if !AutomationEngine::enabled(&self.engine.switches().await, &known) {
             return Err(TriggerError::Refused(format!(
                 "the automation `{id}` is switched off"
             )));

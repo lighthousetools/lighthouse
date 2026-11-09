@@ -61,11 +61,16 @@ impl ConnectedService {
     async fn handle(&self, report: &SyncReport) -> anyhow::Result<()> {
         // What happens in a person's own source stays with them: shared
         // automations and alerts would show it to the whole tenant.
-        let personal = self
+        let owner = self
             .syncer
             .source(&report.source)
-            .is_some_and(|source| source.owner.is_some());
-        if personal {
+            .and_then(|source| source.owner);
+        if let Some(owner) = owner {
+            for event in &report.events {
+                self.engine
+                    .emit_personal(owner, &event.name, event.payload.clone())
+                    .await;
+            }
             self.events
                 .emit("connected.changed", json!({"source": report.source}));
             return Ok(());

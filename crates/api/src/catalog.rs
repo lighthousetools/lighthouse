@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use lighthouse_audit::{DailyCost, RunRecord};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 const DEFAULT_COST_DAYS: i32 = 30;
 const AGENT_RUNS: i64 = 20;
@@ -55,6 +56,23 @@ pub struct AgentInfo {
     /// Proposals of it the owner denied or changed before approving.
     #[serde(default)]
     pub corrections: i64,
+    /// Where it comes from: `instance`, `tenant` or `personal`.
+    #[serde(default = "instance")]
+    pub layer: String,
+    /// Whether it may run for the caller.
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+    /// The layer that switched it off, if one did.
+    #[serde(default)]
+    pub disabled_by: Option<String>,
+}
+
+fn instance() -> String {
+    "instance".to_owned()
+}
+
+const fn enabled() -> bool {
+    true
 }
 
 /// Which provider and model serve a task, from the configuration.
@@ -106,6 +124,18 @@ pub struct SkillInfo {
     pub name: String,
     /// What it is for.
     pub description: String,
+    /// Where it comes from: `instance`, `tenant` or `personal`.
+    #[serde(default = "instance")]
+    pub layer: String,
+    /// Whether it is in use for the caller.
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+    /// The layer that switched it off, if one did.
+    #[serde(default)]
+    pub disabled_by: Option<String>,
+    /// The file, for one created in the apps.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// Why an agent cannot be changed.
@@ -128,10 +158,43 @@ pub trait Catalog: Send + Sync {
     fn agent(&self, id: &str) -> Option<AgentInfo>;
     /// Writes an agent file from a description. It is not saved.
     async fn draft_agent(&self, description: &str) -> Result<String, String>;
-    /// Validates and stores an agent file.
-    async fn save_agent(&self, source: &str) -> Result<AgentInfo, AgentChangeError>;
-    /// Deletes an agent. Returns whether it existed.
-    async fn delete_agent(&self, id: &str) -> Result<bool, AgentChangeError>;
+    /// Validates and stores an agent file: for a member with an owner, else for
+    /// the tenant.
+    async fn save_agent(
+        &self,
+        source: &str,
+        owner: Option<Uuid>,
+    ) -> Result<AgentInfo, AgentChangeError>;
+    /// Deletes an agent of a layer. Returns whether it existed.
+    async fn delete_agent(&self, id: &str, owner: Option<Uuid>) -> Result<bool, AgentChangeError>;
+    /// Switches an `agent`, `automation` or `skill` on or off for a layer.
+    /// Returns whether it exists.
+    async fn switch(
+        &self,
+        _kind: &str,
+        _id: &str,
+        _owner: Option<Uuid>,
+        _enabled: bool,
+    ) -> Result<bool, AgentChangeError> {
+        Ok(false)
+    }
+    /// Validates and stores a skill file.
+    async fn save_skill(
+        &self,
+        _name: &str,
+        _source: &str,
+        _owner: Option<Uuid>,
+    ) -> Result<(), AgentChangeError> {
+        Err(AgentChangeError::Failed("no skills here".to_owned()))
+    }
+    /// Deletes a skill of a layer. Returns whether it existed.
+    async fn delete_skill(
+        &self,
+        _name: &str,
+        _owner: Option<Uuid>,
+    ) -> Result<bool, AgentChangeError> {
+        Ok(false)
+    }
     /// Lists the connectors.
     async fn connectors(&self) -> Result<Vec<ConnectorInfo>, String>;
     /// Lists the skills.
@@ -154,6 +217,55 @@ pub struct AgentDraftRequest {
 pub struct AgentSource {
     /// File content.
     pub source: String,
+}
+
+/// Which layer a change of an agent or automation is for.
+#[derive(Deserialize)]
+pub(crate) struct LayerQuery {
+    layer: Option<String>,
+}
+
+/// Whose a new file becomes: the named layer, else the tenant's for owners and
+/// admins and their own for members.
+pub(crate) fn save_owner(
+    query: &LayerQuery,
+    caller: &crate::Caller,
+) -> Result<Option<Uuid>, ApiError> {
+    let personal = match query.layer.as_deref() {
+        Some("me") => true,
+        Some("tenant") => false,
+        Some(_) => return Err(ApiError(StatusCode::NOT_FOUND, "unknown layer".to_owned())),
+        None => !caller.role.can_manage(),
+    };
+    named_owner(personal, caller)
+}
+
+/// Whose file a deletion means: the named layer, else the layer it comes from.
+pub(crate) fn delete_owner(
+    query: &LayerQuery,
+    caller: &crate::Caller,
+    layer: Option<&str>,
+) -> Result<Option<Uuid>, ApiError> {
+    let personal = match query.layer.as_deref() {
+        Some("me") => true,
+        Some("tenant") => false,
+        Some(_) => return Err(ApiError(StatusCode::NOT_FOUND, "unknown layer".to_owned())),
+        None => layer == Some("personal"),
+    };
+    named_owner(personal, caller)
+}
+
+fn named_owner(personal: bool, caller: &crate::Caller) -> Result<Option<Uuid>, ApiError> {
+    if !personal {
+        caller.require_manager()?;
+        return Ok(None);
+    }
+    caller.user.map(Some).ok_or_else(|| {
+        ApiError(
+            StatusCode::BAD_REQUEST,
+            "the admin token has no personal layer".to_owned(),
+        )
+    })
 }
 
 /// Parameters of the cost report.
@@ -285,11 +397,14 @@ pub(crate) async fn draft_agent(
 )]
 pub(crate) async fn save_agent(
     Scoped(state): Scoped,
+    caller: crate::Caller,
+    Query(query): Query<LayerQuery>,
     Json(request): Json<AgentSource>,
 ) -> Result<Json<AgentInfo>, ApiError> {
+    let owner = save_owner(&query, &caller)?;
     let agent = state
         .catalog
-        .save_agent(&request.source)
+        .save_agent(&request.source, owner)
         .await
         .map_err(change_error)?;
     Ok(Json(agent))
@@ -309,11 +424,15 @@ pub(crate) async fn save_agent(
 )]
 pub(crate) async fn delete_agent(
     Scoped(state): Scoped,
+    caller: crate::Caller,
+    Query(query): Query<LayerQuery>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    let layer = state.catalog.agent(&id).map(|agent| agent.layer);
+    let owner = delete_owner(&query, &caller, layer.as_deref())?;
     if state
         .catalog
-        .delete_agent(&id)
+        .delete_agent(&id, owner)
         .await
         .map_err(change_error)?
     {
@@ -391,7 +510,6 @@ mod tests {
     use lighthouse_audit::NewApproval;
     use lighthouse_core::RunId;
     use serde_json::{Value, json};
-    use uuid::Uuid;
 
     fn tool(level: &str) -> AgentTool {
         AgentTool {

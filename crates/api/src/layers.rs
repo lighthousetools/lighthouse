@@ -961,6 +961,110 @@ pub(crate) async fn switch_source(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Switches an agent, automation or skill on or off in a layer: one of the
+/// layer itself, or one of a lower layer for this layer only. `kind` is `agents`,
+/// `automations` or `skills`.
+#[utoipa::path(
+    put,
+    path = "/settings/{layer}/{kind}/{id}/enabled",
+    params(("layer" = String, Path, description = "`tenant` or `me`"),
+        ("kind" = String, Path, description = "`agents`, `automations` or `skills`"),
+        ("id" = String, Path, description = "ID or name")),
+    request_body = SwitchInput,
+    responses((status = 204), (status = 404, description = "Unknown entry")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn switch_file(
+    State(instance): State<Instance>,
+    Scoped(state): Scoped,
+    caller: Caller,
+    Path((layer, kind, id)): Path<(String, String, String)>,
+    Json(input): Json<SwitchInput>,
+) -> Result<StatusCode, ApiError> {
+    let kind = match kind.as_str() {
+        "agents" => "agent",
+        "automations" => "automation",
+        "skills" => "skill",
+        _ => return Err(ApiError(StatusCode::NOT_FOUND, "unknown kind".to_owned())),
+    };
+    let owner = may_change(&instance, &caller, &layer, kind).await?;
+    let found = state
+        .catalog
+        .switch(kind, &id, owner, input.enabled)
+        .await
+        .map_err(file_error)?;
+    if !found {
+        return Err(ApiError(StatusCode::NOT_FOUND, format!("unknown {kind}")));
+    }
+    changed(&state);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Adds or replaces a skill in a layer, as a `SKILL.md` file.
+#[utoipa::path(
+    put,
+    path = "/settings/{layer}/skills/{name}",
+    params(("layer" = String, Path, description = "`tenant` or `me`"),
+        ("name" = String, Path, description = "Skill name")),
+    request_body = crate::AgentSource,
+    responses((status = 204), (status = 422, description = "Invalid file")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn put_skill(
+    State(instance): State<Instance>,
+    Scoped(state): Scoped,
+    caller: Caller,
+    Path((layer, name)): Path<(String, String)>,
+    Json(input): Json<crate::AgentSource>,
+) -> Result<StatusCode, ApiError> {
+    let owner = may_change(&instance, &caller, &layer, "skill").await?;
+    state
+        .catalog
+        .save_skill(&name, &input.source, owner)
+        .await
+        .map_err(file_error)?;
+    changed(&state);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deletes a skill of a layer.
+#[utoipa::path(
+    delete,
+    path = "/settings/{layer}/skills/{name}",
+    params(("layer" = String, Path, description = "`tenant` or `me`"),
+        ("name" = String, Path, description = "Skill name")),
+    responses((status = 204), (status = 404, description = "Not in this layer")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn delete_skill(
+    State(instance): State<Instance>,
+    Scoped(state): Scoped,
+    caller: Caller,
+    Path((layer, name)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let owner = may_change(&instance, &caller, &layer, "skill").await?;
+    if state
+        .catalog
+        .delete_skill(&name, owner)
+        .await
+        .map_err(file_error)?
+    {
+        changed(&state);
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError(StatusCode::NOT_FOUND, "unknown skill".to_owned()))
+    }
+}
+
+fn file_error(error: crate::AgentChangeError) -> ApiError {
+    match error {
+        crate::AgentChangeError::Rejected(reason) => {
+            ApiError(StatusCode::UNPROCESSABLE_ENTITY, reason)
+        }
+        crate::AgentChangeError::Failed(reason) => internal(reason),
+    }
+}
+
 /// Lists the single settings that apply to the caller, each with its source.
 #[utoipa::path(
     get,

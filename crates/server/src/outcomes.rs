@@ -446,7 +446,22 @@ impl Outcomes {
                 .await;
             }
         } else if let Some(alert) = classify(&record) {
-            self.raise_alert(alert).await?;
+            // A person's own agent failing is their concern, not the tenant's.
+            let own = self
+                .agents
+                .get_for(user, &agent)
+                .is_some_and(|known| known.layer == lighthouse_settings::Layer::Personal);
+            if own {
+                self.push(
+                    &pushes,
+                    user,
+                    &alert.title,
+                    alert.detail.as_deref().unwrap_or_default(),
+                )
+                .await;
+            } else {
+                self.raise_alert(alert).await?;
+            }
         }
         self.check_budget().await?;
         Ok(Some(record))

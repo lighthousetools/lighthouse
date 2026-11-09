@@ -123,3 +123,13 @@ Approvals of automations appear in `GET /approvals` and `GET /ready` like those 
 | `POST /automations/draft` | Write an automation file from `{"description": "..."}` for you to review and save. The model sees the agents and their tools |
 
 `GET /events` sends `automations.changed` when one is created, switched or deleted.
+
+## Automations in layers
+
+Like [agents](agents.md#agents-in-layers), automations come from `paths.automations` as built-in files, and those
+created in the apps belong to the tenant or to one person. `POST /automations` takes `?layer=tenant` or `?layer=me`,
+and `PUT /settings/{layer}/automations/{id}/enabled` switches one off for that layer.
+
+A person's own automations run for them. They hear of their own agents' runs and of events of their own sources. Shared
+automations never hear of events from a personal source, since those would reach the whole tenant. A person's own
+automation cannot notify a `mail:` address, only `owner` or a Slack alias.

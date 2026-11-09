@@ -5,7 +5,9 @@ mod agents;
 mod automation_registry;
 mod automations;
 mod desk_tools;
+mod layered;
 mod registry;
+mod skill_files;
 
 pub use actions::{ACTION_PREFIX, ActionOutcome};
 pub use agents::{AgentFile, load_agents};
@@ -13,6 +15,7 @@ pub use automation_registry::{AutomationRegistry, LoadedAutomation};
 pub use automations::{AgentOutcome, AgentSteps};
 pub use desk_tools::{DeskToolFactory, PROPOSE_FACT, PROPOSE_POST, PROPOSE_TASK};
 pub use registry::{AgentRegistry, LoadedAgent, RegistryError};
+pub use skill_files::{LoadedSkill, SkillRegistry};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -28,7 +31,6 @@ use lighthouse_router::{
     Block, ChatRequest, Completion, Message, Role, RouteOverride, Router, RouterError, TextSink,
     ToolSpec,
 };
-use lighthouse_skills::SkillLibrary;
 use lighthouse_vault::Vault;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -216,7 +218,7 @@ pub struct Runtime {
     /// Tool classification.
     pub policy: ToolPolicy,
     /// Available skills.
-    pub skills: SkillLibrary,
+    pub skills: SkillRegistry,
     /// The audit log.
     pub audit: AuditLog,
     /// Delivery channels.
@@ -879,6 +881,7 @@ impl Runtime {
         let skills: Vec<_> = self
             .skills
             .names()
+            .into_iter()
             .map(|name| format!("- {name}"))
             .collect();
         let system = format!(

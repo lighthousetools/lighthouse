@@ -52,7 +52,8 @@ pub struct SkillLibrary {
     skills: BTreeMap<String, Skill>,
 }
 
-fn parse(text: &str, path: &str) -> Result<Skill, SkillError> {
+/// Reads a skill file. `path` names it in errors.
+pub fn parse(text: &str, path: &str) -> Result<Skill, SkillError> {
     let invalid = |detail: String| SkillError::Invalid {
         path: path.to_owned(),
         detail,
@@ -100,6 +101,11 @@ impl SkillLibrary {
     /// Returns the names of all skills.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.skills.keys().map(String::as_str)
+    }
+
+    /// Returns every skill.
+    pub fn all(&self) -> impl Iterator<Item = &Skill> {
+        self.skills.values()
     }
 
     /// Returns a skill by name.

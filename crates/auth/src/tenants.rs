@@ -272,6 +272,7 @@ impl Accounts {
             "DELETE FROM settings_switches WHERE tenant_id = $1 AND user_id = $2",
             "DELETE FROM settings_values WHERE tenant_id = $1 AND user_id = $2",
             "DELETE FROM settings_sources WHERE tenant_id = $1 AND user_id = $2",
+            "DELETE FROM settings_files WHERE tenant_id = $1 AND user_id = $2",
         ] {
             sqlx::query(statement)
                 .bind(tenant.as_uuid())

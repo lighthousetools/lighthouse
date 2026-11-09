@@ -133,7 +133,7 @@ async fn fixture() -> Fixture {
             ("linear".to_owned(), connector.clone()),
             ("offline".to_owned(), connector),
         ])),
-        skills: SkillLibrary::load(dir.path()).unwrap(),
+        skills: SkillLibrary::load(dir.path()).unwrap().into(),
         audit: audit.clone(),
         notifier: mailbox.clone(),
         owner_context: "You work for Alex.".to_owned(),

@@ -2172,6 +2172,7 @@ dependencies = [
  "lighthouse-mcp",
  "lighthouse-notify",
  "lighthouse-router",
+ "lighthouse-settings",
  "lighthouse-skills",
  "lighthouse-store",
  "lighthouse-vault",

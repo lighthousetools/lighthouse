@@ -23,6 +23,7 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true
 utoipa.workspace = true
@@ -30,4 +31,3 @@ uuid.workspace = true
 
 [dev-dependencies]
 lighthouse-store = { workspace = true, features = ["testing"] }
-tokio.workspace = true

@@ -106,3 +106,28 @@ hour old. Older runs are skipped.
 names, and a draft that hides a tool's real level is sent back for correction. `POST /agents` validates and stores a file
 in `paths.created_agents`, and it takes effect at once, including its schedule. Files in `paths.agents` stay yours: the
 apps show them but cannot change them.
+
+## Agents in layers
+
+Agent files in `paths.agents` are the instance's built-in agents and stay read-only. Agents created in the apps are
+stored in the database, for the tenant or for one person:
+
+- `POST /agents` stores a file for the tenant when an owner or admin calls it and for the caller when a member does.
+  `?layer=tenant` or `?layer=me` says so explicitly. Only owners and admins change the tenant layer.
+- An agent with the ID of a lower layer overrides it for that layer: a person's own version of a shared agent applies
+  to them only.
+- `PUT /settings/{layer}/agents/{id}/enabled` switches one off: an owner or admin for the tenant, a member for
+  themselves. A switched off agent answers 409 when started and does not run on its schedule.
+- A person's own agents run for them, with their route, keys and connectors, on their schedule in their time zone.
+  Other people do not see them or their runs. If one fails, it pushes to them and raises no shared alert. Their own
+  agents cannot deliver to `mail:` addresses, only to `owner` or a Slack alias.
+- Scheduled agents of the instance and the tenant work for the tenant's first owner and run in that person's time zone.
+  What that person replaced or switched off for themselves does not run a second time.
+
+Files created in earlier versions are taken over into the tenant layer at the first start. The directories
+`paths.created_agents` and `paths.created_automations` (and their counterparts under `tenancy.data_dir`) are renamed to
+`<name>.imported`, and nothing reads them anymore.
+
+Skills work the same way: `paths.skills` holds the built-in ones, and `PUT` and `DELETE /settings/{layer}/skills/{name}`
+with `{"source": "<SKILL.md>"}` store them per layer, switched with `PUT /settings/{layer}/skills/{name}/enabled`.
+`GET /skills` shows each with its `layer`, `enabled` and `disabled_by`.

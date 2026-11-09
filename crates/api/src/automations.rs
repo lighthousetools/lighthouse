@@ -43,6 +43,12 @@ pub struct AutomationStepInfo {
 /// An automation.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct AutomationInfo {
+    /// Where it comes from: `instance`, `tenant` or `personal`.
+    #[serde(default)]
+    pub layer: String,
+    /// The layer that switched it off, if one did.
+    #[serde(default)]
+    pub disabled_by: Option<String>,
     /// Automation ID.
     pub id: String,
     /// Display name.
@@ -144,9 +150,13 @@ pub trait Automations: Send + Sync {
     /// Returns an automation.
     async fn get(&self, id: &str) -> Result<Option<AutomationInfo>, String>;
     /// Validates and stores an automation file.
-    async fn save(&self, source: &str) -> Result<AutomationInfo, AgentChangeError>;
+    async fn save(
+        &self,
+        source: &str,
+        owner: Option<Uuid>,
+    ) -> Result<AutomationInfo, AgentChangeError>;
     /// Deletes an automation. Returns whether it existed.
-    async fn delete(&self, id: &str) -> Result<bool, AgentChangeError>;
+    async fn delete(&self, id: &str, owner: Option<Uuid>) -> Result<bool, AgentChangeError>;
     /// Switches an automation on or off. Returns `None` for an unknown one.
     async fn set_enabled(
         &self,
@@ -228,11 +238,14 @@ pub(crate) async fn get(
 )]
 pub(crate) async fn save(
     Scoped(state): Scoped,
+    caller: crate::Caller,
+    axum::extract::Query(query): axum::extract::Query<crate::catalog::LayerQuery>,
     Json(request): Json<AgentSource>,
 ) -> Result<Json<AutomationInfo>, ApiError> {
+    let owner = crate::catalog::save_owner(&query, &caller)?;
     let automation = state
         .automations
-        .save(&request.source)
+        .save(&request.source, owner)
         .await
         .map_err(change_error)?;
     changed(&state, &automation.id);
@@ -279,9 +292,23 @@ pub(crate) async fn switch(
 )]
 pub(crate) async fn delete(
     Scoped(state): Scoped,
+    caller: crate::Caller,
+    axum::extract::Query(query): axum::extract::Query<crate::catalog::LayerQuery>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    if !state.automations.delete(&id).await.map_err(change_error)? {
+    let layer = state
+        .automations
+        .get(&id)
+        .await
+        .map_err(crate::internal)?
+        .map(|automation| automation.layer);
+    let owner = crate::catalog::delete_owner(&query, &caller, layer.as_deref())?;
+    if !state
+        .automations
+        .delete(&id, owner)
+        .await
+        .map_err(change_error)?
+    {
         return Err(not_found("automation"));
     }
     changed(&state, &id);

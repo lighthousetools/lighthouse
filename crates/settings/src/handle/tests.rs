@@ -419,6 +419,7 @@ async fn limits_hold_per_layer_and_per_tenant() {
         models: 1,
         connectors: 1,
         sources: 1,
+        files: 1,
         tenant_entries: 4,
     };
     let settings = settings(
@@ -648,4 +649,84 @@ async fn a_failed_step_leaves_nothing_and_limits_hold_across_processes() {
     assert_eq!([a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count(), 1);
     second.reload().await.unwrap();
     assert_eq!(second.snapshot().entries(), 3);
+}
+
+#[tokio::test]
+async fn files_layer_override_and_switch_off() {
+    let store = fresh_store().await;
+    let sam = user(&store, "sam@example.com").await;
+    let settings = settings(&store, TenantId::DEFAULT, options()).await;
+    let changes = settings.subscribe();
+    settings
+        .set_file(None, None, FileKind::Agent, "brief", "tenant")
+        .await
+        .unwrap();
+    assert!(changes.has_changed().unwrap());
+    settings
+        .set_file(Some(sam), Some(sam), FileKind::Agent, "brief", "mine")
+        .await
+        .unwrap();
+    settings
+        .set_file(Some(sam), Some(sam), FileKind::Skill, "tone", "skill")
+        .await
+        .unwrap();
+    let key = (FileKind::Agent, "brief".to_owned());
+    assert_eq!(settings.effective(None).files[&key].source, "tenant");
+    let mine = settings.effective(Some(sam));
+    assert_eq!(
+        (mine.files[&key].source.as_str(), mine.files[&key].layer),
+        ("mine", Layer::Personal)
+    );
+    settings
+        .delete_file(Some(sam), Some(sam), FileKind::Agent, "brief")
+        .await
+        .unwrap();
+    assert!(
+        settings
+            .delete_file(Some(sam), Some(sam), FileKind::Agent, "brief")
+            .await
+            .is_err()
+    );
+    settings
+        .switch_file(Some(sam), Some(sam), FileKind::Agent, "brief", false)
+        .await
+        .unwrap();
+    let mine = settings.effective(Some(sam));
+    assert_eq!(mine.files[&key].disabled_by, Some(Layer::Personal));
+    assert!(settings.effective(None).files[&key].enabled);
+    settings
+        .switch_file(Some(sam), Some(sam), FileKind::Agent, "brief", true)
+        .await
+        .unwrap();
+    assert!(settings.effective(Some(sam)).files[&key].enabled);
+    settings
+        .switch_file(None, None, FileKind::Agent, "brief", false)
+        .await
+        .unwrap();
+    assert_eq!(
+        settings.effective(Some(sam)).files[&key].disabled_by,
+        Some(Layer::Tenant)
+    );
+    settings
+        .switch_file(None, None, FileKind::Automation, "built-in", false)
+        .await
+        .unwrap();
+    let off = (FileKind::Automation, "built-in".to_owned());
+    assert_eq!(settings.effective(Some(sam)).files_off[&off], Layer::Tenant);
+    assert!(
+        settings
+            .import_file(FileKind::Automation, "old", "x")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !settings
+            .import_file(FileKind::Automation, "old", "y")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        settings.layer(None).files[&(FileKind::Automation, "old".to_owned())].source,
+        "x"
+    );
 }

@@ -6,7 +6,7 @@ use crate::{
     ConnectorEntry, ConnectorInput, Layer, LayerData, ModelInput, Owner, ProviderInput, RouteInput,
     SettingsError, Snapshot, SwitchKind, validate,
 };
-use crate::{SourceEntry, SourceInput};
+use crate::{FileEntry, FileKind, SourceEntry, SourceInput};
 use lighthouse_config::{Config, ModelConfig, RouteConfig, SettingsLimits, SourceConfig};
 use lighthouse_core::TenantId;
 use lighthouse_store::Store;
@@ -37,6 +37,8 @@ struct Inner {
     defaults: Arc<Defaults>,
     options: Options,
     snapshot: RwLock<Arc<Snapshot>>,
+    /// Says that a new snapshot is in place.
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 /// The settings of one tenant: the instance defaults, the tenant layer and
@@ -100,6 +102,7 @@ impl TenantSettings {
                 defaults,
                 options,
                 snapshot: RwLock::new(Arc::default()),
+                changed: tokio::sync::watch::Sender::new(0),
             }),
         }
     }
@@ -195,7 +198,13 @@ impl TenantSettings {
             .snapshot
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot;
+        self.inner.changed.send_modify(|version| *version += 1);
         Ok(())
+    }
+
+    /// Wakes up whenever the settings changed, here or in another process.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.changed.subscribe()
     }
 
     /// Reloads if another process changed something, or members came or went.
@@ -755,6 +764,166 @@ impl TenantSettings {
                     self.inner
                         .store
                         .put_switch(conn, owner, SwitchKind::Source, name, false)
+                        .await?;
+                }
+                Ok(())
+            },
+        )
+        .await
+    }
+
+    /// Adds or replaces an agent, automation or skill of a layer. The caller
+    /// checks the file. A layer may override one of a lower layer by name.
+    pub async fn set_file(
+        &self,
+        owner: Owner,
+        actor: Option<Uuid>,
+        kind: FileKind,
+        name: &str,
+        source: &str,
+    ) -> Result<(), SettingsError> {
+        let entry = FileEntry {
+            source: source.to_owned(),
+            enabled: true,
+        };
+        self.change(
+            owner,
+            actor,
+            kind.as_str(),
+            name,
+            "set",
+            async move |snapshot, conn| {
+                let current = snapshot.layer(owner).cloned().unwrap_or_default();
+                if !current.files.contains_key(&(kind, name.to_owned())) {
+                    let limit = self.inner.options.limits.files;
+                    if current
+                        .files
+                        .keys()
+                        .filter(|(other, _)| *other == kind)
+                        .count()
+                        >= limit
+                    {
+                        return Err(SettingsError::Limit(format!(
+                            "at most {limit} of these per layer"
+                        )));
+                    }
+                    self.check_total(&snapshot)?;
+                }
+                self.inner
+                    .store
+                    .put_file(conn, owner, kind, name, &entry)
+                    .await
+            },
+        )
+        .await
+    }
+
+    /// Takes over a file created before these lived in the database. A file
+    /// that is already there stays, and limits do not apply, so an upgrade
+    /// loses nothing. Returns whether it was added.
+    pub async fn import_file(
+        &self,
+        kind: FileKind,
+        name: &str,
+        source: &str,
+    ) -> Result<bool, SettingsError> {
+        let mut added = false;
+        let added_ref = &mut added;
+        let entry = FileEntry {
+            source: source.to_owned(),
+            enabled: true,
+        };
+        self.change(
+            None,
+            None,
+            kind.as_str(),
+            name,
+            "import",
+            async move |snapshot, conn| {
+                if !snapshot.tenant.files.contains_key(&(kind, name.to_owned())) {
+                    self.inner
+                        .store
+                        .put_file(conn, None, kind, name, &entry)
+                        .await?;
+                    *added_ref = true;
+                }
+                Ok(())
+            },
+        )
+        .await?;
+        Ok(added)
+    }
+
+    /// Deletes an agent, automation or skill of a layer.
+    pub async fn delete_file(
+        &self,
+        owner: Owner,
+        actor: Option<Uuid>,
+        kind: FileKind,
+        name: &str,
+    ) -> Result<(), SettingsError> {
+        self.change(
+            owner,
+            actor,
+            kind.as_str(),
+            name,
+            "delete",
+            async move |_, conn| {
+                if self
+                    .inner
+                    .store
+                    .delete_file(conn, owner, kind, name)
+                    .await?
+                {
+                    Ok(())
+                } else {
+                    Err(SettingsError::NotFound(kind.as_str().to_owned()))
+                }
+            },
+        )
+        .await
+    }
+
+    /// Switches an agent, automation or skill on or off: one of the layer
+    /// itself, or one of a lower layer for this layer only. The caller checks
+    /// that a lower one exists.
+    pub async fn switch_file(
+        &self,
+        owner: Owner,
+        actor: Option<Uuid>,
+        kind: FileKind,
+        name: &str,
+        enabled: bool,
+    ) -> Result<(), SettingsError> {
+        self.change(
+            owner,
+            actor,
+            "switch",
+            name,
+            "set",
+            async move |snapshot, conn| {
+                if let Some(mut entry) = snapshot
+                    .layer(owner)
+                    .and_then(|layer| layer.files.get(&(kind, name.to_owned())))
+                    .cloned()
+                {
+                    entry.enabled = enabled;
+                    return self
+                        .inner
+                        .store
+                        .put_file(conn, owner, kind, name, &entry)
+                        .await;
+                }
+                if enabled {
+                    self.inner
+                        .store
+                        .delete_switch(conn, owner, kind.switch(), name)
+                        .await?;
+                } else {
+                    self.check_total(&snapshot)?;
+                    self.inner
+                        .store
+                        .put_switch(conn, owner, kind.switch(), name, false)
                         .await?;
                 }
                 Ok(())

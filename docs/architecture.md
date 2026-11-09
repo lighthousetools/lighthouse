@@ -98,7 +98,8 @@ see it, whatever their role. The admin token, agents and background work see eve
 | Conversations (Talk) | Personal | `talk_threads.user_id` |
 | Mail and calendar (connected items of the `mail` and `calendar` domains), and every item of a personal source | Personal | `synced_items.user_id` |
 | Runs, their steps and approvals (decisions in Ready), drafts, briefs and recaps | Personal to the user a run works for | `runs.user_id` |
-| Brain, tasks, rules, memory (facts), alerts, automations, agents, organizations, issues, pull requests, deals, invoices, bank accounts, posts, decks, contracts, branding, settings and budget | Shared in the tenant | `tenant_id` only |
+| A member's own agents, automations, skills and sources | Personal | `settings_files.user_id`, `settings_sources.user_id` |
+| Brain, tasks, rules, memory (facts), alerts, shared automations and agents, organizations, issues, pull requests, deals, invoices, bank accounts, posts, decks, contracts, branding, settings and budget | Shared in the tenant | `tenant_id` only |
 | Model provider keys and connector tokens of the tenant (the vault) | Shared in the tenant; only owners and admins change them | `credentials.tenant_id` without `user_id` |
 | A member's own provider keys and connector tokens | Personal | `credentials.user_id` |
 | Providers, models, routing and connectors set for the tenant | Shared in the tenant; only owners and admins change them | `settings_*` rows without `user_id` |

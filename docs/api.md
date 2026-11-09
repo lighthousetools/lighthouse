@@ -282,6 +282,7 @@ and the severity can only go up. After it is resolved, the next occurrence opens
 
 | Field | Meaning |
 |---|---|
+| `layer`, `enabled`, `disabled_by` | Where it comes from (`instance`, `tenant`, `personal`) and whether a layer switched it off for the caller, see [agents.md](agents.md#agents-in-layers) |
 | `model` | `task`, `provider`, `model`, `fallback` and `fallback_model` of the `text` task, as it applies to the caller (see [Providers, models and connectors](#providers-models-and-connectors)). Display only |
 | `autonomy` | `observe` (reads only), `prepare` (also saves drafts) or `propose` (also proposes actions, which always wait for your approval) |
 | `max_cost_eur` | The cost limit of one run, from the agent file |
@@ -338,7 +339,7 @@ Single settings take the value as the JSON body:
 | `talk.agent` | An agent ID, or `null` so the Second Brain answers | Answers the person's conversations |
 | `notifications` | `{"deliver", "decisions", "done", "alerts"}` as in `[notifications]` | Pushes about a person's runs follow their setting, alerts and work without a user the tenant's. `owner` mails the person a run belongs to, and for alerts the tenant's first owner. In a personal layer, `deliver` takes `owner` and `slack:<alias>`, not other mail addresses |
 | `weather` | `{"latitude", "longitude", "location"}` | The weather in a person's brief. The weather service itself stays in `lighthouse.toml` |
-| `timezone` | An IANA name | A person's day boundaries in the API and in prompts of their runs, and the zone `GET /me` reports. Budget months use the tenant's zone |
+| `timezone` | An IANA name | A person's day boundaries in the API, prompts of their runs, the schedules of what runs for them, and the zone `GET /me` reports. Budget months use the tenant's zone |
 | `accounts` | `{"<connector>": "<account name>"}` | Personal only. Their names in services, used by their sources and named in prompts of their runs |
 | `addresses` | A list of email addresses | Personal only. Further addresses of theirs, to recognize their own mail |
 | `language` | `en` or `de` | Kept for the apps, so a person's language follows them to other devices |

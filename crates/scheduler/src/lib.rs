@@ -71,30 +71,44 @@ pub struct Scheduler {
     runner: Arc<dyn AgentRunner>,
 }
 
-type Schedules = Arc<RwLock<Vec<(String, Cron)>>>;
+type Schedules = Arc<RwLock<Vec<(String, Cron, Tz)>>>;
 
-fn schedules_of(agents: &[AgentDefinition]) -> Result<Vec<(String, Cron)>, SchedulerError> {
+fn schedules_of(
+    agents: &[AgentDefinition],
+    zone: Tz,
+) -> Result<Vec<(String, Cron, Tz)>, SchedulerError> {
     let mut schedules = Vec::new();
     for agent in agents {
         if let Trigger::Cron(expression) = &agent.trigger {
             let cron = parse_cron(expression)
                 .map_err(|error| SchedulerError::Schedule(error.to_string()))?;
-            schedules.push((agent.id.clone(), cron));
+            schedules.push((agent.id.clone(), cron, zone));
         }
     }
     Ok(schedules)
 }
 
+/// One thing to fire on a schedule, in the time zone of the person it is for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    /// What the runner gets. Also keys the last time it fired.
+    pub id: String,
+    /// Cron expression.
+    pub cron: String,
+    /// The time zone the expression is read in.
+    pub zone: Tz,
+}
+
 /// Changes the schedules of a running scheduler.
 #[derive(Clone, Debug)]
-pub struct ScheduleHandle(Schedules);
+pub struct ScheduleHandle(Schedules, Tz);
 
 impl ScheduleHandle {
     /// Replaces the schedules of all agents. Automations keep theirs.
     pub fn update(&self, agents: &[AgentDefinition]) -> Result<(), SchedulerError> {
-        let agents = schedules_of(agents)?;
+        let agents = schedules_of(agents, self.1)?;
         let mut schedules = self.0.write().expect("schedules lock");
-        schedules.retain(|(id, _)| id.starts_with(RUN_PREFIX));
+        schedules.retain(|(id, _, _)| id.starts_with(RUN_PREFIX));
         schedules.extend(agents);
         Ok(())
     }
@@ -109,12 +123,28 @@ impl ScheduleHandle {
         for (id, expression) in automations {
             let cron = parse_cron(expression)
                 .map_err(|error| SchedulerError::Schedule(error.to_string()))?;
-            parsed.push((format!("{RUN_PREFIX}{id}"), cron));
+            parsed.push((format!("{RUN_PREFIX}{id}"), cron, self.1));
         }
         let mut schedules = self.0.write().expect("schedules lock");
-        schedules.retain(|(id, _)| !id.starts_with(RUN_PREFIX));
+        schedules.retain(|(id, _, _)| !id.starts_with(RUN_PREFIX));
         schedules.extend(parsed);
         Ok(())
+    }
+
+    /// Replaces every schedule. Jobs with an invalid expression are skipped and
+    /// logged, so one bad file does not stop the others.
+    pub fn replace(&self, jobs: Vec<Job>) {
+        let parsed = jobs
+            .into_iter()
+            .filter_map(|job| match parse_cron(&job.cron) {
+                Ok(cron) => Some((job.id, cron, job.zone)),
+                Err(error) => {
+                    tracing::error!(job = %job.id, %error, "skipping an invalid schedule");
+                    None
+                }
+            })
+            .collect();
+        *self.0.write().expect("schedules lock") = parsed;
     }
 }
 
@@ -142,14 +172,14 @@ impl Scheduler {
             store,
             tenant,
             zone,
-            agents: Arc::new(RwLock::new(schedules_of(agents)?)),
+            agents: Arc::new(RwLock::new(schedules_of(agents, zone)?)),
             runner,
         })
     }
 
     /// Returns a handle to change the schedules while the scheduler runs.
     pub fn handle(&self) -> ScheduleHandle {
-        ScheduleHandle(self.agents.clone())
+        ScheduleHandle(self.agents.clone(), self.zone)
     }
 
     async fn last_fire(&self, agent: &str) -> Result<Option<DateTime<Utc>>, SchedulerError> {
@@ -179,12 +209,12 @@ impl Scheduler {
     /// Checks all agents once.
     pub async fn tick(&self, now: DateTime<Utc>) -> Result<(), SchedulerError> {
         let schedules = self.agents.read().expect("schedules lock").clone();
-        for (agent, cron) in &schedules {
+        for (agent, cron, zone) in &schedules {
             let Some(last_fire) = self.last_fire(agent).await? else {
                 self.set_last_fire(agent, now).await?;
                 continue;
             };
-            match decide(cron, self.zone, last_fire, now) {
+            match decide(cron, *zone, last_fire, now) {
                 Decision::Wait => {}
                 Decision::Skip => {
                     tracing::warn!(%agent, "skipping a run older than one hour");
@@ -213,6 +243,31 @@ impl Scheduler {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn jobs_keep_the_zone_of_their_person_and_bad_ones_are_skipped() {
+        use super::*;
+        let schedules: Schedules = Arc::default();
+        let handle = ScheduleHandle(schedules.clone(), chrono_tz::UTC);
+        handle.replace(vec![
+            Job {
+                id: "brief@someone".to_owned(),
+                cron: "0 8 * * *".to_owned(),
+                zone: chrono_tz::Asia::Tokyo,
+            },
+            Job {
+                id: "broken".to_owned(),
+                cron: "nonsense".to_owned(),
+                zone: chrono_tz::UTC,
+            },
+        ]);
+        let jobs = schedules.read().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            (jobs[0].0.as_str(), jobs[0].2),
+            ("brief@someone", chrono_tz::Asia::Tokyo)
+        );
+    }
+
     use super::*;
     use chrono::TimeZone;
     use lighthouse_store::testing::fresh_store;

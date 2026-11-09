@@ -696,7 +696,8 @@ impl utoipa::Modify for SecurityAddon {
         ready::edit_text, ready::run_basis, settings::get_budget, settings::set_budget,
         settings::models,
         layers::values, layers::put_value, layers::delete_value, layers::put_source,
-        layers::delete_source, layers::switch_source,
+        layers::delete_source, layers::switch_source, layers::switch_file, layers::put_skill,
+        layers::delete_skill,
         layers::presets, layers::effective, layers::entries, layers::changes,
         layers::put_provider, layers::delete_provider, layers::put_model, layers::delete_model,
         layers::put_route, layers::delete_route, layers::put_connector, layers::delete_connector,
@@ -856,6 +857,14 @@ pub fn router_with(state: Instance, extensions: Extensions) -> Router {
         )
         .route("/settings/models", get(settings::models))
         .route("/settings/presets", get(layers::presets))
+        .route(
+            "/settings/{layer}/skills/{name}",
+            put(layers::put_skill).delete(layers::delete_skill),
+        )
+        .route(
+            "/settings/{layer}/{kind}/{id}/enabled",
+            put(layers::switch_file),
+        )
         .route(
             "/settings/{layer}/sources/{name}",
             put(layers::put_source).delete(layers::delete_source),
@@ -1193,6 +1202,9 @@ mod tests {
             autonomy: "observe".to_owned(),
             max_cost_eur: 0.5,
             corrections: 0,
+            layer: "instance".to_owned(),
+            enabled: true,
+            disabled_by: None,
         }
     }
 
@@ -1216,7 +1228,11 @@ mod tests {
             }
         }
 
-        async fn save_agent(&self, source: &str) -> Result<AgentInfo, AgentChangeError> {
+        async fn save_agent(
+            &self,
+            source: &str,
+            _owner: Option<Uuid>,
+        ) -> Result<AgentInfo, AgentChangeError> {
             if source == "bad" {
                 Err(AgentChangeError::Rejected("invalid".to_owned()))
             } else {
@@ -1224,7 +1240,11 @@ mod tests {
             }
         }
 
-        async fn delete_agent(&self, id: &str) -> Result<bool, AgentChangeError> {
+        async fn delete_agent(
+            &self,
+            id: &str,
+            _owner: Option<Uuid>,
+        ) -> Result<bool, AgentChangeError> {
             match id {
                 "fixed" => Err(AgentChangeError::Rejected("read-only".to_owned())),
                 _ => Ok(id == "brief"),
@@ -1245,12 +1265,18 @@ mod tests {
             vec![SkillInfo {
                 name: "brief".to_owned(),
                 description: "Briefs".to_owned(),
+                layer: "instance".to_owned(),
+                enabled: true,
+                disabled_by: None,
+                source: None,
             }]
         }
     }
 
     fn automation_info(id: &str, enabled: bool) -> AutomationInfo {
         AutomationInfo {
+            layer: "instance".to_owned(),
+            disabled_by: None,
             id: id.to_owned(),
             name: id.to_owned(),
             description: String::new(),
@@ -1280,14 +1306,18 @@ mod tests {
             Ok((id == "follow-up").then(|| automation_info(id, true)))
         }
 
-        async fn save(&self, source: &str) -> Result<AutomationInfo, AgentChangeError> {
+        async fn save(
+            &self,
+            source: &str,
+            _owner: Option<Uuid>,
+        ) -> Result<AutomationInfo, AgentChangeError> {
             match source {
                 "bad" => Err(AgentChangeError::Rejected("invalid".to_owned())),
                 _ => Ok(automation_info("saved", true)),
             }
         }
 
-        async fn delete(&self, id: &str) -> Result<bool, AgentChangeError> {
+        async fn delete(&self, id: &str, _owner: Option<Uuid>) -> Result<bool, AgentChangeError> {
             match id {
                 "fixed" => Err(AgentChangeError::Rejected("read-only".to_owned())),
                 _ => Ok(id == "follow-up"),

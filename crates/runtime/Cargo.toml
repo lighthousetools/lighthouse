@@ -21,6 +21,7 @@ lighthouse-desk.workspace = true
 lighthouse-mcp.workspace = true
 lighthouse-notify.workspace = true
 lighthouse-router.workspace = true
+lighthouse-settings.workspace = true
 lighthouse-skills.workspace = true
 lighthouse-vault.workspace = true
 secrecy.workspace = true

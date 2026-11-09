@@ -26,8 +26,8 @@ mod validate;
 mod values;
 
 pub use effective::{
-    Defaults, Effective, EffectiveConnector, EffectiveModel, EffectiveProvider, EffectiveRoute,
-    EffectiveSource,
+    Defaults, Effective, EffectiveConnector, EffectiveFile, EffectiveModel, EffectiveProvider,
+    EffectiveRoute, EffectiveSource,
 };
 pub use handle::{Options, TenantSettings, source_problem};
 pub use presets::{PresetConnector, PresetModel, PresetProvider, PresetSource, Presets, presets};
@@ -113,6 +113,8 @@ pub enum SwitchKind {
     Automation,
     /// A connected source.
     Source,
+    /// A skill.
+    Skill,
 }
 
 impl SwitchKind {
@@ -123,6 +125,7 @@ impl SwitchKind {
             Self::Agent => "agent",
             Self::Automation => "automation",
             Self::Source => "source",
+            Self::Skill => "skill",
         }
     }
 
@@ -132,6 +135,7 @@ impl SwitchKind {
             "agent" => Some(Self::Agent),
             "automation" => Some(Self::Automation),
             "source" => Some(Self::Source),
+            "skill" => Some(Self::Skill),
             _ => None,
         }
     }
@@ -182,6 +186,57 @@ pub struct LayerData {
     pub values: BTreeMap<String, serde_json::Value>,
     /// Connected sources by name.
     pub sources: BTreeMap<String, SourceEntry>,
+    /// Agents, automations and skills by kind and name.
+    pub files: BTreeMap<(FileKind, String), FileEntry>,
+}
+
+/// What can be created in the apps as a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileKind {
+    /// An agent file.
+    Agent,
+    /// An automation file.
+    Automation,
+    /// A skill file.
+    Skill,
+}
+
+impl FileKind {
+    /// The name used in the database.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Automation => "automation",
+            Self::Skill => "skill",
+        }
+    }
+
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        match text {
+            "agent" => Some(Self::Agent),
+            "automation" => Some(Self::Automation),
+            "skill" => Some(Self::Skill),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn switch(self) -> SwitchKind {
+        match self {
+            Self::Agent => SwitchKind::Agent,
+            Self::Automation => SwitchKind::Automation,
+            Self::Skill => SwitchKind::Skill,
+        }
+    }
+}
+
+/// An agent, automation or skill of the tenant or personal layer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileEntry {
+    /// The file.
+    pub source: String,
+    /// Whether it is in use.
+    pub enabled: bool,
 }
 
 /// A connected source of the tenant or personal layer.
@@ -207,6 +262,7 @@ impl LayerData {
             + self.switches.len()
             + self.values.len()
             + self.sources.len()
+            + self.files.len()
     }
 }
 

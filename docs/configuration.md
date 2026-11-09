@@ -118,7 +118,7 @@ Credentials can also be managed through `/credentials`. The API accepts values b
 |---|---|---|
 | `signup` | `closed` | `closed`: nobody signs up and nobody is invited, as in a single-user install. `invite`: owners and admins invite people by email. `open`: anyone signs up and owns a new tenant; invitations work too |
 | `allow_instance_keys` | `true` | Tenants without their own key of a model provider use the instance's key, the one stored in the default tenant's vault (`lht keys set anthropic`). Hosted instances set `false`, so every tenant brings its own key through `PUT /credentials/<provider>` |
-| `data_dir` | `tenants` | One subdirectory per further tenant for its Brain and the agents and automations created in the apps. The default tenant keeps `[brain] path` and the `[paths]` directories |
+| `data_dir` | `tenants` | One subdirectory per further tenant for its Brain. The default tenant keeps `[brain] path`. Agents and automations created in the apps live in the database |
 | `allow_private_endpoints` | `false` | Whether providers and connectors that tenants and people add in the apps may use plain HTTP and private, loopback or link-local addresses. Keep it off on a hosted instance. A self-hosted instance whose models or MCP servers run in its own network may turn it on |
 | `limits` | see below | How much a tenant and its members may add in the apps |
 | `require_verified_email` | `false` | People who signed up themselves must confirm their email address before they sign in. Sign-up then answers 202 without a token, and `POST /auth/login` answers 403 until the link in the mail was opened; `POST /auth/verify/request` sends a new one. The configured owner and invited people are not affected, and devices signed in before stay signed in. Needs mail; the server does not start without it |
@@ -139,6 +139,7 @@ admin instead, to pass on in another way.
 | `models` | `20` | Models per provider |
 | `connectors` | `25` | Connectors per tenant, and again per person |
 | `sources` | `10` | Connected sources per tenant, and again per person |
+| `files` | `200` | Agents, automations and skills of each kind per tenant, and again per person |
 | `tenant_entries` | `2000` | All entries of a tenant and its members together |
 
 Agent files in `paths.agents` and `paths.automations`, skills, sources and the instance's providers, routing and
@@ -182,8 +183,10 @@ shown in the apps, plus the language of the apps, which has no entry in the file
 
 Connected sources follow the same layers too, see [connected.md](connected.md#sources-in-layers).
 
-Time zones: a person's `timezone` decides their day boundaries in the API and in prompts of their runs. Budget months
-stay per tenant, in the tenant's zone, because the budget is shared.
+Agents, automations and skills too, see [agents.md](agents.md#agents-in-layers).
+
+Time zones: a person's `timezone` decides their day boundaries in the API, prompts of their runs and the schedules of
+what runs for them. Budget months stay per tenant, in the tenant's zone, because the budget is shared.
 
 Keys and tokens never sit in these settings. They stay in the vault:
 

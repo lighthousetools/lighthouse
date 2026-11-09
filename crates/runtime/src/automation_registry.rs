@@ -1,14 +1,18 @@
 //! The automations of a running server.
 //!
-//! Like agents, automations come from a directory you manage and a second one
-//! for automations created in the apps. Changes take effect without a restart.
+//! Like agents, automations come from a directory you manage. Those created in
+//! the apps belong to a tenant or a person and are stored with the settings;
+//! changes take effect without a restart.
 
 use crate::RegistryError;
+use crate::layered::{LayeredFile, Layers};
 use lighthouse_core::agent::slugify;
 use lighthouse_core::automation::Automation;
+use lighthouse_settings::{FileKind, Layer, TenantSettings};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use uuid::Uuid;
 
 /// An automation with its file.
 #[derive(Clone, Debug)]
@@ -19,6 +23,31 @@ pub struct LoadedAutomation {
     pub source: String,
     /// Whether the apps can change it.
     pub editable: bool,
+    /// The layer it comes from.
+    pub layer: Layer,
+    /// Whether a layer leaves it in use for this user.
+    pub enabled: bool,
+    /// The layer that switched it off, if one did.
+    pub disabled_by: Option<Layer>,
+}
+
+impl LayeredFile for LoadedAutomation {
+    fn read(source: &str, layer: Layer) -> Option<Self> {
+        let automation = Automation::parse(source).ok()?;
+        Some(Self {
+            automation: Arc::new(automation),
+            source: source.to_owned(),
+            editable: true,
+            layer,
+            enabled: true,
+            disabled_by: None,
+        })
+    }
+
+    fn set_state(&mut self, enabled: bool, disabled_by: Option<Layer>) {
+        self.enabled = enabled;
+        self.disabled_by = disabled_by;
+    }
 }
 
 /// All automations.
@@ -27,6 +56,7 @@ pub struct AutomationRegistry {
     managed: PathBuf,
     created: PathBuf,
     automations: RwLock<BTreeMap<String, LoadedAutomation>>,
+    layers: Option<Layers<LoadedAutomation>>,
 }
 
 fn markdown_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -51,15 +81,51 @@ impl AutomationRegistry {
             managed,
             created,
             automations: RwLock::default(),
+            layers: None,
         };
         registry.reload()?;
         Ok(registry)
+    }
+
+    /// Loads the automations you manage in a directory, with the ones of a
+    /// tenant and its members from the settings.
+    pub fn layered(managed: PathBuf, settings: TenantSettings) -> std::io::Result<Self> {
+        let registry = Self {
+            created: PathBuf::new(),
+            managed,
+            automations: RwLock::default(),
+            layers: Some(Layers::new(settings, FileKind::Automation)),
+        };
+        registry.reload()?;
+        Ok(registry)
+    }
+
+    /// The automations as a user has them, or as the tenant has them for `None`.
+    pub fn for_user(&self, user: Option<Uuid>) -> Arc<BTreeMap<String, LoadedAutomation>> {
+        let built_in = self.automations.read().expect("automations lock");
+        match &self.layers {
+            Some(layers) => layers.resolve(user, &built_in),
+            None => Arc::new(built_in.clone()),
+        }
+    }
+
+    /// Returns an automation as a user has it.
+    pub fn get_for(&self, user: Option<Uuid>, id: &str) -> Option<LoadedAutomation> {
+        self.for_user(user).get(id).cloned()
+    }
+
+    /// The settings the automations of tenants and people are stored with.
+    pub fn settings(&self) -> Option<&TenantSettings> {
+        self.layers.as_ref().map(Layers::settings)
     }
 
     /// Reads both directories again. Invalid files are skipped and logged.
     pub fn reload(&self) -> std::io::Result<()> {
         let mut automations = BTreeMap::new();
         for (directory, editable) in [(&self.created, true), (&self.managed, false)] {
+            if directory.as_os_str().is_empty() {
+                continue;
+            }
             for path in markdown_files(directory)? {
                 let source = std::fs::read_to_string(&path)?;
                 match Automation::parse(&source) {
@@ -70,6 +136,13 @@ impl AutomationRegistry {
                                 automation: Arc::new(automation),
                                 source,
                                 editable,
+                                layer: if editable {
+                                    Layer::Tenant
+                                } else {
+                                    Layer::Instance
+                                },
+                                enabled: true,
+                                disabled_by: None,
                             },
                         );
                     }
@@ -84,16 +157,18 @@ impl AutomationRegistry {
         Ok(())
     }
 
-    /// Returns an automation.
+    /// Returns an automation, as the user the current task acts for has it.
     pub fn get(&self, id: &str) -> Option<LoadedAutomation> {
-        let automations = self.automations.read().expect("automations lock");
-        automations.get(id).cloned()
+        self.get_for(lighthouse_audit::acting_user::current(), id)
     }
 
-    /// Returns every automation, sorted by ID.
+    /// Returns every automation, sorted by ID, as the user the current task
+    /// acts for has them.
     pub fn list(&self) -> Vec<LoadedAutomation> {
-        let automations = self.automations.read().expect("automations lock");
-        automations.values().cloned().collect()
+        self.for_user(lighthouse_audit::acting_user::current())
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Validates a file and stores it. An existing automation of that ID is replaced.

@@ -133,6 +133,16 @@ impl TenantConfig {
         Some(identity)
     }
 
+    /// The time zone of a user, or the tenant's for `None`.
+    pub fn zone_of(&self, user: Option<Uuid>) -> Tz {
+        self.settings
+            .effective(user)
+            .values
+            .get(TIMEZONE)
+            .and_then(|(zone, _)| zone.as_str()?.parse().ok())
+            .unwrap_or(self.zone)
+    }
+
     fn resolve_source(&self, snapshot: &Snapshot, source: &EffectiveSource) -> Option<Source> {
         let identity = self.identity(snapshot, source.owner);
         let mut accounts = Vec::new();
@@ -232,17 +242,10 @@ impl People for TenantConfig {
         for (service, account) in &identity.accounts {
             context.push_str(&format!(" Their {service} account is {account}."));
         }
-        let zone = self
-            .settings
-            .effective(user)
-            .values
-            .get(TIMEZONE)
-            .and_then(|(zone, _)| zone.as_str()?.parse().ok())
-            .unwrap_or(self.zone);
         Some(Person {
             context,
             email: identity.email,
-            zone,
+            zone: self.zone_of(user),
         })
     }
 }

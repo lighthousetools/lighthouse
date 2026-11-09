@@ -1,6 +1,6 @@
 //! The effective settings of one user in one tenant.
 
-use crate::{ConnectorEntry, Layer, LayerData, SwitchKind};
+use crate::{ConnectorEntry, FileKind, Layer, LayerData, SwitchKind};
 use lighthouse_config::{
     Config, ConnectorConfig, ConnectorTransport, ModelConfig, ProviderConfig, ProviderKind,
     RouteConfig, SourceConfig,
@@ -176,6 +176,19 @@ pub struct EffectiveSource {
     pub disabled_by: Option<Layer>,
 }
 
+/// An agent, automation or skill created in the apps, as it applies to one user.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffectiveFile {
+    /// The file.
+    pub source: String,
+    /// The layer that defines it.
+    pub layer: Layer,
+    /// Whether it is in use for this user.
+    pub enabled: bool,
+    /// The layer that switched it off, if one did.
+    pub disabled_by: Option<Layer>,
+}
+
 /// Everything that applies to one user in one tenant.
 #[derive(Clone, Debug, Default)]
 pub struct Effective {
@@ -189,6 +202,10 @@ pub struct Effective {
     pub values: BTreeMap<String, (serde_json::Value, Layer)>,
     /// Connected sources by name, including the ones switched off.
     pub sources: BTreeMap<String, EffectiveSource>,
+    /// Agents, automations and skills created in the apps, by kind and name.
+    pub files: BTreeMap<(FileKind, String), EffectiveFile>,
+    /// Built-in agents, automations and skills that a layer switched off.
+    pub files_off: BTreeMap<(FileKind, String), Layer>,
 }
 
 /// A connector of the tenant or personal layer in the shape of the configuration.
@@ -366,6 +383,41 @@ impl Effective {
                     disabled_by: (!entry.enabled).then_some(layer),
                 },
             );
+        }
+        for (key, entry) in &data.files {
+            self.files.insert(
+                key.clone(),
+                EffectiveFile {
+                    source: entry.source.clone(),
+                    layer,
+                    enabled: entry.enabled,
+                    disabled_by: (!entry.enabled).then_some(layer),
+                },
+            );
+        }
+        for ((kind, name), enabled) in &data.switches {
+            let kind = match kind {
+                SwitchKind::Agent => FileKind::Agent,
+                SwitchKind::Automation => FileKind::Automation,
+                SwitchKind::Skill => FileKind::Skill,
+                SwitchKind::Connector | SwitchKind::Source => continue,
+            };
+            if *enabled {
+                continue;
+            }
+            let key = (kind, name.clone());
+            match self.files.get_mut(&key) {
+                Some(file) if file.layer == layer => {}
+                Some(file) => {
+                    if file.enabled {
+                        file.enabled = false;
+                        file.disabled_by = Some(layer);
+                    }
+                }
+                None => {
+                    self.files_off.entry(key).or_insert(layer);
+                }
+            }
         }
         for (name, entry) in &data.connectors {
             self.connectors.insert(

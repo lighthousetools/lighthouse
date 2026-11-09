@@ -143,7 +143,7 @@ async fn fixture(script: Vec<ChatResponse>, fail_delivery: bool) -> Fixture {
         router: Arc::new(Arc::new(router)),
         tools: Arc::new(tools),
         policy: ToolPolicy::new(&BTreeMap::from([("linear".to_owned(), connector)])),
-        skills: SkillLibrary::load(dir.path()).unwrap(),
+        skills: SkillLibrary::load(dir.path()).unwrap().into(),
         audit: audit.clone(),
         notifier: notifier.clone(),
         owner_context: "You work for Alex.".to_owned(),

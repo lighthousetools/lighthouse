@@ -1,8 +1,8 @@
 //! Storage of the tenant and personal layers.
 
 use crate::{
-    ConnectorEntry, LayerData, Member, Owner, ProviderEntry, SettingsError, Snapshot, SourceEntry,
-    SwitchKind, layer_of,
+    ConnectorEntry, FileEntry, FileKind, LayerData, Member, Owner, ProviderEntry, SettingsError,
+    Snapshot, SourceEntry, SwitchKind, layer_of,
 };
 use chrono::{DateTime, Utc};
 use lighthouse_config::{ConnectorAuth, ModelConfig, ProviderKind, RouteConfig};
@@ -95,6 +95,7 @@ type ConnectorRow = (
 );
 type SwitchRow = (Option<Uuid>, String, String, bool);
 type ChangeRow = (DateTime<Utc>, Option<Uuid>, String, String, String);
+type FileRow = (Option<Uuid>, String, String, String, bool);
 type SourceRow = (Option<Uuid>, String, serde_json::Value, bool);
 type ValueRow = (Option<Uuid>, String, serde_json::Value);
 
@@ -274,6 +275,19 @@ impl SettingsStore {
                     enabled,
                 },
             );
+        }
+        let files: Vec<FileRow> = sqlx::query_as(
+            "SELECT user_id, kind, name, source, enabled FROM settings_files WHERE tenant_id = $1",
+        )
+        .bind(self.id())
+        .fetch_all(self.pool())
+        .await?;
+        for (user, kind, name, source, enabled) in files {
+            if let Some(kind) = FileKind::parse(&kind) {
+                layer(&mut snapshot, user)
+                    .files
+                    .insert((kind, name), FileEntry { source, enabled });
+            }
         }
         snapshot.members = self.members().await?;
         Ok(snapshot)
@@ -610,6 +624,53 @@ impl SettingsStore {
                 .execute(&mut *conn)
                 .await?;
         }
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Adds or replaces an agent, automation or skill.
+    pub async fn put_file(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        owner: Owner,
+        kind: FileKind,
+        name: &str,
+        file: &FileEntry,
+    ) -> Result<(), SettingsError> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO settings_files (tenant_id, user_id, kind, name, source, enabled) \
+             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT {} \
+             DO UPDATE SET source = $5, enabled = $6, updated_at = now()",
+            target("kind, name")
+        )))
+        .bind(self.id())
+        .bind(owner)
+        .bind(kind.as_str())
+        .bind(name)
+        .bind(&file.source)
+        .bind(file.enabled)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    /// Deletes an agent, automation or skill. Returns whether it existed.
+    pub async fn delete_file(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        owner: Owner,
+        kind: FileKind,
+        name: &str,
+    ) -> Result<bool, SettingsError> {
+        let result = sqlx::query(
+            "DELETE FROM settings_files WHERE tenant_id = $1 \
+             AND user_id IS NOT DISTINCT FROM $2 AND kind = $3 AND name = $4",
+        )
+        .bind(self.id())
+        .bind(owner)
+        .bind(kind.as_str())
+        .bind(name)
+        .execute(&mut *conn)
+        .await?;
         Ok(result.rows_affected() > 0)
     }
 

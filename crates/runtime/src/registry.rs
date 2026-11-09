@@ -1,14 +1,18 @@
 //! The agents of a running server.
 //!
-//! Agents come from two directories. Files you manage yourself are read-only
-//! here. Agents created in the apps land in a second directory, and a change
-//! takes effect without a restart.
+//! Files you manage yourself in a directory are read-only here. Agents created
+//! in the apps belong to a tenant or a person and are stored with the settings;
+//! a change takes effect without a restart. Without settings, as in the command
+//! line tool, they come from a second directory.
 
+use crate::layered::{LayeredFile, Layers};
 use crate::load_agents;
 use lighthouse_core::agent::{AgentDefinition, AgentError, slugify};
+use lighthouse_settings::{FileKind, Layer, TenantSettings};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use uuid::Uuid;
 
 /// Errors when changing agents.
 #[derive(Debug, thiserror::Error)]
@@ -36,6 +40,31 @@ pub struct LoadedAgent {
     pub source: String,
     /// Whether the apps can change it.
     pub editable: bool,
+    /// The layer it comes from.
+    pub layer: Layer,
+    /// Whether it may run for this user.
+    pub enabled: bool,
+    /// The layer that switched it off, if one did.
+    pub disabled_by: Option<Layer>,
+}
+
+impl LayeredFile for LoadedAgent {
+    fn read(source: &str, layer: Layer) -> Option<Self> {
+        let agent = AgentDefinition::parse(source).ok()?;
+        Some(Self {
+            agent: Arc::new(agent),
+            source: source.to_owned(),
+            editable: true,
+            layer,
+            enabled: true,
+            disabled_by: None,
+        })
+    }
+
+    fn set_state(&mut self, enabled: bool, disabled_by: Option<Layer>) {
+        self.enabled = enabled;
+        self.disabled_by = disabled_by;
+    }
 }
 
 /// All agents.
@@ -44,6 +73,7 @@ pub struct AgentRegistry {
     managed: PathBuf,
     created: PathBuf,
     agents: RwLock<BTreeMap<String, LoadedAgent>>,
+    layers: Option<Layers<LoadedAgent>>,
 }
 
 impl AgentRegistry {
@@ -53,15 +83,51 @@ impl AgentRegistry {
             managed,
             created,
             agents: RwLock::default(),
+            layers: None,
         };
         registry.reload()?;
         Ok(registry)
+    }
+
+    /// Loads the agents you manage in a directory, with the ones of a tenant and
+    /// its members from the settings.
+    pub fn layered(managed: PathBuf, settings: TenantSettings) -> std::io::Result<Self> {
+        let registry = Self {
+            created: PathBuf::new(),
+            managed,
+            agents: RwLock::default(),
+            layers: Some(Layers::new(settings, FileKind::Agent)),
+        };
+        registry.reload()?;
+        Ok(registry)
+    }
+
+    /// The agents as a user has them, or as the tenant has them for `None`.
+    pub fn for_user(&self, user: Option<Uuid>) -> Arc<BTreeMap<String, LoadedAgent>> {
+        let built_in = self.agents.read().expect("agents lock");
+        match &self.layers {
+            Some(layers) => layers.resolve(user, &built_in),
+            None => Arc::new(built_in.clone()),
+        }
+    }
+
+    /// Returns an agent as a user has it.
+    pub fn get_for(&self, user: Option<Uuid>, id: &str) -> Option<LoadedAgent> {
+        self.for_user(user).get(id).cloned()
+    }
+
+    /// The settings the agents of tenants and people are stored with.
+    pub fn settings(&self) -> Option<&TenantSettings> {
+        self.layers.as_ref().map(Layers::settings)
     }
 
     /// Reads both directories again. Invalid files are skipped and logged.
     pub fn reload(&self) -> std::io::Result<()> {
         let mut agents = BTreeMap::new();
         for (directory, editable) in [(&self.created, true), (&self.managed, false)] {
+            if directory.as_os_str().is_empty() {
+                continue;
+            }
             for file in load_agents(directory)? {
                 let path = file.path.display().to_string();
                 match file.agent {
@@ -72,6 +138,13 @@ impl AgentRegistry {
                                 agent: Arc::new(agent),
                                 source: std::fs::read_to_string(&file.path)?,
                                 editable,
+                                layer: if editable {
+                                    Layer::Tenant
+                                } else {
+                                    Layer::Instance
+                                },
+                                enabled: true,
+                                disabled_by: None,
                             },
                         );
                     }
@@ -83,15 +156,18 @@ impl AgentRegistry {
         Ok(())
     }
 
-    /// Returns an agent.
+    /// Returns an agent, as the user the current task acts for has it.
     pub fn get(&self, id: &str) -> Option<LoadedAgent> {
-        self.agents.read().expect("agents lock").get(id).cloned()
+        self.get_for(lighthouse_audit::acting_user::current(), id)
     }
 
-    /// Returns every agent, sorted by ID.
+    /// Returns every agent, sorted by ID, as the user the current task acts
+    /// for has them.
     pub fn list(&self) -> Vec<LoadedAgent> {
-        let agents = self.agents.read().expect("agents lock");
-        agents.values().cloned().collect()
+        self.for_user(lighthouse_audit::acting_user::current())
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Validates a file and stores it. An existing agent of that ID is replaced.
