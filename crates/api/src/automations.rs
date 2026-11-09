@@ -229,6 +229,7 @@ pub(crate) async fn get(
     post,
     operation_id = "save_automation",
     path = "/automations",
+    params(("layer" = Option<String>, Query, description = "`tenant` or `me`. By default the tenant for owners and admins, their own for members")),
     request_body = AgentSource,
     responses(
         (status = 200, body = AutomationInfo),
@@ -290,7 +291,8 @@ pub(crate) async fn switch(
     delete,
     operation_id = "delete_automation",
     path = "/automations/{id}",
-    params(("id" = String, Path, description = "Automation ID")),
+    params(("id" = String, Path, description = "Automation ID"),
+        ("layer" = Option<String>, Query, description = "`tenant` or `me`. By default the layer it comes from")),
     responses(
         (status = 204, description = "Deleted"),
         (status = 404, description = "Unknown automation"),

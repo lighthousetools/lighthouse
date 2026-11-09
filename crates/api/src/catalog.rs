@@ -388,6 +388,7 @@ pub(crate) async fn draft_agent(
 #[utoipa::path(
     post,
     path = "/agents",
+    params(("layer" = Option<String>, Query, description = "`tenant` or `me`. By default the tenant for owners and admins, their own for members")),
     request_body = AgentSource,
     responses(
         (status = 200, body = AgentInfo),
@@ -414,7 +415,8 @@ pub(crate) async fn save_agent(
 #[utoipa::path(
     delete,
     path = "/agents/{id}",
-    params(("id" = String, Path, description = "Agent ID")),
+    params(("id" = String, Path, description = "Agent ID"),
+        ("layer" = Option<String>, Query, description = "`tenant` or `me`. By default the layer it comes from")),
     responses(
         (status = 204),
         (status = 404, description = "Unknown agent"),
