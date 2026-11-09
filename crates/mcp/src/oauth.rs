@@ -16,6 +16,8 @@ use secrecy::{ExposeSecret, SecretString};
 use std::collections::{BTreeMap, HashMap};
 use tokio::sync::Mutex;
 
+/// Where the server publishes its OAuth client metadata document.
+pub const CLIENT_METADATA_PATH: &str = "/oauth/client-metadata.json";
 const CLIENT_NAME: &str = "Lighthouse";
 
 /// Stores OAuth credentials of one connector in the vault.
@@ -71,6 +73,7 @@ impl CredentialStore for VaultCredentialStore {
 pub struct OAuthFlows {
     connectors: BTreeMap<String, ConnectorConfig>,
     redirect_uri: String,
+    public_url: String,
     pending: Mutex<HashMap<String, (String, OAuthState)>>,
 }
 
@@ -94,8 +97,32 @@ impl OAuthFlows {
         Self {
             connectors,
             redirect_uri: format!("{}/oauth/callback", public_url.trim_end_matches('/')),
+            public_url: public_url.trim_end_matches('/').to_owned(),
             pending: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The URL of this server's client metadata document, which servers that support client ID metadata documents
+    /// take as the client ID instead of a registration. Only an HTTPS server can offer one.
+    pub fn client_metadata_url(&self) -> Option<String> {
+        self.public_url
+            .starts_with("https://")
+            .then(|| format!("{}{CLIENT_METADATA_PATH}", self.public_url))
+    }
+
+    /// The client metadata document that [`Self::client_metadata_url`] serves.
+    pub fn client_metadata(&self) -> Option<serde_json::Value> {
+        let url = self.client_metadata_url()?;
+        Some(serde_json::json!({
+            "client_id": url,
+            "client_name": CLIENT_NAME,
+            "client_uri": self.public_url,
+            "redirect_uris": [self.redirect_uri],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+            "application_type": "web",
+        }))
     }
 
     /// Starts a flow for the tenant of `vault` and returns the URL the user
@@ -141,6 +168,10 @@ impl OAuthFlows {
             .with_client_name(CLIENT_NAME)
             .with_application_type("web")
             .with_initial_scope_selection();
+        // Some servers only accept clients they can identify by such a document, not by a registration.
+        if let Some(url) = self.client_metadata_url() {
+            request = request.with_client_metadata_url(url);
+        }
         if !scopes.is_empty() {
             request = request.with_scopes(scopes.iter().cloned());
         }

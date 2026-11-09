@@ -650,6 +650,14 @@ async fn oauth_callback(
     }
 }
 
+/// The OAuth client metadata document, for servers that identify clients by it instead of a registration.
+async fn client_metadata(State(state): State<Instance>) -> Response {
+    match state.oauth.client_metadata() {
+        Some(document) => Json(document).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 fn page(message: &str) -> String {
     format!("<!doctype html><meta charset=utf-8><title>Lighthouse</title><p>{message}</p>")
 }
@@ -1152,6 +1160,10 @@ pub fn router_with(state: Instance, extensions: Extensions) -> Router {
         .route("/health", get(health))
         .route("/openapi.json", get(openapi))
         .route("/oauth/callback", get(oauth_callback))
+        .route(
+            lighthouse_mcp::oauth::CLIENT_METADATA_PATH,
+            get(client_metadata),
+        )
         .route("/auth/status", get(auth::status))
         .route("/auth/login", post(auth::login))
         .route("/auth/signup", post(auth::signup))

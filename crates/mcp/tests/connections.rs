@@ -88,6 +88,8 @@ async fn serve(router: Router) -> String {
 struct AuthServer {
     base: Arc<Mutex<String>>,
     forms: Arc<Mutex<Vec<HashMap<String, String>>>>,
+    /// Whether the server takes client ID metadata documents.
+    cimd: Arc<std::sync::atomic::AtomicBool>,
 }
 
 async fn require_token(State(state): State<AuthServer>, request: Request, next: Next) -> Response {
@@ -125,6 +127,7 @@ async fn server_metadata(State(state): State<AuthServer>) -> Json<Value> {
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
+        "client_id_metadata_document_supported": state.cimd.load(std::sync::atomic::Ordering::SeqCst),
     }))
 }
 
@@ -553,5 +556,43 @@ async fn an_openapi_description_becomes_tools_that_call_the_api() {
     assert_eq!(
         policy.level("crm.post_deals"),
         lighthouse_core::agent::ToolLevel::Write
+    );
+}
+
+#[tokio::test]
+async fn a_server_that_takes_metadata_documents_gets_the_document_url_as_client_id() {
+    let (base, server) = oauth_server().await;
+    server.cimd.store(true, std::sync::atomic::Ordering::SeqCst);
+    let config = connectors(http_connector(format!("{base}/mcp"), ConnectorAuth::Oauth));
+    let vault = vault().await;
+    let flows = OAuthFlows::new(config.clone(), "https://lighthouse.test/");
+    assert_eq!(
+        flows.client_metadata_url().as_deref(),
+        Some("https://lighthouse.test/oauth/client-metadata.json")
+    );
+    let document = flows.client_metadata().unwrap();
+    assert_eq!(
+        document["redirect_uris"][0],
+        "https://lighthouse.test/oauth/callback"
+    );
+    assert_eq!(
+        document["client_id"],
+        "https://lighthouse.test/oauth/client-metadata.json"
+    );
+    let authorize = flows.start("demo", &vault).await.unwrap();
+    let query: HashMap<_, _> = url::Url::parse(&authorize)
+        .unwrap()
+        .query_pairs()
+        .into_owned()
+        .collect();
+    assert_eq!(
+        query["client_id"],
+        "https://lighthouse.test/oauth/client-metadata.json"
+    );
+    // A server without HTTPS cannot offer a document, so it registers as before.
+    assert!(
+        OAuthFlows::new(config, "http://localhost:8080")
+            .client_metadata_url()
+            .is_none()
     );
 }

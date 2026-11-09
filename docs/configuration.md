@@ -102,7 +102,9 @@ For OAuth connectors, `server.public_url` must be reachable from your browser. R
 the printed URL. The redirect goes to `<public_url>/oauth/callback`. Tokens are stored in the vault and refreshed
 automatically. A pending authorization lives in the server's memory, so finish it before the server restarts.
 
-Some servers only accept a registered confidential client, for example GitHub with an OAuth app of your own. Set its
+Servers that support client ID metadata documents identify Lighthouse by the document it serves at
+`<public_url>/oauth/client-metadata.json` instead of a registration; this needs an HTTPS `public_url`. Some servers only
+accept a registered confidential client, for example GitHub with an OAuth app of your own. Set its
 `client_id` and store the secret as `oauth-client:<connector>` with `lht keys set oauth-client:<connector>`. Lighthouse
 sends it when it exchanges the code and every time it refreshes a token.
 
