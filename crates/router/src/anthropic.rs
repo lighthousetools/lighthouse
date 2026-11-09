@@ -33,6 +33,13 @@ impl Anthropic {
             http: reqwest::Client::new(),
         }
     }
+
+    /// Uses another HTTP client, such as a guarded one for endpoints a tenant chose.
+    #[must_use]
+    pub fn with_http(mut self, http: reqwest::Client) -> Self {
+        self.http = http;
+        self
+    }
 }
 
 fn encode_block(block: &Block) -> Value {

@@ -4,13 +4,14 @@ pub mod anthropic;
 pub mod demo;
 pub mod media;
 pub mod mock;
+pub mod net;
 pub mod openai;
 mod types;
 
 pub use types::*;
 
 use async_trait::async_trait;
-use lighthouse_config::{Config, ModelConfig, ProviderKind};
+use lighthouse_config::{Config, ModelConfig, ProviderKind, RouteConfig};
 use secrecy::SecretString;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -147,6 +148,51 @@ struct ProviderEntry {
     tasks: BTreeMap<String, ModelConfig>,
 }
 
+/// A provider as a router should build it.
+#[derive(Clone, Debug)]
+pub struct PlannedProvider {
+    /// API family.
+    pub kind: ProviderKind,
+    /// Base URL override.
+    pub base_url: Option<String>,
+    /// Models by task name.
+    pub tasks: BTreeMap<String, ModelConfig>,
+    /// Whether requests go through the guarded client of [`net`], because a
+    /// tenant or a person chose the endpoint.
+    pub guarded: bool,
+}
+
+/// The providers and routes a router is built from.
+#[derive(Clone, Debug, Default)]
+pub struct RouterPlan {
+    /// Providers by name.
+    pub providers: BTreeMap<String, PlannedProvider>,
+    /// Routes by task name.
+    pub routing: BTreeMap<String, RouteConfig>,
+}
+
+impl RouterPlan {
+    /// The plan of the configuration file.
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            providers: config
+                .providers
+                .iter()
+                .map(|(name, provider)| {
+                    let planned = PlannedProvider {
+                        kind: provider.kind,
+                        base_url: provider.base_url.clone(),
+                        tasks: provider.tasks.clone(),
+                        guarded: false,
+                    };
+                    (name.clone(), planned)
+                })
+                .collect(),
+            routing: config.routing.clone(),
+        }
+    }
+}
+
 /// Routes tasks to providers.
 #[derive(Default)]
 pub struct Router {
@@ -168,24 +214,39 @@ impl Router {
     /// A provider without a key stays registered and fails when called, so the
     /// fallback still works and the error names what is missing.
     pub fn from_config(config: &Config, keys: &HashMap<String, SecretString>) -> Self {
+        Self::from_plan(&RouterPlan::from_config(config), keys)
+    }
+
+    /// Builds a router from a plan. `keys` holds the API key per provider name.
+    pub fn from_plan(plan: &RouterPlan, keys: &HashMap<String, SecretString>) -> Self {
         let mut router = Self::default();
-        for (name, provider) in &config.providers {
+        for (name, provider) in &plan.providers {
             let key = keys.get(name).cloned();
             let base_url = provider.base_url.as_deref();
             let adapter: Arc<dyn Provider> = match (provider.kind, key) {
                 (ProviderKind::Mock, _) => Arc::new(mock::MockProvider::echo()),
                 (ProviderKind::Demo, _) => Arc::new(demo::DemoProvider),
                 (ProviderKind::Anthropic, Some(key)) => {
-                    Arc::new(anthropic::Anthropic::new(name, key, base_url))
+                    let adapter = anthropic::Anthropic::new(name, key, base_url);
+                    Arc::new(if provider.guarded {
+                        adapter.with_http(net::guarded_client())
+                    } else {
+                        adapter
+                    })
                 }
                 (ProviderKind::Openai, Some(key)) => {
-                    Arc::new(openai::OpenAi::new(name, key, base_url))
+                    let adapter = openai::OpenAi::new(name, key, base_url);
+                    Arc::new(if provider.guarded {
+                        adapter.with_http(net::guarded_client())
+                    } else {
+                        adapter
+                    })
                 }
                 (_, None) => Arc::new(MissingKey(name.clone())),
             };
             router.add_provider(name, adapter, provider.tasks.clone());
         }
-        for (task, route) in &config.routing {
+        for (task, route) in &plan.routing {
             router.set_route(task, &route.provider, route.fallback.as_deref());
         }
         router
