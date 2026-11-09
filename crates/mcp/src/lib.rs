@@ -85,6 +85,33 @@ pub trait ToolHostFactory: Send + Sync {
     async fn offered(&self, connector: &str) -> Result<Vec<String>, McpError> {
         Err(McpError::UnknownConnector(connector.to_owned()))
     }
+
+    /// Lists the tools a connector offers with what its server says about them.
+    async fn offered_tools(&self, connector: &str) -> Result<Vec<OfferedTool>, McpError> {
+        Ok(self
+            .offered(connector)
+            .await?
+            .into_iter()
+            .map(|name| OfferedTool {
+                name,
+                ..OfferedTool::default()
+            })
+            .collect())
+    }
+}
+
+/// A tool as its server describes it. The hints are the server's own claims, so Lighthouse only suggests from them and
+/// never grants anything by them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OfferedTool {
+    /// Unqualified name.
+    pub name: String,
+    /// What it does.
+    pub description: String,
+    /// The server says it does not change anything.
+    pub read_only: Option<bool>,
+    /// The server says it may destroy or overwrite something.
+    pub destructive: Option<bool>,
 }
 
 pub(crate) fn split_tool(qualified: &str) -> Result<(&str, &str), McpError> {

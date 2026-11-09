@@ -78,6 +78,11 @@ approval. `service`, such as `linkedin`, names the network for logos in the apps
 | `command`, `args` | For `stdio` |
 | `secret_env` | For `stdio`: environment variables filled from vault entries |
 
+`GET /connectors/{id}/tools` asks a connector's server for its tools and returns each with its level under the current
+lists and a suggestion: `read` when the server marks the tool read-only and not destructive, else `write`. The apps offer
+the suggestion to take over into `read_tools`. Servers describe their own tools, so Lighthouse never grants a level by
+such a hint alone.
+
 ### APIs without an MCP server
 
 `transport = "openapi"` turns a REST API with an OpenAPI 3 description into tools. Every operation becomes a tool named

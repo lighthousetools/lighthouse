@@ -391,6 +391,33 @@ impl ToolHostFactory for McpConnector {
         let tools = session.all_tools(connector).await?;
         Ok(tools.into_iter().map(|tool| tool.name).collect())
     }
+
+    async fn offered_tools(&self, connector: &str) -> Result<Vec<crate::OfferedTool>, McpError> {
+        let session = self.session(&[format!("{connector}.tools")]).await?;
+        let tools = session
+            .client(connector)?
+            .list_all_tools()
+            .await
+            .map_err(|error| McpError::Call {
+                connector: connector.to_owned(),
+                detail: error.to_string(),
+            })?;
+        Ok(tools
+            .into_iter()
+            .map(|tool| crate::OfferedTool {
+                name: tool.name.to_string(),
+                description: tool.description.as_deref().unwrap_or_default().to_owned(),
+                read_only: tool
+                    .annotations
+                    .as_ref()
+                    .and_then(|hints| hints.read_only_hint),
+                destructive: tool
+                    .annotations
+                    .as_ref()
+                    .and_then(|hints| hints.destructive_hint),
+            })
+            .collect())
+    }
 }
 
 /// Open connections for one run.

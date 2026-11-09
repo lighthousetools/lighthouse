@@ -47,7 +47,7 @@ pub use automations::{
 pub use brain::{AskAnswer, AskRequest, EntryDetail, ResolvedEntry};
 pub use catalog::{
     AgentChangeError, AgentDraftRequest, AgentInfo, AgentSource, AgentTool, Catalog, ConnectorInfo,
-    ModelRoute, SkillInfo, autonomy,
+    ConnectorTool, ModelRoute, SkillInfo, autonomy,
 };
 pub use connected::{
     ActionError, ActionRequest, ActionResult, ActionTool, BusyBlock, CollectionTool, Connected,
@@ -699,7 +699,7 @@ impl utoipa::Modify for SecurityAddon {
         brain::search, brain::ask, brain::ask_stream, brain::resolve, brain::list, brain::create, brain::get, brain::update,
         brain::delete, brain::upload, brain::download,
         catalog::agents, catalog::agent, catalog::agent_runs, catalog::draft_agent,
-        catalog::save_agent, catalog::delete_agent, catalog::connectors, catalog::skills,
+        catalog::save_agent, catalog::delete_agent, catalog::connectors, catalog::connector_tools, catalog::skills,
         catalog::costs, catalog::user_costs,
         sessions::report, sessions::request, sessions::await_decision, sessions::nodes,
         sessions::update_node, sessions::sessions, sessions::permissions, sessions::decide,
@@ -756,7 +756,7 @@ impl utoipa::Modify for SecurityAddon {
         Membership, Member, Invitation, User, Approval, Decision, BatchDecision, BatchResult,
         Entry, EntryDetail, EntryPatch, EntrySummary, NewEntry, SearchHit, Source,
         AskRequest, AskAnswer, ResolvedEntry,
-        AgentInfo, AgentTool, ConnectorInfo, SkillInfo, AgentDraftRequest, AgentSource, DailyCost,
+        AgentInfo, AgentTool, ConnectorInfo, ConnectorTool, SkillInfo, AgentDraftRequest, AgentSource, DailyCost,
         lighthouse_audit::UserCost,
         Node, NodeChange, NodeReport, NodeState, NewPermission, Permission, PermissionDecision,
         Session, SessionReport, SessionEvents, NewSessionMessage, SessionDetail,
@@ -962,6 +962,7 @@ pub fn router_with(state: Instance, extensions: Extensions) -> Router {
         .route("/permissions", get(sessions::permissions))
         .route("/permissions/{id}/decision", post(sessions::decide))
         .route("/connectors", get(catalog::connectors))
+        .route("/connectors/{id}/tools", get(catalog::connector_tools))
         .route("/skills", get(catalog::skills))
         .route("/costs", get(catalog::costs))
         .route("/costs/users", get(catalog::user_costs))

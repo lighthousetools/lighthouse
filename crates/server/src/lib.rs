@@ -825,6 +825,36 @@ impl Catalog for ServerCatalog {
         connector_infos(&self.effective(), &self.vault).await
     }
 
+    async fn connector_tools(
+        &self,
+        connector: &str,
+    ) -> Result<Vec<lighthouse_api::ConnectorTool>, String> {
+        let offered = self
+            .runtime
+            .tools
+            .offered_tools(connector)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(offered
+            .into_iter()
+            .map(|tool| {
+                let level = level_name(
+                    self.runtime
+                        .policy
+                        .level(&format!("{connector}.{}", tool.name)),
+                );
+                let read_only = tool.read_only == Some(true) && tool.destructive != Some(true);
+                lighthouse_api::ConnectorTool {
+                    name: tool.name,
+                    description: tool.description,
+                    level: level.to_owned(),
+                    suggested: if read_only { "read" } else { "write" }.to_owned(),
+                    destructive: tool.destructive == Some(true),
+                }
+            })
+            .collect())
+    }
+
     fn models(&self) -> Vec<ModelRoute> {
         let effective = self.effective();
         effective

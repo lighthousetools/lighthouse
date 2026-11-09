@@ -229,6 +229,13 @@ impl ToolHostFactory for DeskToolFactory {
     async fn offered(&self, connector: &str) -> Result<Vec<String>, McpError> {
         self.inner.offered(connector).await
     }
+
+    async fn offered_tools(
+        &self,
+        connector: &str,
+    ) -> Result<Vec<lighthouse_mcp::OfferedTool>, McpError> {
+        self.inner.offered_tools(connector).await
+    }
 }
 
 #[cfg(test)]

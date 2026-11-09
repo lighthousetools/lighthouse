@@ -596,3 +596,17 @@ async fn a_server_that_takes_metadata_documents_gets_the_document_url_as_client_
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn offered_tools_carry_what_their_server_says_about_them() {
+    use lighthouse_mcp::ToolHostFactory;
+    let base = serve(Router::new().nest_service("/mcp", mcp_service())).await;
+    let config = http_connector(format!("{base}/mcp"), ConnectorAuth::None);
+    let connector = McpConnector::new(connectors(config), vault().await);
+    let tools = connector.offered_tools("demo").await.unwrap();
+    let find = |name: &str| tools.iter().find(|tool| tool.name == name).unwrap().clone();
+    assert_eq!(find("list_issues").read_only, Some(true));
+    assert_eq!(find("send_reply").read_only, Some(false));
+    assert_eq!(find("delete_issue").destructive, Some(true));
+    assert!(!find("list_issues").description.is_empty());
+}

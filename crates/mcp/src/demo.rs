@@ -65,7 +65,17 @@ pub const TOOLS: [(&str, &str); 29] = [
 fn tool(name: &'static str, description: &'static str) -> Tool {
     let schema = json!({"type": "object", "properties": {}});
     let schema = schema.as_object().cloned().unwrap_or_default();
-    Tool::new(name, description, Arc::new(schema))
+    let tool = Tool::new(name, description, Arc::new(schema));
+    // Like real servers, the demo says which of its tools only read.
+    let reads = ["list_", "get_", "search_"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix));
+    let hints = rmcp::model::ToolAnnotations::new().read_only(reads);
+    tool.annotate(if name.starts_with("delete_") {
+        hints.destructive(true)
+    } else {
+        hints
+    })
 }
 
 /// The fixed point of all demo times: the start of the current day in UTC, so

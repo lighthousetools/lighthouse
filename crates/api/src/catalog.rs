@@ -117,6 +117,21 @@ pub struct ConnectorInfo {
     pub draft_tools: Vec<String>,
 }
 
+/// A tool a connector offers, with its level now and the level its server suggests.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct ConnectorTool {
+    /// Unqualified name.
+    pub name: String,
+    /// What it does, as its server says.
+    pub description: String,
+    /// `read`, `draft` or `write` under the current lists.
+    pub level: String,
+    /// `read` when the server marks it read-only, else `write`. Only a suggestion: servers describe their own tools.
+    pub suggested: String,
+    /// The server marks it as destructive.
+    pub destructive: bool,
+}
+
 /// A skill.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct SkillInfo {
@@ -197,6 +212,10 @@ pub trait Catalog: Send + Sync {
     }
     /// Lists the connectors.
     async fn connectors(&self) -> Result<Vec<ConnectorInfo>, String>;
+    /// Lists the tools a connector offers the caller, by asking its server.
+    async fn connector_tools(&self, connector: &str) -> Result<Vec<ConnectorTool>, String> {
+        Err(format!("cannot list the tools of {connector}"))
+    }
     /// Lists the skills.
     fn skills(&self) -> Vec<SkillInfo>;
     /// The model routes of all tasks, from the configuration.
@@ -455,6 +474,26 @@ pub(crate) async fn connectors(
     Scoped(state): Scoped,
 ) -> Result<Json<Vec<ConnectorInfo>>, ApiError> {
     Ok(Json(state.catalog.connectors().await.map_err(internal)?))
+}
+
+/// Lists the tools a connector offers, with their level now and a suggestion from its server.
+#[utoipa::path(
+    get,
+    path = "/connectors/{id}/tools",
+    params(("id" = String, Path, description = "Connector name")),
+    responses((status = 200, body = Vec<ConnectorTool>), (status = 502, description = "The server could not be asked")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn connector_tools(
+    Scoped(state): Scoped,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<ConnectorTool>>, ApiError> {
+    state
+        .catalog
+        .connector_tools(&id)
+        .await
+        .map(Json)
+        .map_err(|error| ApiError(StatusCode::BAD_GATEWAY, error))
 }
 
 /// Lists the skills.
