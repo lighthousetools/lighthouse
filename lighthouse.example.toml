@@ -114,3 +114,10 @@ path = "brain"
 # allow_instance_keys = true   # tenants without own provider keys use the instance keys
 # data_dir = "tenants"         # Brain and created files of further tenants
 # require_verified_email = false  # people who sign up confirm their address before they sign in
+# allow_private_endpoints = false  # providers and connectors added in the apps may use private addresses
+#
+# [tenancy.limits]             # what a tenant and each member may add in the apps
+# providers = 10
+# models = 20
+# connectors = 25
+# tenant_entries = 2000

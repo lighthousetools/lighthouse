@@ -17,8 +17,8 @@ pub use sources::{
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
 use secrecy::SecretString;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -142,6 +142,62 @@ pub struct TenancyConfig {
     /// invited people are not affected.
     #[serde(default)]
     pub require_verified_email: bool,
+    /// Whether providers and connectors that tenants and people add in the
+    /// apps may use private, loopback or link-local addresses and plain HTTP.
+    /// Keep it off on a hosted instance; a self-hosted one in a home or office
+    /// network may turn it on.
+    #[serde(default)]
+    pub allow_private_endpoints: bool,
+    /// How many providers, models and connectors a tenant and each of its
+    /// members may add.
+    #[serde(default)]
+    pub limits: SettingsLimits,
+}
+
+/// Limits of what a tenant and each of its members may add in the apps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsLimits {
+    /// Model providers per tenant, and again per person.
+    #[serde(default = "default_provider_limit")]
+    pub providers: usize,
+    /// Models per provider.
+    #[serde(default = "default_model_limit")]
+    pub models: usize,
+    /// MCP connectors per tenant, and again per person.
+    #[serde(default = "default_connector_limit")]
+    pub connectors: usize,
+    /// Entries of all layers of one tenant together: providers, models,
+    /// routes, connectors and settings of the tenant and all its members.
+    #[serde(default = "default_tenant_entry_limit")]
+    pub tenant_entries: usize,
+}
+
+const fn default_provider_limit() -> usize {
+    10
+}
+
+const fn default_model_limit() -> usize {
+    20
+}
+
+const fn default_connector_limit() -> usize {
+    25
+}
+
+const fn default_tenant_entry_limit() -> usize {
+    2000
+}
+
+impl Default for SettingsLimits {
+    fn default() -> Self {
+        Self {
+            providers: default_provider_limit(),
+            models: default_model_limit(),
+            connectors: default_connector_limit(),
+            tenant_entries: default_tenant_entry_limit(),
+        }
+    }
 }
 
 fn default_tenant_dir() -> PathBuf {
@@ -155,6 +211,8 @@ impl Default for TenancyConfig {
             allow_instance_keys: true,
             data_dir: default_tenant_dir(),
             require_verified_email: false,
+            allow_private_endpoints: false,
+            limits: SettingsLimits::default(),
         }
     }
 }
@@ -291,7 +349,7 @@ impl Default for PathsConfig {
 }
 
 /// API family of a model provider.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     /// The Anthropic Messages API.
@@ -305,7 +363,7 @@ pub enum ProviderKind {
 }
 
 /// A model provider.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     /// API family.
@@ -318,7 +376,7 @@ pub struct ProviderConfig {
 }
 
 /// A model with its prices.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelConfig {
     /// Model name as the provider expects it.
@@ -330,7 +388,7 @@ pub struct ModelConfig {
 }
 
 /// Default routing for a task.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteConfig {
     /// Primary provider.
@@ -341,7 +399,7 @@ pub struct RouteConfig {
 }
 
 /// How a connector authenticates.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectorAuth {
     /// No authentication.
@@ -761,16 +819,24 @@ mod tests {
             assert_eq!(config.tenancy.data_dir, PathBuf::from("tenants"));
             assert!(!config.tenancy.require_verified_email);
             assert!(!config.server.trust_forwarded_for);
+            assert!(!config.tenancy.allow_private_endpoints);
+            assert_eq!(config.tenancy.limits, SettingsLimits::default());
         });
         let hosted = format!(
             "{EXAMPLE}\n[tenancy]\nsignup = \"open\"\nallow_instance_keys = false\n\
-             data_dir = \"/var/lib/lighthouse/tenants\"\nrequire_verified_email = true\n"
+             data_dir = \"/var/lib/lighthouse/tenants\"\nrequire_verified_email = true\n\
+             allow_private_endpoints = true\n[tenancy.limits]\nconnectors = 3\n"
         );
         with_config(&hosted, |config| {
             let tenancy = config.unwrap().tenancy;
             assert!(tenancy.require_verified_email);
             assert_eq!(tenancy.signup, SignupMode::Open);
             assert!(!tenancy.allow_instance_keys);
+            assert!(tenancy.allow_private_endpoints);
+            assert_eq!(
+                (tenancy.limits.connectors, tenancy.limits.providers),
+                (3, 10)
+            );
         });
         let wrong = format!("{EXAMPLE}\n[tenancy]\nsignup = \"everyone\"\n");
         with_config(&wrong, |config| assert!(config.is_err()));
