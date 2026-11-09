@@ -100,13 +100,6 @@ pub struct PresetConnector {
     pub note: Option<String>,
 }
 
-impl PresetConnector {
-    /// Whether the URL holds a part to fill in, such as `{subdomain}`.
-    pub fn is_template(&self) -> bool {
-        self.url.contains('{')
-    }
-}
-
 /// A suggested connected source.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
