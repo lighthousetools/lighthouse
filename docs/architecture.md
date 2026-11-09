@@ -122,10 +122,10 @@ calendar items belong to the tenant's first owner. Members bring no mail or cale
 
 `lighthouse-settings` keeps the tenant and personal layers of a tenant in memory as one snapshot. Every change runs
 through it: it checks the input against the latest state, writes the row, records who changed what, raises the
-tenant's revision and swaps in a new snapshot. The runtime asks for providers, keys and connectors when a run starts
-and keeps them for that run, so a change applies to the next run and never to one under way. The tool policy, the MCP
-connector and the router all read the same snapshot for the acting user, which `Runtime::as_run_user` sets from the
-run's `user_id`. Each workspace compares its revision with the database every 15 seconds, so several server processes
+tenant's revision and swaps in a new snapshot. A run takes its router and its MCP connections when it starts or
+resumes, so a new provider, key or URL applies to the next start. The tool policy answers from the current snapshot on
+every call, so a change to `read_tools` or `draft_tools` also applies to a run under way. All three resolve for the
+acting user, which `Runtime::as_run_user` sets from the run's `user_id`. Each workspace compares its revision with the database every 15 seconds, so several server processes
 see each other's changes.
 
 Outbound requests to endpoints that tenants or people chose go through a guarded HTTP client
