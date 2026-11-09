@@ -28,6 +28,7 @@ lighthouse-router.workspace = true
 lighthouse-runtime.workspace = true
 lighthouse-scheduler.workspace = true
 lighthouse-sessions.workspace = true
+lighthouse-settings.workspace = true
 lighthouse-skills.workspace = true
 lighthouse-store.workspace = true
 lighthouse-sync.workspace = true

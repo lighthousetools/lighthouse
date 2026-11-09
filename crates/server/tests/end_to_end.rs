@@ -1112,3 +1112,146 @@ async fn another_program_adds_hooks_limits_and_routes() {
         "succeeded"
     );
 }
+
+/// An OpenAI compatible model that answers with a fixed text, for the tenant
+/// key only.
+async fn tenant_model() -> String {
+    async fn complete(headers: axum::http::HeaderMap) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        let authorized = headers
+            .get("authorization")
+            .is_some_and(|value| value == "Bearer tenant-key");
+        if !authorized {
+            return axum::http::StatusCode::UNAUTHORIZED.into_response();
+        }
+        axum::Json(json!({
+            "choices": [{"message": {"content": "from the tenant model"}}],
+            "usage": {"prompt_tokens": 100000, "completion_tokens": 0},
+        }))
+        .into_response()
+    }
+    serve(Router::new().route("/v1/chat/completions", axum::routing::post(complete))).await
+}
+
+async fn send(base: &str, method: reqwest::Method, path: &str, body: Value) -> reqwest::StatusCode {
+    reqwest::Client::new()
+        .request(method, format!("{base}{path}"))
+        .bearer_auth(TOKEN)
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn tenant_settings_take_effect_without_a_restart() {
+    let (base, _dir, _database) = start_with("[tenancy]\nallow_private_endpoints = true\n").await;
+    let model = tenant_model().await;
+    let put = reqwest::Method::PUT;
+
+    // The tenant routes text to its own provider. Without its key, runs fail
+    // and name what is missing; with it, runs use the tenant's model.
+    let status = send(
+        &base,
+        put.clone(),
+        "/settings/tenant/providers/local",
+        json!({"kind": "openai", "base_url": model}),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let status = send(
+        &base,
+        put.clone(),
+        "/settings/tenant/providers/local/models/text",
+        json!({"model": "tenant-model", "input_eur_per_mtok": 2.0, "output_eur_per_mtok": 4.0}),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let status = send(
+        &base,
+        put.clone(),
+        "/settings/tenant/routing/text",
+        json!({"provider": "local"}),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let detail = run_to_end(&base, "reader").await;
+    assert_eq!(detail["run"]["status"], "failed", "{detail}");
+    assert!(
+        detail
+            .to_string()
+            .contains("no API key stored for provider `local`"),
+        "{detail}"
+    );
+    let status = send(
+        &base,
+        put.clone(),
+        "/credentials/provider:local",
+        json!({"value": "tenant-key"}),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let detail = run_to_end(&base, "reader").await;
+    assert_eq!(detail["run"]["status"], "succeeded", "{detail}");
+    assert_eq!(detail["run"]["report"], "from the tenant model");
+    assert!(
+        (detail["run"]["cost_eur"].as_f64().unwrap() - 0.2).abs() < 1e-9,
+        "{detail}"
+    );
+    let models = get(&base, "/settings/models").await;
+    assert_eq!(models[0]["provider"], "local");
+    let agents = get(&base, "/agents").await;
+    assert_eq!(agents[0]["model"]["model"], "tenant-model", "{agents}");
+
+    // Switching the instance connector off blocks the agent that needs it; a
+    // tenant connector to the same server under another name works at once.
+    let status = send(
+        &base,
+        put.clone(),
+        "/settings/tenant/connectors/demo/enabled",
+        json!({"enabled": false}),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let detail = run_to_end(&base, "reader").await;
+    assert_eq!(detail["run"]["status"], "rejected", "{detail}");
+    let connectors = get(&base, "/connectors").await;
+    assert!(connectors.as_array().unwrap().is_empty(), "{connectors}");
+    let mcp = get(&base, "/settings/effective").await;
+    let url = mcp["connectors"][0]["url"].as_str().unwrap().to_owned();
+    let status = send(
+        &base,
+        put.clone(),
+        "/settings/tenant/connectors/issues",
+        json!({"url": url, "read_tools": ["list_issues"]}),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let connectors = get(&base, "/connectors").await;
+    assert_eq!(connectors[0]["name"], "issues");
+    let source = "---\nname: Issues\nscope: org\ntrigger:\n  manual: true\ntools:\n  - issues.list_issues\n---\nGo.\n";
+    let response = reqwest::Client::new()
+        .post(format!("{base}/agents"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"source": source}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let saved: Value = response.json().await.unwrap();
+    assert!(saved["blocked"].as_array().unwrap().is_empty(), "{saved}");
+    let detail = run_to_end(&base, "issues").await;
+    assert_eq!(detail["run"]["status"], "succeeded", "{detail}");
+    let status = send(
+        &base,
+        reqwest::Method::DELETE,
+        "/settings/tenant/routing/text",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let detail = run_to_end(&base, "issues").await;
+    assert_eq!(detail["run"]["status"], "succeeded", "{detail}");
+    assert_ne!(detail["run"]["report"], "from the tenant model");
+}

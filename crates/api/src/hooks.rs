@@ -86,6 +86,16 @@ pub enum Action {
         /// The user, absent for the admin token.
         user: Option<Uuid>,
     },
+    /// Someone changes settings of the tenant layer or their own: providers,
+    /// models, routing or connectors.
+    ChangeSettings {
+        /// The user, absent for the admin token.
+        user: Option<Uuid>,
+        /// Whether it is the user's own layer.
+        personal: bool,
+        /// What kind of entry: `provider`, `model`, `route` or `connector`.
+        area: String,
+    },
 }
 
 /// Limits of a tenant. The default allows everything.

@@ -265,6 +265,12 @@ impl Accounts {
             "DELETE FROM talk_threads WHERE tenant_id = $1 AND user_id = $2",
             "DELETE FROM nodes WHERE tenant_id = $1 AND user_id = $2",
             "DELETE FROM synced_items WHERE tenant_id = $1 AND user_id = $2",
+            "DELETE FROM credentials WHERE tenant_id = $1 AND user_id = $2",
+            "DELETE FROM settings_providers WHERE tenant_id = $1 AND user_id = $2",
+            "DELETE FROM settings_routes WHERE tenant_id = $1 AND user_id = $2",
+            "DELETE FROM settings_connectors WHERE tenant_id = $1 AND user_id = $2",
+            "DELETE FROM settings_switches WHERE tenant_id = $1 AND user_id = $2",
+            "DELETE FROM settings_values WHERE tenant_id = $1 AND user_id = $2",
         ] {
             sqlx::query(statement)
                 .bind(tenant.as_uuid())

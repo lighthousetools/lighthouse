@@ -27,7 +27,8 @@ flowchart LR
 | `lighthouse-core` | Shared types and agent file parsing, without IO |
 | `lighthouse-config` | `lighthouse.toml` and environment overrides |
 | `lighthouse-store` | Postgres connection and migrations |
-| `lighthouse-vault` | Encrypted credentials |
+| `lighthouse-vault` | Encrypted credentials, shared per tenant and personal per member |
+| `lighthouse-settings` | Providers, models, routing and connectors in layers: instance, tenant, personal |
 | `lighthouse-audit` | Append-only log of runs and steps, approvals and paused runs |
 | `lighthouse-auth` | Users, tenants, memberships, invitations and device tokens |
 | `lighthouse-desk` | The owner's tasks, rules, memory, alerts and briefing documents |
@@ -98,7 +99,10 @@ see it, whatever their role. The admin token, agents and background work see eve
 | Mail and calendar (connected items of the `mail` and `calendar` domains) | Personal | `synced_items.user_id` |
 | Runs, their steps and approvals (decisions in Ready), drafts, briefs and recaps | Personal to the user a run works for | `runs.user_id` |
 | Brain, tasks, rules, memory (facts), alerts, automations, agents, organizations, issues, pull requests, deals, invoices, bank accounts, posts, decks, contracts, branding, settings and budget | Shared in the tenant | `tenant_id` only |
-| Model provider keys and connector tokens (the vault) | Shared in the tenant; only owners and admins change them | `credentials.tenant_id` |
+| Model provider keys and connector tokens of the tenant (the vault) | Shared in the tenant; only owners and admins change them | `credentials.tenant_id` without `user_id` |
+| A member's own provider keys and connector tokens | Personal | `credentials.user_id` |
+| Providers, models, routing and connectors set for the tenant | Shared in the tenant; only owners and admins change them | `settings_*` rows without `user_id` |
+| A member's own providers, models, routing and connectors | Personal | `settings_*.user_id` |
 
 A run works for the user who started it, through the API, Talk or a delegated task. Runs from schedules and
 automations work for the tenant's first owner, the person whose accounts the agents use (`tenant_primary_user`). What
@@ -109,8 +113,25 @@ Removing a member deletes their conversations, desktop agents and mail and calen
 out their devices there; their runs stay in the audit log. Deleting an account deletes all of this in every tenant.
 Live events go to the members of the tenant they happened in and carry IDs only, never content.
 
-Connected sources sync with the tenant's connector tokens, and their mail and calendar items belong to the tenant's
-first owner. Members bring no mail or calendar of their own yet.
+A run resolves providers, keys and connectors for the user it works for: their own entries over the tenant's over the
+instance's (see [configuration.md](configuration.md#layers)). A member who connects a connector for themselves gives
+only their own runs that account. Connected sources sync with the tenant's connector tokens, and their mail and
+calendar items belong to the tenant's first owner. Members bring no mail or calendar sources of their own yet.
+
+### Settings in layers
+
+`lighthouse-settings` keeps the tenant and personal layers of a tenant in memory as one snapshot. Every change runs
+through it: it checks the input against the latest state, writes the row, records who changed what, raises the
+tenant's revision and swaps in a new snapshot. The runtime asks for providers, keys and connectors when a run starts
+and keeps them for that run, so a change applies to the next run and never to one under way. The tool policy, the MCP
+connector and the router all read the same snapshot for the acting user, which `Runtime::as_run_user` sets from the
+run's `user_id`. Each workspace compares its revision with the database every 15 seconds, so several server processes
+see each other's changes.
+
+Outbound requests to endpoints that tenants or people chose go through a guarded HTTP client
+(`lighthouse_router::net`): `https` only, names resolved through a resolver that drops every address that is not
+public, and redirects followed only to public `https` URLs. A check when the setting is saved gives an early error;
+the client's check at connection time also stops DNS rebinding.
 
 Cost accounting is per tenant (`runs.tenant_id`, `run_steps.tenant_id` and the monthly budget) and per user through
 `runs.user_id` and the nodes behind Claude Code usage.
@@ -142,7 +163,7 @@ with `lighthouse_server::build_with(config, hooks)` and serve the returned route
 | Field | Trait or type | Default | Consulted |
 |---|---|---|---|
 | `lifecycle` | `lighthouse_api::hooks::Lifecycle` | `NoHooks` | `on_start` once in `build_with`, before the server serves, with the `Instance`. `on_signup` before an account is created; it may allow, reject (403) or hold the sign-up (202, nothing created). `on_tenant_created` after sign-up, `POST /tenants` and `Instance::create_tenant` with an owner, `on_tenant_deleted` after a tenant is deleted. `on_invitation_accepted` with the user, tenant and role after an invitation was accepted, by a new or an existing user. `on_member_removed` after a member was removed or left through `DELETE /tenant/members/{user}` |
-| `entitlements` | `lighthouse_api::hooks::Entitlements` | `AllowAll` | With an `Action`: `CreateTenant` before a user creates another tenant; `InviteMember` with the current `members`, the open invitations (`pending`) and the `role` before an invitation; `RunAgent` before every agent run, by hand, from a task, from Talk, on a schedule or as a step of an automation; `Ask` before a question to the Brain through `/brain/ask` or a conversation without a Talk agent. A refusal answers 403, or 409 for runs and questions; scheduled runs are skipped and logged, refused automation steps fail the automation run with the message. `Action` is `#[non_exhaustive]`, so match it with a catch-all arm |
+| `entitlements` | `lighthouse_api::hooks::Entitlements` | `AllowAll` | With an `Action`: `CreateTenant` before a user creates another tenant; `InviteMember` with the current `members`, the open invitations (`pending`) and the `role` before an invitation; `RunAgent` before every agent run, by hand, from a task, from Talk, on a schedule or as a step of an automation; `Ask` before a question to the Brain through `/brain/ask` or a conversation without a Talk agent; `ChangeSettings` with the `user`, whether it is their `personal` layer and the `area` (`provider`, `model`, `route` or `connector`) before a settings change. A refusal answers 403, or 409 for runs and questions; scheduled runs are skipped and logged, refused automation steps fail the automation run with the message. `Action` is `#[non_exhaustive]`, so match it with a catch-all arm |
 | `mailer` | `lighthouse_notify::Mailer` | `SmtpMailer` from `[delivery.smtp]`, or none | Every mail of the server goes through it: email verification, invitations and reports delivered to `mail:` targets. A `Mail` has a recipient, a subject, a plain text body and an optional HTML body |
 | `mail_templates` | `lighthouse_api::hooks::MailTemplates` | `EnglishMails` | Writes the subject and bodies of the verification and invitation mails. Every method has an English default, so an implementation overrides only the mails it changes, for example to translate them |
 | `routes` | `lighthouse_api::Extensions` | none | `public` routes are merged as they are; `signed_in` routes sit behind the sign-in and can extract `Caller` (user, tenant, role) and `Scoped` (the tenant's state), with `Instance` (accounts and the store) as router state |

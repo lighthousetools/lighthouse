@@ -22,11 +22,12 @@ use lighthouse_mcp::{McpConnector, OAuthFlows, ToolHostFactory, ToolPolicy};
 use lighthouse_notify::{ChannelNotifier, EventBus, Mailer, SmtpMailer};
 use lighthouse_router::media::OpenAiMedia;
 use lighthouse_runtime::{
-    AgentRegistry, AutomationRegistry, DeskToolFactory, LoadedAgent, RegistryError, Runtime,
-    VaultRouterSource,
+    AgentRegistry, AutomationRegistry, DeskToolFactory, LiveRouterSource, LoadedAgent,
+    RegistryError, Runtime,
 };
 use lighthouse_scheduler::{AgentRunner, ScheduleHandle, Scheduler};
 use lighthouse_sessions::Sessions;
+use lighthouse_settings::{Defaults, Effective, TenantSettings};
 use lighthouse_skills::SkillLibrary;
 use lighthouse_store::Store;
 use lighthouse_vault::{MasterKey, Vault};
@@ -44,6 +45,7 @@ pub mod automations;
 pub mod connected;
 pub mod outcomes;
 pub mod publishing;
+pub mod tenant_config;
 pub mod weather;
 
 use automations::{AutomationEngine, ServerAutomations};
@@ -52,6 +54,8 @@ use lighthouse_core::automation::RUN_PREFIX;
 use outcomes::{OutcomeParts, Outcomes, Pushes};
 
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60);
+/// How often a workspace looks for settings changed by another server process.
+const SETTINGS_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Reads the master key from the configuration.
 pub fn master_key(config: &Config) -> anyhow::Result<MasterKey> {
@@ -287,7 +291,7 @@ impl AgentRunner for AgentPool {
 
 /// Answers what the apps ask about agents and connections.
 struct ServerCatalog {
-    config: Arc<Config>,
+    settings: TenantSettings,
     vault: Vault,
     runtime: Arc<Runtime>,
     agents: Arc<AgentRegistry>,
@@ -295,14 +299,12 @@ struct ServerCatalog {
     zone: Tz,
 }
 
-/// The provider and model of a task, from `[routing]` and `[providers]`.
-fn model_route(config: &Config, task: &str) -> Option<ModelRoute> {
-    let route = config.routing.get(task)?;
+/// The provider and model of a task, from the effective routing and providers.
+fn model_route(effective: &Effective, task: &str) -> Option<ModelRoute> {
+    let route = &effective.routing.get(task)?.route;
     let model = |provider: &str| {
-        config
-            .providers
-            .get(provider)
-            .and_then(|provider| provider.tasks.get(task))
+        effective
+            .model(provider, task)
             .map(|model| model.model.clone())
     };
     Some(ModelRoute {
@@ -331,6 +333,12 @@ fn delivery_name(delivery: &Delivery) -> String {
 }
 
 impl ServerCatalog {
+    /// What applies to the user the request acts for.
+    fn effective(&self) -> Effective {
+        self.settings
+            .effective(lighthouse_audit::acting_user::current())
+    }
+
     fn next_run(&self, expression: &str) -> Option<DateTime<Utc>> {
         let now = Utc::now().with_timezone(&self.zone);
         let next = parse_cron(expression)
@@ -361,7 +369,7 @@ impl ServerCatalog {
             schedule,
             autonomy: lighthouse_api::autonomy(&tools).to_owned(),
             tools,
-            model: model_route(&self.config, "text"),
+            model: model_route(&self.effective(), "text"),
             max_cost_eur: agent.limits.max_cost_eur,
             corrections: 0,
             skills: agent.skills.clone(),
@@ -400,7 +408,7 @@ impl ServerCatalog {
             "memory.propose: draft".to_owned(),
             "posts.propose: draft".to_owned(),
         ];
-        for (name, connector) in &self.config.connectors {
+        for (name, connector) in &self.effective().enabled_connectors() {
             tools.extend(
                 connector
                     .read_tools
@@ -461,10 +469,19 @@ impl Catalog for ServerCatalog {
     }
 
     async fn connectors(&self) -> Result<Vec<ConnectorInfo>, String> {
-        let stored = self.vault.list().await.map_err(|error| error.to_string())?;
+        let mut stored = self.vault.list().await.map_err(|error| error.to_string())?;
+        if let Some(user) = lighthouse_audit::acting_user::current() {
+            stored.extend(
+                self.vault
+                    .personal(user)
+                    .list()
+                    .await
+                    .map_err(|error| error.to_string())?,
+            );
+        }
         Ok(self
-            .config
-            .connectors
+            .effective()
+            .enabled_connectors()
             .iter()
             .map(|(name, connector)| {
                 let has = |key: String| stored.contains(&key);
@@ -488,10 +505,11 @@ impl Catalog for ServerCatalog {
     }
 
     fn models(&self) -> Vec<ModelRoute> {
-        self.config
+        let effective = self.effective();
+        effective
             .routing
             .keys()
-            .filter_map(|task| model_route(&self.config, task))
+            .filter_map(|task| model_route(&effective, task))
             .collect()
     }
 
@@ -679,6 +697,10 @@ struct Shared {
     entitlements: Arc<dyn Entitlements>,
     /// Sends every mail of the instance, if mail is configured.
     mailer: Option<Arc<dyn Mailer>>,
+    /// The instance layer of the settings.
+    defaults: Arc<Defaults>,
+    /// What tenants and people may set.
+    options: lighthouse_settings::Options,
 }
 
 impl Shared {
@@ -809,6 +831,7 @@ pub struct Workspace {
     tenant: TenantId,
     state: ApiState,
     pool: Arc<AgentPool>,
+    settings: TenantSettings,
     scheduler: std::sync::Mutex<Option<Scheduler>>,
     tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -824,6 +847,11 @@ impl Workspace {
         &self.pool
     }
 
+    /// The settings of the tenant.
+    pub fn settings(&self) -> &TenantSettings {
+        &self.settings
+    }
+
     /// Starts the scheduler and the maintenance of this tenant, once.
     fn start(&self) {
         let Some(scheduler) = self.scheduler.lock().expect("scheduler lock").take() else {
@@ -832,11 +860,23 @@ impl Workspace {
         let mut tasks = self.tasks.lock().expect("tasks lock");
         tasks.push(tokio::spawn(scheduler.run()));
         tasks.push(tokio::spawn(self.pool.clone().run_maintenance()));
+        tasks.push(tokio::spawn(follow_settings(self.settings.clone())));
     }
 
     fn stop(&self) {
         for task in self.tasks.lock().expect("tasks lock").drain(..) {
             task.abort();
+        }
+    }
+}
+
+/// Picks up settings that another server process changed.
+async fn follow_settings(settings: TenantSettings) {
+    let mut ticker = tokio::time::interval(SETTINGS_INTERVAL);
+    loop {
+        ticker.tick().await;
+        if let Err(error) = settings.refresh().await {
+            tracing::warn!(%error, "cannot refresh the settings");
         }
     }
 }
@@ -1005,19 +1045,28 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
             tracing::warn!(%error, "embedding failed, search stays lexical for now");
         }
     });
-    let mcp: Arc<dyn ToolHostFactory> =
-        Arc::new(McpConnector::new(config.connectors.clone(), vault.clone()));
+    let settings = TenantSettings::open(
+        store.clone(),
+        tenant,
+        shared.defaults.clone(),
+        shared.options,
+    )
+    .await
+    .context("cannot read the settings of the tenant")?;
+    let resolver = Arc::new(tenant_config::TenantConfig::new(
+        settings.clone(),
+        vault.clone(),
+        shared.key_fallback(tenant),
+    ));
+    let mcp: Arc<dyn ToolHostFactory> = Arc::new(McpConnector::live(resolver.clone()));
     let sync_tools = mcp.clone();
     let runtime = Arc::new(Runtime {
-        router: Arc::new(
-            VaultRouterSource::new(config.clone(), vault.clone())
-                .with_fallback(shared.key_fallback(tenant)),
-        ),
+        router: Arc::new(LiveRouterSource::new(resolver.clone())),
         tools: Arc::new(BrainToolFactory::new(
             brain.clone(),
             Arc::new(DeskToolFactory::new(desk.clone(), mcp)),
         )),
-        policy: ToolPolicy::new(&config.connectors),
+        policy: ToolPolicy::live(resolver),
         skills: SkillLibrary::load(&config.paths.skills)?,
         audit: audit.clone(),
         notifier: Arc::new({
@@ -1112,7 +1161,7 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
     )?;
     let automations = Arc::new(ServerAutomations::new(engine, scheduler.handle(), zone)?);
     let catalog = Arc::new(ServerCatalog {
-        config: config.clone(),
+        settings: settings.clone(),
         vault: vault.clone(),
         runtime: pool.runtime.clone(),
         agents,
@@ -1141,11 +1190,14 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         publisher,
         talk_agent: config.talk.agent.clone(),
         writer: Arc::new(publishing::ServerWriter::new(pool.runtime.clone())),
+        settings: settings.clone(),
+        instance_vault: shared.key_fallback(tenant),
     };
     Ok(Workspace {
         tenant,
         state,
         pool,
+        settings,
         scheduler: std::sync::Mutex::new(Some(scheduler)),
         tasks: std::sync::Mutex::default(),
     })
@@ -1255,6 +1307,8 @@ pub async fn build_with(config: Config, hooks: Hooks) -> anyhow::Result<App> {
         )),
         entitlements: hooks.entitlements.clone(),
         mailer: mailer.clone(),
+        defaults: Arc::new(Defaults::from_config(&config)),
+        options: lighthouse_settings::Options::from_config(&config),
     });
     let configured_owner = shared.owner(TenantId::DEFAULT).await?;
     resolve_sources(&config, &shared.policy, &configured_owner)?;
@@ -1319,15 +1373,17 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../demo/lighthouse.demo.toml");
         let mut config = Config::load(&path).unwrap();
-        let route = model_route(&config, "text").unwrap();
+        let effective =
+            |config: &Config| Effective::resolve(&Defaults::from_config(config), None, None, false);
+        let route = model_route(&effective(&config), "text").unwrap();
         assert_eq!(
             (route.provider.as_str(), route.model.as_deref()),
             ("demo", Some("demo"))
         );
         assert_eq!((route.fallback, route.fallback_model), (None, None));
         config.routing.get_mut("text").unwrap().fallback = Some("demo".to_owned());
-        let route = model_route(&config, "text").unwrap();
+        let route = model_route(&effective(&config), "text").unwrap();
         assert_eq!(route.fallback_model.as_deref(), Some("demo"));
-        assert!(model_route(&config, "vision").is_none());
+        assert!(model_route(&effective(&config), "vision").is_none());
     }
 }

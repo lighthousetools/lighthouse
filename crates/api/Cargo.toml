@@ -22,7 +22,9 @@ lighthouse-core.workspace = true
 lighthouse-desk.workspace = true
 lighthouse-mcp.workspace = true
 lighthouse-notify.workspace = true
+lighthouse-config.workspace = true
 lighthouse-sessions.workspace = true
+lighthouse-settings.workspace = true
 lighthouse-sync.workspace = true
 lighthouse-vault.workspace = true
 pulldown-cmark.workspace = true
@@ -40,6 +42,5 @@ uuid.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
-lighthouse-config.workspace = true
 lighthouse-store = { workspace = true, features = ["testing"] }
 tower.workspace = true

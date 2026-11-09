@@ -18,6 +18,7 @@ mod decks;
 mod documents;
 mod holdings;
 pub mod hooks;
+mod layers;
 mod memory;
 mod organizations;
 mod pipeline;
@@ -54,6 +55,10 @@ pub use connected::{
 pub use contracts::{ComposeRequest, Composed, NewTemplate, fill as fill_template};
 pub use decks::{DeckAttachment, DeckBrief, NewDeck, render_html as render_deck};
 pub use holdings::{HoldingNotes, NewThesis, ReminderRequest, ReminderResult};
+pub use layers::{
+    ConnectorView, LayerView, ModelView, ProviderView, RouteView, SettingsView, StoredProvider,
+    StoredRoute, StoredSwitch,
+};
 pub use pipeline::{DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult, median};
 pub use posts::{
     CheckRequest, ImportRequest, ImportResult, Publisher, RewriteRequest, Writer, Written,
@@ -298,6 +303,11 @@ pub struct ApiState {
     pub talk_agent: Option<String>,
     /// Writes rewrites and decks.
     pub writer: Arc<dyn Writer>,
+    /// Providers, models, routing and connectors of the instance, the tenant
+    /// and its members.
+    pub settings: lighthouse_settings::TenantSettings,
+    /// The instance vault, if the tenant may use the instance's provider keys.
+    pub instance_vault: Option<Vault>,
 }
 
 impl ApiState {
@@ -341,6 +351,12 @@ pub struct ConnectStarted {
 #[derive(Deserialize)]
 struct ListQuery {
     limit: Option<i64>,
+}
+
+/// Where the tokens of an OAuth flow go.
+#[derive(Deserialize)]
+struct ConnectQuery {
+    scope: Option<String>,
 }
 
 /// Parameters of the OAuth redirect.
@@ -521,31 +537,64 @@ async fn run_agent(
     Ok((StatusCode::ACCEPTED, Json(RunStarted { id: run })))
 }
 
-/// Starts the OAuth flow of a connector.
+/// Starts the OAuth flow of a connector. With `scope=personal`, any member
+/// connects their own account and the tokens go to their own vault; other
+/// members never use them. Without it, an owner or admin connects the tenant's
+/// shared account. A personal connector always connects personally.
 #[utoipa::path(
     post,
     path = "/connectors/{id}/connect",
-    params(("id" = String, Path, description = "Connector name")),
-    responses((status = 200, body = ConnectStarted), (status = 400, description = "Cannot start the flow")),
+    params(("id" = String, Path, description = "Connector name"),
+        ("scope" = Option<String>, Query, description = "`personal` or `tenant` (default)")),
+    responses((status = 200, body = ConnectStarted), (status = 400, description = "Cannot start the flow"),
+        (status = 403, description = "Connecting for the tenant needs the owner or admin role")),
     security(("bearer" = []))
 )]
 async fn connect(
     Scoped(state): Scoped,
     caller: Caller,
     Path(id): Path<String>,
+    Query(query): Query<ConnectQuery>,
 ) -> Result<Json<ConnectStarted>, ApiError> {
-    caller.require_manager()?;
-    let authorize_url =
-        state
-            .oauth
-            .start(&id, &state.vault)
-            .await
-            .map_err(|error| match error {
-                McpError::UnknownConnector(_) | McpError::OAuth(_) => {
-                    ApiError(StatusCode::BAD_REQUEST, error.to_string())
-                }
-                other => internal(other),
-            })?;
+    let effective = state.settings.effective(caller.user);
+    let connector = effective
+        .connectors
+        .get(&id)
+        .filter(|connector| connector.enabled);
+    let own =
+        connector.is_some_and(|connector| connector.source == lighthouse_settings::Layer::Personal);
+    let personal = match query.scope.as_deref() {
+        Some("personal") => true,
+        None | Some("tenant") => own,
+        Some(_) => {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                "`scope` is `personal` or `tenant`".to_owned(),
+            ));
+        }
+    };
+    let vault = if personal {
+        let user = caller.user.ok_or_else(|| {
+            ApiError(
+                StatusCode::BAD_REQUEST,
+                "the admin token connects for the tenant".to_owned(),
+            )
+        })?;
+        state.vault.personal(user)
+    } else {
+        caller.require_manager()?;
+        state.vault.clone()
+    };
+    let started = match connector {
+        Some(connector) => state.oauth.start_with(&id, &connector.config, &vault).await,
+        None => state.oauth.start(&id, &vault).await,
+    };
+    let authorize_url = started.map_err(|error| match error {
+        McpError::UnknownConnector(_) | McpError::OAuth(_) => {
+            ApiError(StatusCode::BAD_REQUEST, error.to_string())
+        }
+        other => internal(other),
+    })?;
     Ok(Json(ConnectStarted { authorize_url }))
 }
 
@@ -628,6 +677,11 @@ impl utoipa::Modify for SecurityAddon {
         ready::feed, ready::dismiss_draft, ready::snooze, ready::unsnooze, ready::rewrite,
         ready::edit_text, ready::run_basis, settings::get_budget, settings::set_budget,
         settings::models,
+        layers::presets, layers::effective, layers::entries, layers::changes,
+        layers::put_provider, layers::delete_provider, layers::put_model, layers::delete_model,
+        layers::put_route, layers::delete_route, layers::put_connector, layers::delete_connector,
+        layers::switch_connector, layers::list_personal_credentials,
+        layers::put_personal_credential, layers::delete_personal_credential,
         documents::list, documents::latest_brief, documents::recaps, documents::recap,
         documents::of_run,
         automations::list, automations::get, automations::save, automations::switch,
@@ -697,6 +751,13 @@ impl utoipa::Modify for SecurityAddon {
         DeckBrief, DeckAttachment, lighthouse_desk::Variant, NewTemplate, ComposeRequest, Composed,
         DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult, NewThesis, HoldingNotes, ReminderRequest,
         ReminderResult,
+        SettingsView, ProviderView, ModelView, RouteView, ConnectorView, LayerView, StoredProvider,
+        StoredRoute, StoredSwitch, lighthouse_settings::Layer, lighthouse_settings::ProviderInput,
+        lighthouse_settings::ModelInput, lighthouse_settings::RouteInput,
+        lighthouse_settings::ConnectorInput, lighthouse_settings::SwitchInput,
+        lighthouse_settings::ChangeRecord, lighthouse_settings::Presets,
+        lighthouse_settings::PresetProvider, lighthouse_settings::PresetModel,
+        lighthouse_settings::PresetConnector,
     )),
     modifiers(&SecurityAddon)
 )]
@@ -774,6 +835,35 @@ pub fn router_with(state: Instance, extensions: Extensions) -> Router {
             get(settings::get_budget).put(settings::set_budget),
         )
         .route("/settings/models", get(settings::models))
+        .route("/settings/presets", get(layers::presets))
+        .route("/settings/effective", get(layers::effective))
+        .route("/settings/{layer}/entries", get(layers::entries))
+        .route("/settings/{layer}/changes", get(layers::changes))
+        .route(
+            "/settings/{layer}/providers/{name}",
+            put(layers::put_provider).delete(layers::delete_provider),
+        )
+        .route(
+            "/settings/{layer}/providers/{name}/models/{task}",
+            put(layers::put_model).delete(layers::delete_model),
+        )
+        .route(
+            "/settings/{layer}/routing/{task}",
+            put(layers::put_route).delete(layers::delete_route),
+        )
+        .route(
+            "/settings/{layer}/connectors/{name}",
+            put(layers::put_connector).delete(layers::delete_connector),
+        )
+        .route(
+            "/settings/{layer}/connectors/{name}/enabled",
+            put(layers::switch_connector),
+        )
+        .route("/me/credentials", get(layers::list_personal_credentials))
+        .route(
+            "/me/credentials/{name}",
+            put(layers::put_personal_credential).delete(layers::delete_personal_credential),
+        )
         .route("/agents", get(catalog::agents).post(catalog::save_agent))
         .route("/agents/draft", post(catalog::draft_agent))
         .route(
@@ -1423,6 +1513,16 @@ mod tests {
             publisher: Arc::new(FakePublisher),
             talk_agent,
             writer: Arc::new(FakeWriter),
+            settings: lighthouse_settings::TenantSettings::new(
+                store.clone(),
+                tenant,
+                Arc::new(lighthouse_settings::Defaults::default()),
+                lighthouse_settings::Options {
+                    allow_private_endpoints: true,
+                    ..lighthouse_settings::Options::default()
+                },
+            ),
+            instance_vault: None,
         }
     }
 
@@ -1431,6 +1531,16 @@ mod tests {
         store: lighthouse_store::Store,
         states: Mutex<std::collections::HashMap<TenantId, ApiState>>,
         pub(crate) forgotten: Mutex<Vec<TenantId>>,
+    }
+
+    impl TestTenants {
+        /// Replaces the state of a tenant, for example with other settings.
+        pub(crate) fn replace(&self, tenant: TenantId, change: impl FnOnce(&mut ApiState)) {
+            let mut states = self.states.lock().unwrap();
+            if let Some(state) = states.get_mut(&tenant) {
+                change(state);
+            }
+        }
     }
 
     #[async_trait]

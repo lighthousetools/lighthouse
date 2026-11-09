@@ -119,6 +119,7 @@ never report texts, tool arguments or other private content.
 | `posts.changed`, `decks.changed`, `branding.changed` | `{"id"}` or `{}` | Posts, decks or the brand profile changed, see [publishing.md](publishing.md) |
 | `organizations.changed` | `{"id"}` | An organization changed |
 | `talk.changed` | `{"thread_id"}` | A conversation got a message or an answer |
+| `settings.changed` | `{"key"}` | The budget (`budget`) or providers, models, routing or connectors (`layers`) changed |
 | `document.created` | `{"id", "run_id", "kind", "period"}` | A run stored a briefing document, see [documents.md](documents.md) |
 
 A client that falls behind gets a `changed` event instead of the events it missed.
@@ -281,7 +282,7 @@ and the severity can only go up. After it is resolved, the next occurrence opens
 
 | Field | Meaning |
 |---|---|
-| `model` | `task`, `provider`, `model`, `fallback` and `fallback_model` of the `text` task, from `[routing]` and `[providers]`. Display only |
+| `model` | `task`, `provider`, `model`, `fallback` and `fallback_model` of the `text` task, as it applies to the caller (see [Providers, models and connectors](#providers-models-and-connectors)). Display only |
 | `autonomy` | `observe` (reads only), `prepare` (also saves drafts) or `propose` (also proposes actions, which always wait for your approval) |
 | `max_cost_eur` | The cost limit of one run, from the agent file |
 | `corrections` | Its proposals you denied or changed before approving |
@@ -295,11 +296,44 @@ roles and invitations are managed under [Users and tenants](#users-and-tenants).
 |---|---|
 | `GET /settings/budget` | `monthly_eur`, `alert_at_percent` (default 80), `spent_this_month_eur` since the start of the month in your time zone, `remaining_eur`, and `run_limits` with each agent's `max_cost_eur` |
 | `PUT /settings/budget` | Sets `{"monthly_eur", "alert_at_percent"}`. `monthly_eur: null` removes the budget |
-| `GET /settings/models` | Which `provider` and `model` serve each task, with the fallback. Read-only: routing lives in the configuration |
+| `GET /settings/models` | Which `provider` and `model` serve each task for the caller, with the fallback. The full view is `GET /settings/effective` |
 
 The budget never stops runs; the cost limit per run does that. After each run, a `budget` alert (key
 `budget:<YYYY-MM>`, `value` in `EUR`) warns once this month's model costs reach `alert_at_percent` of the budget, and
 turns `critical` when the budget is used up.
+
+### Providers, models and connectors
+
+Providers, models, routing and MCP connectors come from three layers: `instance` (`lighthouse.toml`, read-only),
+`tenant` (owners and admins set it for everyone) and `personal` (each member for themselves). See
+[configuration.md](configuration.md#layers) for the merge rules and where keys come from. Paths name the layer:
+`tenant`, or `me` for the caller's own. Every member reads the tenant layer and what applies to them; changing the
+tenant layer needs the `owner` or `admin` role; every member changes their own layer. Nobody reads another member's
+personal layer, and the admin token has none.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /settings/effective` | What applies to the caller: `providers` with `models`, `routing` and `connectors`, each with its `source` layer. Providers also carry `defined_at` (the layer that chose kind and URL), `key_name` (the credential that holds the key) and `key` (the layer whose key is used now, or `null`). Routes carry a `problem` if they cannot work. Connectors carry `enabled`, `disabled_by`, `token_name` and `connected` (the layer whose token is used now). Also `tasks`, `can_manage` and `allow_private_endpoints` |
+| `GET /settings/presets` | Suggested providers with models and list prices, and connectors, to prefill forms |
+| `GET /settings/{layer}/entries` | What one layer stores, without what it inherits |
+| `GET /settings/{layer}/changes` | Who changed what in a layer and when. Values are not recorded. The tenant layer's list needs the `owner` or `admin` role |
+| `PUT /settings/{layer}/providers/{name}` | Adds a provider or changes it: `{"kind": "anthropic" or "openai", "base_url"}`. A name of a lower layer keeps that layer's kind and URL (409 otherwise) |
+| `DELETE /settings/{layer}/providers/{name}` | Deletes a provider of the layer with its models. 409 while a route of the layer needs it |
+| `PUT /settings/{layer}/providers/{name}/models/{task}` | Sets `{"model", "input_eur_per_mtok", "output_eur_per_mtok"}`. For a provider of a lower layer, the layer gets its own entry with the same kind and URL |
+| `DELETE /settings/{layer}/providers/{name}/models/{task}` | Deletes a model of the layer |
+| `PUT /settings/{layer}/routing/{task}` | Sets `{"provider", "fallback"}`. Both need a model for the task |
+| `DELETE /settings/{layer}/routing/{task}` | Deletes the layer's route, so the lower one applies again |
+| `PUT /settings/{layer}/connectors/{name}` | Adds or replaces a connector over streamable HTTP: `{"url", "auth": "none", "bearer" or "oauth", "client_id", "scopes", "read_tools", "draft_tools", "enabled"}` |
+| `DELETE /settings/{layer}/connectors/{name}` | Deletes a connector of the layer |
+| `PUT /settings/{layer}/connectors/{name}/enabled` | `{"enabled"}`: switches a connector of the layer, or one of a lower layer for this layer only |
+| `GET /me/credentials`, `PUT` and `DELETE /me/credentials/{name}` | The caller's own credentials in this tenant, such as their own provider key or a connector's bearer token. Values are never returned |
+| `POST /connectors/{name}/connect?scope=personal` | Starts the OAuth flow for the caller's own account. Without `scope`, an owner or admin connects the tenant's shared account; personal connectors always connect personally |
+
+Names are lower-case identifiers of up to 40 characters. Tasks are the ones the server routes (`text`). Prices are
+from 0 to 10000 EUR per million tokens. URLs must be public `https` URLs unless `[tenancy] allow_private_endpoints`
+is on; private, loopback, link-local and metadata addresses are refused with 422. Limits of `[tenancy.limits]`
+answer 409. A program built on the crates can refuse changes through its entitlements (`Action::ChangeSettings`,
+403). Every change emits `settings.changed` and applies to the next run without a restart.
 
 ## Pushes
 

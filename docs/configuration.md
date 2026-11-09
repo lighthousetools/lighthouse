@@ -27,8 +27,10 @@ writes to the vault of the default tenant:
 
 | Entry | Used for |
 |---|---|
-| `<provider>` | API key of a model provider, for example `anthropic`. Each tenant may store its own, see [Tenancy](#tenancy) |
+| `<provider>` | API key of a model provider of `lighthouse.toml`, for example `anthropic`. Each tenant and each person may store their own, see [Layers](#layers) |
+| `provider:<name>` | API key of a provider that a tenant or a person added in the apps |
 | `mcp:<connector>` | Bearer token of a connector with `auth = "bearer"` |
+| `oauth:<connector>` | OAuth tokens of a connector, written by the OAuth flow |
 | `smtp` | SMTP password |
 | `slack:<alias>` | Incoming webhook URL, for example `slack:#weekly` |
 
@@ -39,7 +41,8 @@ read without it.
 ## Models
 
 Model names and prices live in the configuration, never in code. A provider lists its models per task, and `routing`
-selects the default provider and fallback of a task. Prices are in EUR per million tokens.
+selects the default provider and fallback of a task. Prices are in EUR per million tokens. Tenants and people can add
+their own providers, models and routes in the apps on top of these, see [Layers](#layers).
 
 The provider `kind` is `anthropic`, `openai`, `mock` (echoes, for tests) or `demo`. The demo provider needs no key
 and no model: it calls the read tools of an agent once and then writes a plausible answer, such as a brief with a
@@ -116,6 +119,8 @@ Credentials can also be managed through `/credentials`. The API accepts values b
 | `signup` | `closed` | `closed`: nobody signs up and nobody is invited, as in a single-user install. `invite`: owners and admins invite people by email. `open`: anyone signs up and owns a new tenant; invitations work too |
 | `allow_instance_keys` | `true` | Tenants without their own key of a model provider use the instance's key, the one stored in the default tenant's vault (`lht keys set anthropic`). Hosted instances set `false`, so every tenant brings its own key through `PUT /credentials/<provider>` |
 | `data_dir` | `tenants` | One subdirectory per further tenant for its Brain and the agents and automations created in the apps. The default tenant keeps `[brain] path` and the `[paths]` directories |
+| `allow_private_endpoints` | `false` | Whether providers and connectors that tenants and people add in the apps may use plain HTTP and private, loopback or link-local addresses. Keep it off on a hosted instance. A self-hosted instance whose models or MCP servers run in its own network may turn it on |
+| `limits` | see below | How much a tenant and its members may add in the apps |
 | `require_verified_email` | `false` | People who signed up themselves must confirm their email address before they sign in. Sign-up then answers 202 without a token, and `POST /auth/login` answers 403 until the link in the mail was opened; `POST /auth/verify/request` sends a new one. The configured owner and invited people are not affected, and devices signed in before stay signed in. Needs mail; the server does not start without it |
 
 `server.trust_forwarded_for` (default `false`) counts the first address of `X-Forwarded-For` as the client for rate
@@ -126,9 +131,69 @@ or through the mailer of a program built on the crates (see [architecture.md](ar
 Without SMTP, no verification mail is sent, and `POST /tenant/invitations` returns the accept link to the inviting
 admin instead, to pass on in another way.
 
-Agent files in `paths.agents` and `paths.automations`, skills, connectors, sources and model routing apply to every
-tenant. Each tenant has its own vault, so connector tokens and provider keys are its own. `[owner] accounts` only apply
-to the default tenant; in other tenants, agents work for the tenant's first owner.
+`[tenancy.limits]` caps what the apps may add:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `providers` | `10` | Providers per tenant, and again per person |
+| `models` | `20` | Models per provider |
+| `connectors` | `25` | Connectors per tenant, and again per person |
+| `tenant_entries` | `2000` | All entries of a tenant and its members together |
+
+Agent files in `paths.agents` and `paths.automations`, skills, sources and the instance's providers, routing and
+connectors apply to every tenant as defaults. Each tenant has its own vault, so connector tokens and provider keys are
+its own. `[owner] accounts` only apply to the default tenant; in other tenants, agents work for the tenant's first
+owner.
+
+## Layers
+
+Providers, models, routing and MCP connectors come in three layers:
+
+| Layer | Who sets it | Where |
+|---|---|---|
+| `instance` | The operator | `lighthouse.toml`. Read-only in the apps and the API |
+| `tenant` | Owners and admins of a tenant, for all its members | The apps, or `/settings/tenant/...` |
+| `personal` | Each member, for themselves in that tenant | The apps, or `/settings/me/...` |
+
+What applies to a request or a run is resolved for its tenant and user: personal over tenant over instance. Every
+merged entry names the layer it comes from. A run works for its user, so it uses that person's settings, keys and
+connectors; scheduled runs and automations work for the tenant's first owner, and source refreshes see the tenant
+layer. An instance with only `lighthouse.toml` behaves exactly as before.
+
+Merge rules:
+
+- **Providers** merge by name. A layer can add a new provider with kind `anthropic` or `openai` and an optional base
+  URL. A provider whose name a lower layer has keeps that layer's kind and base URL: a higher layer can only change its
+  models. This way no layer sends another layer's key to an endpoint of its own choice.
+- **Models** merge per provider and task. The highest layer with a model for a task wins.
+- **Routing** merges per task. A tenant route replaces the instance route of that task; a personal route replaces
+  both for that person. A route needs a model for its task at the primary and the fallback provider.
+- **Connectors** merge by name. Tenants and people add connectors over streamable HTTP only: a connector that starts a
+  process on the server exists only in `lighthouse.toml`. A new connector cannot take a name a lower layer has. A
+  tenant can switch an instance connector off for itself, and a person can switch an instance or tenant connector off
+  for themselves.
+
+Keys and tokens never sit in these settings. They stay in the vault:
+
+- A provider's key is read from the person's own vault, then the tenant's, then the instance's if
+  `allow_instance_keys` permits it. A vault is only read for a provider whose endpoint its own layer or a lower one
+  chose. Providers of `lighthouse.toml` keep `<provider>` as entry name; providers added in the apps use
+  `provider:<name>`, so they never read another entry of the vault.
+- A connector's tokens (`mcp:<connector>`, `oauth:<connector>`) are read from the person's own vault, then the
+  tenant's. A personal connector only uses the person's own vault, so no other member can use its tokens. People
+  store their own credentials through `/me/credentials`, and connect OAuth connectors for themselves with
+  `POST /connectors/{name}/connect?scope=personal`.
+
+Endpoints that tenants and people enter must be public `https` URLs. The server resolves the host and refuses
+loopback, private, link-local, shared and cloud metadata addresses, both when the setting is saved and on every
+connection, and it follows redirects only to public `https` URLs. `allow_private_endpoints` lifts this for
+self-hosted instances. Changes take effect on the next run without a restart, and each change is recorded with who
+made it (`GET /settings/tenant/changes`). Several server processes on one database pick up each other's changes
+within 15 seconds.
+
+The apps prefill forms from `GET /settings/presets`, which lists suggested providers, models with list prices and
+connectors. The suggestions live in `crates/settings/presets.toml`. They are data for the forms; the server never
+routes by them.
 
 ### Command line
 
