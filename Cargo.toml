@@ -23,6 +23,7 @@ lighthouse-router = { path = "crates/router" }
 lighthouse-runtime = { path = "crates/runtime" }
 lighthouse-scheduler = { path = "crates/scheduler" }
 lighthouse-sessions = { path = "crates/sessions" }
+lighthouse-settings = { path = "crates/settings" }
 lighthouse-skills = { path = "crates/skills" }
 lighthouse-store = { path = "crates/store" }
 lighthouse-sync = { path = "crates/sync" }

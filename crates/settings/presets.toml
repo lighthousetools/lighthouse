@@ -1,0 +1,69 @@
+# Suggestions the apps offer when a tenant or a person adds a provider or a
+# connector. They are data, not logic: the server only passes them on, and
+# everything stays editable after it is added. Prices are list prices in EUR per
+# million tokens, rounded from the providers' USD prices. Check them against the
+# provider's pricing page before relying on cost reports.
+
+[[providers]]
+id = "anthropic"
+label = "Anthropic"
+kind = "anthropic"
+key_url = "https://console.anthropic.com/settings/keys"
+
+[[providers.models]]
+task = "text"
+model = "claude-opus-5-5"
+label = "Claude Opus 5.5"
+input_eur_per_mtok = 3.7
+output_eur_per_mtok = 18.5
+
+[[providers.models]]
+task = "text"
+model = "claude-sonnet-5-5"
+label = "Claude Sonnet 5.5"
+input_eur_per_mtok = 1.85
+output_eur_per_mtok = 9.25
+
+[[providers.models]]
+task = "text"
+model = "claude-haiku-5-5"
+label = "Claude Haiku 5.5"
+input_eur_per_mtok = 0.1
+output_eur_per_mtok = 0.5
+
+[[providers]]
+id = "openai"
+label = "OpenAI"
+kind = "openai"
+key_url = "https://platform.openai.com/api-keys"
+
+[[providers.models]]
+task = "text"
+model = "gpt-5"
+label = "GPT-5"
+input_eur_per_mtok = 1.15
+output_eur_per_mtok = 9.25
+
+[[providers.models]]
+task = "text"
+model = "gpt-5-mini"
+label = "GPT-5 mini"
+input_eur_per_mtok = 0.25
+output_eur_per_mtok = 1.85
+
+[[connectors]]
+id = "linear"
+label = "Linear"
+url = "https://mcp.linear.app/mcp"
+auth = "oauth"
+read_tools = ["list_issues", "get_issue", "list_cycles", "list_projects", "list_comments"]
+
+[[connectors]]
+id = "github"
+label = "GitHub"
+url = "https://api.githubcopilot.com/mcp/"
+auth = "oauth"
+read_tools = [
+  "list_pull_requests", "list_releases", "search_issues", "search_pull_requests",
+  "get_pull_request_status", "get_pull_request_files",
+]
