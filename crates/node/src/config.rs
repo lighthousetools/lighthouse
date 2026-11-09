@@ -36,6 +36,9 @@ pub struct NodeConfig {
     /// transcript and stay between this machine and your server.
     #[serde(default = "replies_on")]
     pub replies: bool,
+    /// Whether new and changed Claude Code memories become Brain entries and proposed facts on the server.
+    #[serde(default = "replies_on")]
+    pub memory_sync: bool,
 }
 
 fn replies_on() -> bool {
@@ -97,6 +100,7 @@ mod tests {
             launch_roots: vec!["~/code".to_owned()],
             claude: default_claude(),
             replies: true,
+            memory_sync: true,
         };
         config.save(&path).unwrap();
         assert_eq!(NodeConfig::load(&path).unwrap(), config);

@@ -89,6 +89,13 @@ async fn run(config: NodeConfig) -> anyhow::Result<()> {
             .with_replies(config.replies),
     );
     tokio::spawn(agent.clone().run_reports());
+    if let Some(home) = std::env::var_os("HOME") {
+        tokio::spawn(lighthouse_node::run_scans(
+            server.clone(),
+            home.into(),
+            config.memory_sync,
+        ));
+    }
     if config.launch {
         let launcher = Launcher::new(server.clone(), &config.launch_roots, &config.claude);
         tokio::spawn(Arc::new(launcher).run());
@@ -173,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
                 launch_roots: Vec::new(),
                 claude: "claude".to_owned(),
                 replies: true,
+                memory_sync: true,
             };
             paired.save(&path)?;
             println!("Paired. Run `lighthouse-node install`, then `lighthouse-node run`.");

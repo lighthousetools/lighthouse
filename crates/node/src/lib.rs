@@ -8,6 +8,7 @@ pub mod activity;
 pub mod config;
 pub mod hooks;
 pub mod launcher;
+pub mod local;
 pub mod replies;
 
 use axum::Json;
@@ -94,6 +95,22 @@ impl Server {
             .send()
             .await?;
         Self::parse(response).await
+    }
+
+    /// Sends what the agent found on the machine to one of the `/node` endpoints.
+    pub async fn send(&self, path: &str, body: &Value) -> Result<(), NodeError> {
+        let response = self
+            .http
+            .post(format!("{}{path}", self.url))
+            .bearer_auth(&self.token)
+            .timeout(Duration::from_secs(60))
+            .json(body)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(NodeError::Status(response.status()));
+        }
+        Ok(())
     }
 
     async fn events(&self, events: &[NewSessionEvent]) -> Result<(), NodeError> {
@@ -574,6 +591,57 @@ pub fn router(agent: Arc<Agent>) -> axum::Router {
         .route("/hook", post(hook))
         .route("/status", get(status))
         .with_state(agent)
+}
+
+/// How often the agent looks for sessions, skills and memories.
+pub const SCAN_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Reports what Claude Code keeps on this machine, now and every [`SCAN_INTERVAL`], until the process ends.
+pub async fn run_scans(server: Server, home: std::path::PathBuf, memory_sync: bool) {
+    let scanner = Arc::new(Mutex::new(local::Scanner::new(home)));
+    let mut ticker = tokio::time::interval(SCAN_INTERVAL);
+    loop {
+        ticker.tick().await;
+        let scanning = scanner.clone();
+        let found = tokio::task::spawn_blocking(move || {
+            let mut scanner = scanning.lock().expect("scanner lock");
+            let sessions = scanner.sessions();
+            let skills = scanner.skills(&local::Scanner::project_folders(&sessions));
+            let memories = if memory_sync {
+                scanner.changed_memories()
+            } else {
+                Vec::new()
+            };
+            (sessions, skills, memories)
+        })
+        .await;
+        let Ok((sessions, skills, memories)) = found else {
+            continue;
+        };
+        if let Err(error) = server
+            .send("/node/history", &json!({"sessions": sessions}))
+            .await
+        {
+            tracing::warn!(%error, "past sessions not reported");
+        }
+        if let Err(error) = server
+            .send("/node/skills", &json!({"skills": skills}))
+            .await
+        {
+            tracing::warn!(%error, "skills not reported");
+        }
+        if memories.is_empty() {
+            continue;
+        }
+        let body = json!({"projects": memories.iter().map(local::ProjectMemories::to_json).collect::<Vec<_>>()});
+        if let Err(error) = server.send("/node/memories", &body).await {
+            tracing::warn!(%error, "memories not reported, trying again with the next scan");
+            scanner
+                .lock()
+                .expect("scanner lock")
+                .forget_memories(&memories);
+        }
+    }
 }
 
 #[cfg(test)]

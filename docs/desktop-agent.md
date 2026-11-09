@@ -59,6 +59,19 @@ and sends the text blocks of the main session as `say` events, at most 20,000 ch
 or output, thinking, subagent messages or the history from before it first saw the session. The apps show them in the
 session's timeline as Claude writes them. Turn it off with `replies = false` in `node.toml`.
 
+## What the agent finds on the machine
+
+When it starts and every five minutes, the agent looks at the Claude Code folder of its user and reports:
+
+| What | Sent | Where it shows |
+|---|---|---|
+| Sessions: the transcripts directly in `~/.claude/projects/<folder>/` | Project, folder, branch, the first prompt (200 characters), message count and last activity. Never the conversation | `GET /sessions/history`; the apps resume one with a launch |
+| Skills: `~/.claude/skills/*/SKILL.md` and the `.claude/skills` of every project a session worked in | Name, description and folder | `GET /sessions/skills`; the apps schedule one as an automation that launches it |
+| Memories: `~/.claude/projects/<folder>/memory/*.md` | The files of every project whose memories changed, with secrets redacted on the machine | One Brain entry per project; memories about you become proposed facts |
+
+Subagent transcripts and the folders of temporary directories are skipped. Transcripts are read only where they grew,
+so a scan after the first is quick. Turn the memories off with `memory_sync = false` in `node.toml`.
+
 ## Messages to a session
 
 `POST /sessions/{node}/{id}/messages` with `{"text": "..."}` queues a message. A session that is working gets it with
