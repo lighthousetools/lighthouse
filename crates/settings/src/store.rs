@@ -57,6 +57,8 @@ fn kind_name(kind: ProviderKind) -> &'static str {
 fn parse_kind(text: &str) -> ProviderKind {
     match text {
         "openai" => ProviderKind::Openai,
+        "mock" => ProviderKind::Mock,
+        "demo" => ProviderKind::Demo,
         _ => ProviderKind::Anthropic,
     }
 }

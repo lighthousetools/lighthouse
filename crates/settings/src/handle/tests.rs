@@ -489,7 +489,21 @@ async fn tenants_never_see_each_others_entries() {
     ours.set_connector(None, None, "mail", &connector("http://10.0.0.3/mcp"))
         .await
         .unwrap();
+    ours.set_file(None, None, FileKind::Agent, "brief", "file")
+        .await
+        .unwrap();
+    ours.set_value(None, None, "timezone", &serde_json::json!("Asia/Tokyo"))
+        .await
+        .unwrap();
     theirs.reload().await.unwrap();
+    assert!(theirs.snapshot().tenant.files.is_empty());
+    assert!(theirs.snapshot().tenant.values.is_empty());
+    assert!(
+        theirs
+            .delete_file(None, None, FileKind::Agent, "brief")
+            .await
+            .is_err()
+    );
     assert!(theirs.snapshot().tenant.providers.is_empty());
     assert!(theirs.snapshot().tenant.connectors.is_empty());
     assert!(matches!(
@@ -729,4 +743,27 @@ async fn files_layer_override_and_switch_off() {
         settings.layer(None).files[&(FileKind::Automation, "old".to_owned())].source,
         "x"
     );
+}
+
+#[tokio::test]
+async fn the_models_of_a_mock_provider_of_the_instance_can_change() {
+    let store = fresh_store().await;
+    let sam = user(&store, "sam@example.com").await;
+    let mut instance = defaults();
+    instance.providers.get_mut("anthropic").unwrap().kind = ProviderKind::Mock;
+    let settings = TenantSettings::open(
+        store.clone(),
+        TenantId::DEFAULT,
+        Arc::new(instance),
+        options(),
+    )
+    .await
+    .unwrap();
+    settings
+        .set_model(Some(sam), Some(sam), "anthropic", "text", &model("mine"))
+        .await
+        .unwrap();
+    let effective = settings.effective(Some(sam));
+    assert_eq!(effective.model("anthropic", "text").unwrap().model, "mine");
+    assert_eq!(effective.providers["anthropic"].kind, ProviderKind::Mock);
 }
