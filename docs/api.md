@@ -340,6 +340,9 @@ Single settings take the value as the JSON body:
 | `notifications` | `{"deliver", "decisions", "done", "alerts"}` as in `[notifications]` | Pushes about a person's runs follow their setting, alerts and work without a user the tenant's. `owner` mails the person a run belongs to, and for alerts the tenant's first owner. In a personal layer, `deliver` takes `owner` and `slack:<alias>`, not other mail addresses |
 | `weather` | `{"latitude", "longitude", "location"}` | The weather in a person's brief. The weather service itself stays in `lighthouse.toml` |
 | `timezone` | An IANA name | A person's day boundaries in the API, prompts of their runs, the schedules of what runs for them, and the zone `GET /me` reports. Budget months use the tenant's zone |
+| `publishing` | `{"connector", "tool", "input", "service"}` as in `[publishing]`, or `null` | What publishes the caller's posts. The tool must be a `write` tool of a connector they can use |
+| `slack_channels` | A list of aliases | Which aliases `slack:<alias>` targets may use. Webhooks come from the person's own credentials (`PUT /me/credentials/slack:<alias>`), then the tenant's. They must be public `https` URLs unless the instance allows private endpoints |
+| `brain` | `{"provider", "embedding_model", "vision_model", "transcription_model"}` | The Brain's models. Embeddings belong to the shared Brain, so `embedding_model` is only set for the tenant, which also re-embeds in the background. People can set their own provider and models for images and audio |
 | `accounts` | `{"<connector>": "<account name>"}` | Personal only. Their names in services, used by their sources and named in prompts of their runs |
 | `addresses` | A list of email addresses | Personal only. Further addresses of theirs, to recognize their own mail |
 | `language` | `en` or `de` | Kept for the apps, so a person's language follows them to other devices |

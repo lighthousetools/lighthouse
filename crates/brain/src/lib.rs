@@ -64,6 +64,11 @@ pub trait Embedder: Send + Sync {
     /// Name of the model. Vectors of other models are not compared.
     fn model(&self) -> String;
 
+    /// Whether a model is set now. It can change while the server runs.
+    fn active(&self) -> bool {
+        true
+    }
+
     /// Embeds texts, returning one vector per text.
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, MediaError>;
 }
@@ -319,7 +324,7 @@ impl Brain {
     ///
     /// This is also how a change of model rebuilds the vector index.
     pub async fn embed_missing(&self) -> Result<usize, BrainError> {
-        let Some(embedder) = &self.embedder else {
+        let Some(embedder) = self.embedder.as_ref().filter(|embedder| embedder.active()) else {
             return Ok(0);
         };
         let model = embedder.model();
@@ -602,7 +607,7 @@ impl Brain {
     }
 
     async fn vector_ranks(&self, query: &str) -> Vec<Uuid> {
-        let Some(embedder) = &self.embedder else {
+        let Some(embedder) = self.embedder.as_ref().filter(|embedder| embedder.active()) else {
             return Vec::new();
         };
         let vectors = match embedder.embed(&[query.to_owned()]).await {

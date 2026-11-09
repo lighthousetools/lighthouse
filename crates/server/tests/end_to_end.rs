@@ -1792,3 +1792,339 @@ async fn a_member_runs_their_own_agent_with_their_own_key_and_connector() {
     .await;
     assert_eq!(status, 204);
 }
+
+#[tokio::test]
+async fn publishing_and_brain_models_change_per_layer() {
+    let (base, _dir, _database) = start_with(MEMBER_TENANCY).await;
+    let owner = owner_token(&base).await;
+    let robin = member_token(&base, &owner, "robin@example.com").await;
+    let put = reqwest::Method::PUT;
+    let (_, values) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::GET,
+        "/settings/values",
+        None,
+    )
+    .await;
+    let value = |values: &Value, key: &str| {
+        values
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|value| value["key"] == key)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(value(&values, "publishing")["source"], "instance");
+    assert_eq!(value(&values, "publishing")["value"]["tool"], "echo");
+    let post = json!({"body": "Hello", "channel": "demo"});
+    let (status, created) =
+        as_user(&base, &robin, reqwest::Method::POST, "/posts", Some(post)).await;
+    assert_eq!(status, 201, "{created}");
+    let publish = format!("/posts/{}/publish", created["id"].as_str().unwrap());
+    let (status, body) = as_user(&base, &robin, reqwest::Method::POST, &publish, None).await;
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(body["tool"], "demo.echo");
+    let post = json!({"body": "Again", "channel": "demo"});
+    let (_, created) = as_user(&base, &robin, reqwest::Method::POST, "/posts", Some(post)).await;
+    let publish = format!("/posts/{}/publish", created["id"].as_str().unwrap());
+    // A person's own setting names another tool, which does not exist for the policy as read-only.
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/values/publishing",
+        Some(json!({"connector": "demo", "tool": "list_issues"})),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, body) = as_user(&base, &robin, reqwest::Method::POST, &publish, None).await;
+    assert!(
+        body.to_string().contains("read or draft tool"),
+        "{status}: {body}"
+    );
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::DELETE,
+        "/settings/me/values/publishing",
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/values/brain",
+        Some(json!({"embedding_model": "mine"})),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    let (status, _) = as_user(
+        &base,
+        &owner,
+        put.clone(),
+        "/settings/tenant/values/brain",
+        Some(json!({"provider": "mock", "embedding_model": "new-model"})),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (_, values) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::GET,
+        "/settings/values",
+        None,
+    )
+    .await;
+    assert_eq!(value(&values, "brain")["source"], "tenant");
+    // Search keeps working with a model that has no vectors or key yet.
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::GET,
+        "/brain/search?q=anything",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        put,
+        "/settings/me/values/slack_channels",
+        Some(json!(["#mine"])),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        reqwest::Method::GET,
+        "/settings/values",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+}
+
+const OAUTH_TOKEN: &str = "test-access-token";
+
+#[derive(Clone, Default)]
+struct AuthStub {
+    base: Arc<std::sync::Mutex<String>>,
+    exchanged: Arc<std::sync::Mutex<Vec<std::collections::HashMap<String, String>>>>,
+}
+
+async fn stub_guard(
+    axum::extract::State(stub): axum::extract::State<AuthStub>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let authorized = request
+        .headers()
+        .get("authorization")
+        .is_some_and(|value| value == format!("Bearer {OAUTH_TOKEN}").as_str());
+    if authorized {
+        return next.run(request).await;
+    }
+    let base = stub.base.lock().unwrap().clone();
+    (
+        axum::http::StatusCode::UNAUTHORIZED,
+        [(
+            "www-authenticate",
+            format!("Bearer resource_metadata=\"{base}/.well-known/oauth-protected-resource\""),
+        )],
+    )
+        .into_response()
+}
+
+/// An authorization server with a protected MCP server behind it.
+async fn auth_stub() -> (String, AuthStub) {
+    use axum::routing::{get as route_get, post as route_post};
+    let stub = AuthStub::default();
+    let service = StreamableHttpService::new(
+        || Ok(DemoServer),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    );
+    let protected =
+        Router::new()
+            .nest_service("/mcp", service)
+            .layer(axum::middleware::from_fn_with_state(
+                stub.clone(),
+                stub_guard,
+            ));
+    let resource = |axum::extract::State(stub): axum::extract::State<AuthStub>| async move {
+        let base = stub.base.lock().unwrap().clone();
+        axum::Json(json!({"resource": format!("{base}/mcp"), "authorization_servers": [base]}))
+    };
+    let router = Router::new()
+        .route("/.well-known/oauth-protected-resource", route_get(resource))
+        .route("/.well-known/oauth-protected-resource/mcp", route_get(resource))
+        .route("/.well-known/oauth-authorization-server", route_get(
+            |axum::extract::State(stub): axum::extract::State<AuthStub>| async move {
+                let base = stub.base.lock().unwrap().clone();
+                axum::Json(json!({
+                    "issuer": base,
+                    "authorization_endpoint": format!("{base}/authorize"),
+                    "token_endpoint": format!("{base}/token"),
+                    "registration_endpoint": format!("{base}/register"),
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code", "refresh_token"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "token_endpoint_auth_methods_supported": ["none"],
+                }))
+            },
+        ))
+        .route("/register", route_post(|axum::Json(body): axum::Json<Value>| async move {
+            (axum::http::StatusCode::CREATED,
+             axum::Json(json!({"client_id": "registered", "redirect_uris": body["redirect_uris"]})))
+        }))
+        .route("/token", route_post(
+            |axum::extract::State(stub): axum::extract::State<AuthStub>,
+             axum::Form(form): axum::Form<std::collections::HashMap<String, String>>| async move {
+                stub.exchanged.lock().unwrap().push(form);
+                axum::Json(json!({"access_token": OAUTH_TOKEN, "token_type": "Bearer",
+                                  "refresh_token": "refresh", "expires_in": 3600}))
+            },
+        ))
+        .with_state(stub.clone())
+        .merge(protected);
+    let base = serve(router).await;
+    *stub.base.lock().unwrap() = base.clone();
+    (base, stub)
+}
+
+#[tokio::test]
+async fn a_member_connects_with_oauth_and_only_their_runs_use_the_tokens() {
+    let (base, _dir, _database) = start_with(MEMBER_TENANCY).await;
+    let owner = owner_token(&base).await;
+    let robin = member_token(&base, &owner, "robin@example.com").await;
+    let (auth, stub) = auth_stub().await;
+    let put = reqwest::Method::PUT;
+    let post = reqwest::Method::POST;
+    let fetch = reqwest::Method::GET;
+    let connector =
+        json!({"url": format!("{auth}/mcp"), "auth": "oauth", "read_tools": ["list_issues"]});
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/connectors/guarded",
+        Some(connector),
+    )
+    .await;
+    assert_eq!(status, 204, "{body}");
+    let agent = "---\nname: Guarded\nscope: org\ntrigger:\n  manual: true\ntools:\n  - guarded.list_issues\n---\nGo.\n";
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        post.clone(),
+        "/agents",
+        Some(json!({"source": agent})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let detail = run_as(&base, &robin, "guarded").await;
+    assert_eq!(
+        detail["run"]["status"], "failed",
+        "not connected yet: {detail}"
+    );
+
+    // The flow: start, the provider's redirect, the callback, stored tokens.
+    let (status, started) = as_user(
+        &base,
+        &robin,
+        post.clone(),
+        "/connectors/guarded/connect",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{started}");
+    let authorize = started["authorize_url"].as_str().unwrap();
+    assert!(
+        authorize.starts_with(&format!("{auth}/authorize")),
+        "{authorize}"
+    );
+    let state = reqwest::Url::parse(authorize)
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    let response = reqwest::get(format!("{base}/oauth/callback?code=the-code&state={state}"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(response.text().await.unwrap().contains("Connected"));
+    let exchange = stub.exchanged.lock().unwrap()[0].clone();
+    assert_eq!(exchange["code"], "the-code");
+    assert!(exchange.contains_key("code_verifier"), "{exchange:?}");
+
+    // The tokens are Robin's: in their vault, and nobody else's.
+    let (_, mine) = as_user(&base, &robin, fetch.clone(), "/me/credentials", None).await;
+    assert_eq!(mine, json!(["oauth:guarded"]));
+    let (_, shared) = as_user(&base, &owner, fetch.clone(), "/credentials", None).await;
+    assert!(!shared.to_string().contains("guarded"), "{shared}");
+    let (_, view) = as_user(&base, &robin, fetch.clone(), "/settings/effective", None).await;
+    let row = view["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "guarded")
+        .unwrap();
+    assert_eq!(row["connected"], "personal", "{row}");
+    let detail = run_as(&base, &robin, "guarded").await;
+    assert_eq!(detail["run"]["status"], "succeeded", "{detail}");
+
+    // A personal bearer token reaches the server, and a wrong one does not pass.
+    let bearer =
+        json!({"url": format!("{auth}/mcp"), "auth": "bearer", "read_tools": ["list_issues"]});
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/connectors/keyed",
+        Some(bearer),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let agent = "---\nname: Keyed\nscope: org\ntrigger:\n  manual: true\ntools:\n  - keyed.list_issues\n---\nGo.\n";
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        post.clone(),
+        "/agents",
+        Some(json!({"source": agent})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/me/credentials/mcp:keyed",
+        Some(json!({"value": "wrong"})),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let detail = run_as(&base, &robin, "keyed").await;
+    assert_eq!(detail["run"]["status"], "failed", "{detail}");
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        put,
+        "/me/credentials/mcp:keyed",
+        Some(json!({"value": OAUTH_TOKEN})),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let detail = run_as(&base, &robin, "keyed").await;
+    assert_eq!(detail["run"]["status"], "succeeded", "{detail}");
+}

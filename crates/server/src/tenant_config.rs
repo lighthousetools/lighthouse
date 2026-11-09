@@ -15,7 +15,8 @@ use lighthouse_audit::acting_user;
 use lighthouse_mcp::{Connection, ConnectorSource};
 use lighthouse_runtime::{KeyPlace, KeyedPlan, People, Person, PlanSource};
 use lighthouse_settings::{
-    ACCOUNTS, ADDRESSES, EffectiveSource, Layer, Snapshot, TIMEZONE, TenantSettings, source_problem,
+    ACCOUNTS, ADDRESSES, EffectiveSource, Layer, SLACK_CHANNELS, Snapshot, TIMEZONE,
+    TenantSettings, source_problem,
 };
 use lighthouse_sync::{Source, SourceList};
 use lighthouse_vault::Vault;
@@ -172,7 +173,7 @@ impl TenantConfig {
         &self.settings
     }
 
-    fn vaults(&self, layers: &[Layer], user: Option<Uuid>) -> Vec<Vault> {
+    pub(crate) fn vaults(&self, layers: &[Layer], user: Option<Uuid>) -> Vec<Vault> {
         layers
             .iter()
             .filter_map(|layer| match layer {
@@ -200,6 +201,25 @@ impl TenantConfig {
                 })
                 .collect(),
         )
+    }
+}
+
+impl lighthouse_notify::SlackSource for TenantConfig {
+    fn aliases(&self) -> Vec<String> {
+        self.settings
+            .effective(acting_user::current())
+            .values
+            .get(SLACK_CHANNELS)
+            .and_then(|(value, _)| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    fn vaults(&self) -> Vec<Vault> {
+        self.vaults(&[Layer::Personal, Layer::Tenant], acting_user::current())
+    }
+
+    fn guarded(&self) -> bool {
+        !self.settings.options().allow_private_endpoints
     }
 }
 

@@ -842,29 +842,72 @@ impl Assistant for BrainAssistant {
     }
 }
 
-/// Reaches the configured provider, with the key from the vault on every call.
+/// Reaches the provider of the Brain's models as they apply now, with its key
+/// from the vaults on every call. Embeddings belong to the shared Brain, so they
+/// follow the tenant; images and audio follow the person who adds them.
 struct ProviderMedia {
-    config: Arc<Config>,
-    vault: Vault,
-    fallback: Option<Vault>,
-    provider: String,
+    settings: TenantSettings,
+    resolver: Arc<tenant_config::TenantConfig>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct BrainModels {
+    provider: Option<String>,
+    embedding_model: Option<String>,
+    vision_model: Option<String>,
+    transcription_model: Option<String>,
 }
 
 impl ProviderMedia {
-    async fn client(&self) -> Result<OpenAiMedia, MediaError> {
-        let key =
-            lighthouse_runtime::provider_key(&self.vault, self.fallback.as_ref(), &self.provider)
-                .await
-                .map_err(|error| MediaError::Failed(error.to_string()))?
-                .ok_or(MediaError::NotConfigured(
-                    "this provider, its key is missing",
-                ))?;
-        let base_url = self
-            .config
+    /// The models for a user: the tenant's, with what they set for themselves.
+    fn models(&self, user: Option<Uuid>) -> BrainModels {
+        let parse = |value: &serde_json::Value| serde_json::from_value(value.clone()).ok();
+        let mut models: BrainModels = self
+            .settings
+            .effective(None)
+            .values
+            .get(lighthouse_settings::BRAIN)
+            .and_then(|(value, _)| parse(value))
+            .unwrap_or_default();
+        let own: Option<BrainModels> = user.and_then(|user| {
+            parse(
+                self.settings
+                    .layer(Some(user))
+                    .values
+                    .get(lighthouse_settings::BRAIN)?,
+            )
+        });
+        if let Some(own) = own {
+            models.provider = own.provider.or(models.provider);
+            models.vision_model = own.vision_model.or(models.vision_model);
+            models.transcription_model = own.transcription_model.or(models.transcription_model);
+        }
+        models
+    }
+
+    async fn client(&self, user: Option<Uuid>) -> Result<OpenAiMedia, MediaError> {
+        let effective = self.settings.effective(user);
+        let not_configured = MediaError::NotConfigured("this provider, its key is missing");
+        let name = self
+            .models(user)
+            .provider
+            .ok_or(MediaError::NotConfigured("a provider"))?;
+        let provider = effective
             .providers
-            .get(&self.provider)
-            .and_then(|provider| provider.base_url.as_deref());
-        Ok(OpenAiMedia::new(key, base_url))
+            .get(&name)
+            .ok_or(MediaError::NotConfigured("this provider"))?;
+        let entry = provider.key_name(&name);
+        for vault in self.resolver.vaults(provider.key_layers(), user) {
+            if let Some(key) = vault.get(&entry).await.map_err(media_failed)? {
+                let client = OpenAiMedia::new(key, provider.base_url.as_deref());
+                return Ok(if provider.guarded() {
+                    client.with_http(lighthouse_router::net::guarded_client())
+                } else {
+                    client
+                });
+            }
+        }
+        Err(not_configured)
     }
 }
 
@@ -875,15 +918,16 @@ fn media_failed(error: impl std::fmt::Display) -> MediaError {
 #[async_trait]
 impl Embedder for ProviderMedia {
     fn model(&self) -> String {
-        self.config
-            .brain
-            .embedding_model
-            .clone()
-            .unwrap_or_default()
+        self.models(None).embedding_model.unwrap_or_default()
+    }
+
+    fn active(&self) -> bool {
+        let models = self.models(None);
+        models.provider.is_some() && models.embedding_model.is_some()
     }
 
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, MediaError> {
-        self.client()
+        self.client(None)
             .await?
             .embed(&self.model(), texts)
             .await
@@ -894,15 +938,14 @@ impl Embedder for ProviderMedia {
 #[async_trait]
 impl MediaReader for ProviderMedia {
     async fn describe_image(&self, content_type: &str, bytes: &[u8]) -> Result<String, MediaError> {
+        let user = lighthouse_audit::acting_user::current();
         let model = self
-            .config
-            .brain
+            .models(user)
             .vision_model
-            .as_deref()
             .ok_or(MediaError::NotConfigured("images"))?;
-        self.client()
+        self.client(user)
             .await?
-            .describe_image(model, content_type, bytes)
+            .describe_image(&model, content_type, bytes)
             .await
             .map_err(media_failed)
     }
@@ -913,15 +956,14 @@ impl MediaReader for ProviderMedia {
         content_type: &str,
         bytes: &[u8],
     ) -> Result<String, MediaError> {
+        let user = lighthouse_audit::acting_user::current();
         let model = self
-            .config
-            .brain
+            .models(user)
             .transcription_model
-            .as_deref()
             .ok_or(MediaError::NotConfigured("audio"))?;
-        self.client()
+        self.client(user)
             .await?
-            .transcribe(model, name, content_type, bytes)
+            .transcribe(&model, name, content_type, bytes)
             .await
             .map_err(media_failed)
     }
@@ -1064,23 +1106,16 @@ fn open_brain(
     shared: &Shared,
     tenant: TenantId,
     path: PathBuf,
-    vault: &Vault,
+    settings: &TenantSettings,
+    resolver: &Arc<tenant_config::TenantConfig>,
 ) -> anyhow::Result<Brain> {
-    let config = &shared.config;
-    let mut brain = Brain::new(shared.store.clone(), tenant, path)?;
-    if let Some(provider) = &config.brain.provider {
-        let media = Arc::new(ProviderMedia {
-            config: config.clone(),
-            vault: vault.clone(),
-            fallback: shared.key_fallback(tenant),
-            provider: provider.clone(),
-        });
-        brain = brain.with_media(media.clone());
-        if config.brain.embedding_model.is_some() {
-            brain = brain.with_embedder(media);
-        }
-    }
-    Ok(brain)
+    let media = Arc::new(ProviderMedia {
+        settings: settings.clone(),
+        resolver: resolver.clone(),
+    });
+    Ok(Brain::new(shared.store.clone(), tenant, path)?
+        .with_media(media.clone())
+        .with_embedder(media))
 }
 
 /// One open tenant: the state the API serves and its background work.
@@ -1090,6 +1125,7 @@ pub struct Workspace {
     pool: Arc<AgentPool>,
     settings: TenantSettings,
     schedule: Arc<ScheduleSync>,
+    brain: Brain,
     scheduler: std::sync::Mutex<Option<Scheduler>>,
     tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -1121,6 +1157,7 @@ impl Workspace {
         tasks.push(tokio::spawn(follow_settings(
             self.settings.clone(),
             self.schedule.clone(),
+            self.brain.clone(),
         )));
     }
 
@@ -1133,9 +1170,17 @@ impl Workspace {
 
 /// Picks up settings that another server process changed, and brings the
 /// schedules in line after every change.
-async fn follow_settings(settings: TenantSettings, schedule: Arc<ScheduleSync>) {
+async fn follow_settings(settings: TenantSettings, schedule: Arc<ScheduleSync>, brain: Brain) {
     let mut ticker = tokio::time::interval(SETTINGS_INTERVAL);
     let mut changes = settings.subscribe();
+    let brain_models = |settings: &TenantSettings| {
+        settings
+            .effective(None)
+            .values
+            .get(lighthouse_settings::BRAIN)
+            .map(|(value, _)| (value["provider"].clone(), value["embedding_model"].clone()))
+    };
+    let mut embedding = brain_models(&settings);
     loop {
         tokio::select! {
             _ = ticker.tick() => {
@@ -1148,6 +1193,20 @@ async fn follow_settings(settings: TenantSettings, schedule: Arc<ScheduleSync>) 
                     return;
                 }
                 schedule.refresh();
+                // A new embedding model rebuilds the vectors in the background.
+                // Search compares only vectors of the current model, so until
+                // then it finds less, never wrong.
+                let now = brain_models(&settings);
+                if now != embedding {
+                    embedding = now;
+                    let brain = brain.clone();
+                    tokio::spawn(async move {
+                        match brain.embed_missing().await {
+                            Ok(done) => tracing::info!(done, "embedded the Brain for a new model"),
+                            Err(error) => tracing::warn!(%error, "embedding failed, search stays lexical for now"),
+                        }
+                    });
+                }
             }
         }
     }
@@ -1348,15 +1407,6 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         smtp: None,
         slack_channels: config.delivery.slack_channels.clone(),
     };
-    let brain = open_brain(shared, tenant, paths.brain, &vault)?;
-    let report = brain.sync().await.context("cannot read the Brain")?;
-    tracing::info!(?report, "Brain ready");
-    let embedding = brain.clone();
-    tokio::spawn(async move {
-        if let Err(error) = embedding.embed_missing().await {
-            tracing::warn!(%error, "embedding failed, search stays lexical for now");
-        }
-    });
     let settings = TenantSettings::open(
         store.clone(),
         tenant,
@@ -1380,6 +1430,15 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
             zone,
         ),
     );
+    let brain = open_brain(shared, tenant, paths.brain, &settings, &resolver)?;
+    let report = brain.sync().await.context("cannot read the Brain")?;
+    tracing::info!(?report, "Brain ready");
+    let embedding = brain.clone();
+    tokio::spawn(async move {
+        if let Err(error) = embedding.embed_missing().await {
+            tracing::warn!(%error, "embedding failed, search stays lexical for now");
+        }
+    });
     let mcp: Arc<dyn ToolHostFactory> = Arc::new(McpConnector::live(resolver.clone()));
     let sync_tools = mcp.clone();
     let runtime = Arc::new(Runtime {
@@ -1397,7 +1456,8 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
                 delivery,
                 vault.clone(),
                 shared.vault(TenantId::DEFAULT),
-            )?;
+            )?
+            .with_slack(resolver.clone());
             match &shared.mailer {
                 Some(mailer) => notifier.with_mailer(mailer.clone()),
                 None => notifier,
@@ -1467,7 +1527,7 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
     let publisher = Arc::new(publishing::ServerPublisher::new(
         runtime.clone(),
         outcomes.clone(),
-        config.publishing.clone(),
+        settings.clone(),
     ));
     let pool = Arc::new(AgentPool {
         tenant,
@@ -1511,6 +1571,7 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         brain: brain.clone(),
         runtime: pool.runtime.clone(),
     });
+    let pool_brain = brain.clone();
     let state = ApiState {
         audit,
         trigger: pool.clone(),
@@ -1539,6 +1600,7 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         pool,
         settings,
         schedule,
+        brain: pool_brain,
         scheduler: std::sync::Mutex::new(Some(scheduler)),
         tasks: std::sync::Mutex::default(),
     })
@@ -1765,9 +1827,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let key =
-            MasterKey::from_base64(&"QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=".to_owned())
-                .unwrap();
+        let key = MasterKey::from_base64("QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=").unwrap();
         let resolver = Arc::new(
             tenant_config::TenantConfig::new(
                 settings.clone(),
@@ -1867,6 +1927,193 @@ mod tests {
         assert_eq!(split_job(&format!("own@{second}")), ("own", Some(second)));
         assert_eq!(split_job("brief"), ("brief", None));
         sync.refresh();
+    }
+
+    #[tokio::test]
+    async fn the_brain_follows_its_settings_and_rebuilds_vectors_for_a_new_model() {
+        use axum::routing::post;
+        let (store, _first, second) = store_with_people().await;
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let recorded = seen.clone();
+        let router = axum::Router::new().route(
+            "/v1/embeddings",
+            post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let recorded = recorded.clone();
+                async move {
+                    recorded
+                        .lock()
+                        .unwrap()
+                        .push(body["model"].as_str().unwrap().to_owned());
+                    let count = body["input"].as_array().unwrap().len();
+                    let data: Vec<_> = (0..count)
+                        .map(|index| serde_json::json!({"index": index, "embedding": [1.0, 0.0]}))
+                        .collect();
+                    axum::Json(serde_json::json!({"data": data}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, router).await });
+        let settings = TenantSettings::open(
+            store.clone(),
+            TenantId::DEFAULT,
+            Arc::default(),
+            lighthouse_settings::Options {
+                allow_private_endpoints: true,
+                ..lighthouse_settings::Options::default()
+            },
+        )
+        .await
+        .unwrap();
+        let key = MasterKey::from_base64("QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=").unwrap();
+        let vault = Vault::new(store.clone(), TenantId::DEFAULT, &key);
+        let resolver = Arc::new(tenant_config::TenantConfig::new(
+            settings.clone(),
+            vault.clone(),
+            None,
+        ));
+        let media = Arc::new(ProviderMedia {
+            settings: settings.clone(),
+            resolver: resolver.clone(),
+        });
+        assert!(!media.active(), "nothing set");
+        assert!(matches!(
+            media.embed(&["x".to_owned()]).await,
+            Err(MediaError::NotConfigured(_))
+        ));
+        settings
+            .set_provider(
+                None,
+                None,
+                "local",
+                &lighthouse_settings::ProviderInput {
+                    kind: "openai".to_owned(),
+                    base_url: Some(url),
+                },
+            )
+            .await
+            .unwrap();
+        vault
+            .put(
+                "provider:local",
+                &secrecy::SecretString::from("key".to_owned()),
+            )
+            .await
+            .unwrap();
+        let models = |model: &str| serde_json::json!({"provider": "local", "embedding_model": model, "vision_model": "tenant-eyes"});
+        settings
+            .set_value(None, None, lighthouse_settings::BRAIN, &models("first"))
+            .await
+            .unwrap();
+        // A person's own vision model does not touch the shared embeddings.
+        settings
+            .set_value(
+                Some(second),
+                Some(second),
+                lighthouse_settings::BRAIN,
+                &serde_json::json!({"vision_model": "my-eyes"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            media.models(Some(second)).vision_model.as_deref(),
+            Some("my-eyes")
+        );
+        assert_eq!(
+            media.models(Some(second)).provider.as_deref(),
+            Some("local")
+        );
+        assert_eq!(
+            media.models(None).vision_model.as_deref(),
+            Some("tenant-eyes")
+        );
+        assert_eq!(media.model(), "first");
+        let dir = tempfile::tempdir().unwrap();
+        let brain = Brain::new(store.clone(), TenantId::DEFAULT, dir.path().to_path_buf())
+            .unwrap()
+            .with_media(media.clone())
+            .with_embedder(media.clone());
+        brain
+            .remember(lighthouse_brain::NewEntry {
+                kind: "note".to_owned(),
+                title: "A note".to_owned(),
+                body: "Something to find".to_owned(),
+                sources: vec![lighthouse_brain::Source {
+                    kind: "app".to_owned(),
+                    reference: "test".to_owned(),
+                }],
+                links: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let vector_models = || async {
+            let rows: Vec<(Option<String>,)> =
+                lighthouse_store::sqlx::query_as("SELECT embedding_model FROM brain_chunks")
+                    .fetch_all(store.pool())
+                    .await
+                    .unwrap();
+            rows.into_iter().map(|(model,)| model).collect::<Vec<_>>()
+        };
+        brain.embed_missing().await.unwrap();
+        assert!(
+            vector_models()
+                .await
+                .iter()
+                .all(|model| model.as_deref() == Some("first"))
+        );
+        // A changed model rebuilds the vectors in the background.
+        let scheduler = Scheduler::new(
+            store.clone(),
+            TenantId::DEFAULT,
+            "UTC",
+            &[],
+            Arc::new(NoRunner),
+        )
+        .unwrap();
+        let schedule = Arc::new(ScheduleSync {
+            settings: settings.clone(),
+            resolver,
+            agents: Arc::new(
+                AgentRegistry::layered(dir.path().join("a"), settings.clone()).unwrap(),
+            ),
+            automations: Arc::new(
+                AutomationRegistry::layered(dir.path().join("b"), settings.clone()).unwrap(),
+            ),
+            schedules: scheduler.handle(),
+        });
+        let following = tokio::spawn(follow_settings(settings.clone(), schedule, brain.clone()));
+        tokio::task::yield_now().await;
+        settings
+            .set_value(None, None, lighthouse_settings::BRAIN, &models("second"))
+            .await
+            .unwrap();
+        for _ in 0..100 {
+            if vector_models()
+                .await
+                .iter()
+                .all(|model| model.as_deref() == Some("second"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        following.abort();
+        assert!(
+            vector_models()
+                .await
+                .iter()
+                .all(|model| model.as_deref() == Some("second"))
+        );
+        assert!(seen.lock().unwrap().contains(&"second".to_owned()));
+        assert!(!brain.search("Something", 3).await.unwrap().is_empty());
+    }
+
+    struct NoRunner;
+
+    #[async_trait]
+    impl AgentRunner for NoRunner {
+        async fn start(&self, _: &str, _: &str) {}
     }
 
     #[tokio::test]

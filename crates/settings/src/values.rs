@@ -1,7 +1,7 @@
 //! Single settings by key, such as notifications or the Talk agent.
 
 use crate::SettingsError;
-use lighthouse_config::{Config, NotificationsConfig, WeatherConfig};
+use lighthouse_config::{Config, NotificationsConfig, PublishingConfig, WeatherConfig};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -20,6 +20,14 @@ pub const LANGUAGE: &str = "language";
 pub const ACCOUNTS: &str = "accounts";
 /// A person's further email addresses, to recognize their own mail. Personal only.
 pub const ADDRESSES: &str = "addresses";
+/// What publishes posts: `connector`, `tool`, `input`, `service`, or `null`.
+pub const PUBLISHING: &str = "publishing";
+/// Slack aliases that may be used as delivery targets.
+pub const SLACK_CHANNELS: &str = "slack_channels";
+/// The Brain's models: `provider`, `embedding_model`, `vision_model`,
+/// `transcription_model`. Embeddings belong to the shared Brain, so only the
+/// tenant sets `embedding_model`.
+pub const BRAIN: &str = "brain";
 /// Every key that can be set.
 pub const VALUE_KEYS: &[&str] = &[
     TALK_AGENT,
@@ -29,11 +37,28 @@ pub const VALUE_KEYS: &[&str] = &[
     LANGUAGE,
     ACCOUNTS,
     ADDRESSES,
+    PUBLISHING,
+    SLACK_CHANNELS,
+    BRAIN,
 ];
 
 const MAX_TARGETS: usize = 10;
 const MAX_TEXT: usize = 100;
 const MAX_ACCOUNTS: usize = 50;
+
+/// The Brain's models as a layer sets them.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct BrainValue {
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    embedding_model: Option<String>,
+    #[serde(default)]
+    vision_model: Option<String>,
+    #[serde(default)]
+    transcription_model: Option<String>,
+}
 
 fn invalid(message: impl Into<String>) -> SettingsError {
     SettingsError::Invalid(message.into())
@@ -54,6 +79,26 @@ pub(crate) fn instance_values(config: &Config) -> BTreeMap<String, Value> {
             }),
         ),
     ]);
+    values.insert(
+        PUBLISHING.to_owned(),
+        config
+            .publishing
+            .as_ref()
+            .map_or(Value::Null, |publishing| {
+                json!({"connector": publishing.connector, "tool": publishing.tool,
+                   "input": publishing.input, "service": publishing.service})
+            }),
+    );
+    values.insert(
+        SLACK_CHANNELS.to_owned(),
+        json!(config.delivery.slack_channels),
+    );
+    values.insert(
+        BRAIN.to_owned(),
+        json!({"provider": config.brain.provider, "embedding_model": config.brain.embedding_model,
+               "vision_model": config.brain.vision_model,
+               "transcription_model": config.brain.transcription_model}),
+    );
     if let Some(weather) = &config.weather {
         values.insert(
             WEATHER.to_owned(),
@@ -159,6 +204,65 @@ pub fn check_value(key: &str, value: &Value, personal: bool) -> Result<Value, Se
             Some("en" | "de") => Ok(value.clone()),
             _ => Err(invalid("`language` is `en` or `de`")),
         },
+        PUBLISHING => {
+            if value.is_null() {
+                return Ok(Value::Null);
+            }
+            let parsed: PublishingConfig = serde_json::from_value(value.clone())
+                .map_err(|error| invalid(format!("invalid publishing: {error}")))?;
+            let names = [&parsed.connector, &parsed.tool];
+            if names
+                .iter()
+                .any(|name| name.is_empty() || name.len() > MAX_TEXT)
+            {
+                return Err(invalid("publishing needs a `connector` and a `tool`"));
+            }
+            Ok(
+                json!({"connector": parsed.connector, "tool": parsed.tool, "input": parsed.input,
+                      "service": parsed.service}),
+            )
+        }
+        SLACK_CHANNELS => {
+            let aliases = value
+                .as_array()
+                .ok_or_else(|| invalid("`slack_channels` is a list of aliases"))?;
+            let valid = aliases.len() <= MAX_ACCOUNTS
+                && aliases.iter().all(|alias| {
+                    alias.as_str().is_some_and(|alias| {
+                        !alias.is_empty()
+                            && alias.len() <= MAX_TEXT
+                            && !alias.chars().any(char::is_control)
+                    })
+                });
+            if valid {
+                Ok(value.clone())
+            } else {
+                Err(invalid("`slack_channels` is a list of aliases"))
+            }
+        }
+        BRAIN => {
+            let parsed: BrainValue = serde_json::from_value(value.clone())
+                .map_err(|error| invalid(format!("invalid brain: {error}")))?;
+            if personal && parsed.embedding_model.is_some() {
+                return Err(invalid(
+                    "`embedding_model` belongs to the shared Brain, so only the workspace sets it",
+                ));
+            }
+            let names = [
+                &parsed.provider,
+                &parsed.embedding_model,
+                &parsed.vision_model,
+                &parsed.transcription_model,
+            ];
+            if names.iter().any(|name| {
+                name.as_ref().is_some_and(|name| {
+                    name.is_empty() || name.len() > MAX_TEXT || name.chars().any(char::is_control)
+                })
+            }) {
+                return Err(invalid("invalid brain: a name is empty or too long"));
+            }
+            Ok(json!(parsed))
+        }
         ACCOUNTS | ADDRESSES if !personal => Err(invalid(format!(
             "`{key}` belongs to a person, not to the workspace"
         ))),
@@ -254,6 +358,26 @@ mod tests {
         assert!(check_value(TIMEZONE, &json!("Mars/Base"), true).is_err());
         assert!(check_value(LANGUAGE, &json!("de"), true).is_ok());
         assert!(check_value(LANGUAGE, &json!("fr"), true).is_err());
+        let post = json!({"connector": "social", "tool": "create_post", "service": "linkedin"});
+        assert!(check_value(PUBLISHING, &post, true).is_ok());
+        assert_eq!(
+            check_value(PUBLISHING, &Value::Null, true).unwrap(),
+            Value::Null
+        );
+        assert!(check_value(PUBLISHING, &json!({"connector": "", "tool": "x"}), true).is_err());
+        assert!(check_value(PUBLISHING, &json!({"tool": "x"}), true).is_err());
+        assert!(check_value(SLACK_CHANNELS, &json!(["#team"]), true).is_ok());
+        assert!(check_value(SLACK_CHANNELS, &json!([""]), true).is_err());
+        assert!(check_value(SLACK_CHANNELS, &json!("#team"), true).is_err());
+        let brain = json!({"provider": "openai", "embedding_model": "small"});
+        assert!(check_value(BRAIN, &brain, false).is_ok());
+        assert!(
+            check_value(BRAIN, &brain, true).is_err(),
+            "the Brain is shared"
+        );
+        assert!(check_value(BRAIN, &json!({"vision_model": "see"}), true).is_ok());
+        assert!(check_value(BRAIN, &json!({"vision_model": ""}), true).is_err());
+        assert!(check_value(BRAIN, &json!({"other": "x"}), false).is_err());
         assert!(check_value(ACCOUNTS, &json!({"linear": "alex"}), true).is_ok());
         assert!(check_value(ACCOUNTS, &json!({"linear": "alex"}), false).is_err());
         assert!(check_value(ACCOUNTS, &json!({"linear": 1}), true).is_err());

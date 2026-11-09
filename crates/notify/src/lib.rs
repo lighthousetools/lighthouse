@@ -169,10 +169,23 @@ impl Mailer for SmtpMailer {
     }
 }
 
+/// Tells a notifier which Slack aliases exist now and where their webhooks are.
+/// Implementations may answer per user.
+pub trait SlackSource: Send + Sync {
+    /// Aliases that may be used for the current work.
+    fn aliases(&self) -> Vec<String>;
+    /// Vaults holding `slack:<alias>`, the first that has it wins.
+    fn vaults(&self) -> Vec<Vault>;
+    /// Whether webhooks must be public `https` URLs, since tenants and people
+    /// store them.
+    fn guarded(&self) -> bool;
+}
+
 /// Delivers through the configured channels.
 pub struct ChannelNotifier {
     mail: Option<Arc<dyn Mailer>>,
     slack_aliases: Vec<String>,
+    slack_source: Option<Arc<dyn SlackSource>>,
     vault: Vault,
     http: reqwest::Client,
 }
@@ -219,7 +232,15 @@ impl ChannelNotifier {
             slack_aliases,
             vault,
             http: reqwest::Client::new(),
+            slack_source: None,
         })
+    }
+
+    /// Reads Slack aliases and webhooks from a source instead of the configuration.
+    #[must_use]
+    pub fn with_slack(mut self, source: Arc<dyn SlackSource>) -> Self {
+        self.slack_source = Some(source);
+        self
     }
 
     /// Replaces the mail transport.
@@ -250,20 +271,33 @@ impl ChannelNotifier {
 
     async fn slack(&self, alias: &str, subject: &str, markdown: &str) -> Result<(), NotifyError> {
         let target = format!("slack:{alias}");
-        if !self.slack_aliases.iter().any(|known| known == alias) {
+        let (aliases, vaults, guarded) = match &self.slack_source {
+            Some(source) => (source.aliases(), source.vaults(), source.guarded()),
+            None => (self.slack_aliases.clone(), vec![self.vault.clone()], false),
+        };
+        if !aliases.iter().any(|known| known == alias) {
             return Err(NotifyError::NotConfigured(target));
         }
-        let url = self
-            .vault
-            .get(&target)
-            .await?
-            .ok_or_else(|| NotifyError::NotConfigured(target.clone()))?;
+        let mut found = None;
+        for vault in &vaults {
+            found = vault.get(&target).await?;
+            if found.is_some() {
+                break;
+            }
+        }
+        let url = found.ok_or_else(|| NotifyError::NotConfigured(target.clone()))?;
         let failed = |detail: String| NotifyError::Send {
             target: target.clone(),
             detail,
         };
-        let response = self
-            .http
+        let http = if guarded {
+            lighthouse_router::net::check_url(url.expose_secret())
+                .map_err(|_| failed("the webhook is not a public https URL".to_owned()))?;
+            lighthouse_router::net::guarded_client()
+        } else {
+            self.http.clone()
+        };
+        let response = http
             .post(url.expose_secret())
             .json(&json!({"text": format!("*{subject}*\n\n{markdown}")}))
             .send()
@@ -296,6 +330,21 @@ impl Notifier for ChannelNotifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Slack(Vec<Vault>, bool);
+
+    impl SlackSource for Slack {
+        fn aliases(&self) -> Vec<String> {
+            vec!["#team".to_owned()]
+        }
+        fn vaults(&self) -> Vec<Vault> {
+            self.0.clone()
+        }
+        fn guarded(&self) -> bool {
+            self.1
+        }
+    }
+
     use base64::Engine;
     use lighthouse_core::TenantId;
     use lighthouse_store::testing::fresh_store;
@@ -335,6 +384,45 @@ mod tests {
             smtp: None,
             slack_channels: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
         }
+    }
+
+    #[tokio::test]
+    async fn webhooks_of_a_source_come_from_its_vaults_and_stay_public() {
+        let store = fresh_store().await;
+        let key = base64::engine::general_purpose::STANDARD.encode([1u8; 32]);
+        let vault = Vault::new(
+            store,
+            TenantId::DEFAULT,
+            &MasterKey::from_base64(&key).unwrap(),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        vault
+            .put("slack:#team", &SecretString::from(server.uri()))
+            .await
+            .unwrap();
+        let config = DeliveryConfig::default();
+        let open = ChannelNotifier::from_config(config, vault.clone())
+            .unwrap()
+            .with_slack(Arc::new(Slack(vec![vault.clone()], false)));
+        let target = Delivery::Slack("#team".to_owned());
+        open.deliver(&target, "s", "b").await.unwrap();
+        assert!(matches!(
+            open.deliver(&Delivery::Slack("#other".to_owned()), "s", "b")
+                .await,
+            Err(NotifyError::NotConfigured(_))
+        ));
+        let guarded = ChannelNotifier::from_config(DeliveryConfig::default(), vault.clone())
+            .unwrap()
+            .with_slack(Arc::new(Slack(vec![vault], true)));
+        let error = guarded.deliver(&target, "s", "b").await.unwrap_err();
+        assert!(
+            error.to_string().contains("not a public https URL"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

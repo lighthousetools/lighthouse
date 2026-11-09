@@ -8,6 +8,7 @@ use lighthouse_config::PublishingConfig;
 use lighthouse_core::agent::ToolLevel;
 use lighthouse_desk::{Desk, Post};
 use lighthouse_runtime::{ACTION_PREFIX, ActionOutcome, Runtime};
+use lighthouse_settings::TenantSettings;
 use lighthouse_sync::mapping::render_value;
 use lighthouse_sync::prune_empty;
 use serde_json::{Value, json};
@@ -21,7 +22,7 @@ pub const POST_PREFIX: &str = "action:post:";
 pub struct ServerPublisher {
     runtime: Arc<Runtime>,
     outcomes: Arc<Outcomes>,
-    config: Option<PublishingConfig>,
+    settings: TenantSettings,
 }
 
 impl std::fmt::Debug for ServerPublisher {
@@ -32,16 +33,21 @@ impl std::fmt::Debug for ServerPublisher {
 
 impl ServerPublisher {
     /// Creates the publisher.
-    pub fn new(
-        runtime: Arc<Runtime>,
-        outcomes: Arc<Outcomes>,
-        config: Option<PublishingConfig>,
-    ) -> Self {
+    pub fn new(runtime: Arc<Runtime>, outcomes: Arc<Outcomes>, settings: TenantSettings) -> Self {
         Self {
             runtime,
             outcomes,
-            config,
+            settings,
         }
+    }
+
+    /// What publishes posts for the user the current task acts for.
+    fn config(&self) -> Option<PublishingConfig> {
+        let effective = self
+            .settings
+            .effective(lighthouse_audit::acting_user::current());
+        let (value, _) = effective.values.get(lighthouse_settings::PUBLISHING)?;
+        serde_json::from_value(value.clone()).ok()
     }
 }
 
@@ -63,13 +69,11 @@ fn label(post: &Post) -> String {
 #[async_trait]
 impl Publisher for ServerPublisher {
     fn service(&self) -> Option<String> {
-        self.config
-            .as_ref()
-            .and_then(|config| config.service.clone())
+        self.config().and_then(|config| config.service)
     }
 
     async fn publish(&self, post: &Post) -> Result<ActionResult, ActionError> {
-        let config = self.config.as_ref().ok_or_else(|| {
+        let config = self.config().ok_or_else(|| {
             ActionError::Rejected(
                 "publishing is not set up: add [publishing] to the configuration".to_owned(),
             )

@@ -15,6 +15,7 @@ async-trait.workspace = true
 lettre.workspace = true
 lighthouse-config.workspace = true
 lighthouse-core.workspace = true
+lighthouse-router.workspace = true
 lighthouse-vault.workspace = true
 pulldown-cmark.workspace = true
 reqwest.workspace = true

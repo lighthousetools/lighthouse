@@ -93,3 +93,14 @@ remain.
 - Scope is always `personal`. The Brain is shared by the members of a tenant; each tenant has its own.
 - Vector search scans all chunks, which is fine for a personal Brain of up to some 100,000 chunks.
 - Duplicates and contradictions are not detected yet.
+
+## Models in layers
+
+`[brain]`'s `provider`, `embedding_model`, `vision_model` and `transcription_model` are instance defaults. The `brain`
+setting (see [api.md](api.md#providers-models-and-connectors)) changes them for a tenant or a person. The Brain's
+directory stays in the file.
+
+Each vector is stored with its model, and search compares only vectors of the current model. When a tenant changes its
+embedding model or provider, a background task embeds every chunk again. Until it is done, entries without a new
+vector are still found by lexical search, so search finds less for a while, never wrong results. Because the index is
+shared, a person cannot set an embedding model for themselves; they can use their own models for images and audio.

@@ -214,7 +214,8 @@ pub struct LayerView {
 /// A single setting as it applies to the caller.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct ValueView {
-    /// `talk.agent`, `notifications`, `weather`, `timezone` or `language`.
+    /// `talk.agent`, `notifications`, `weather`, `timezone`, `language`,
+    /// `accounts`, `addresses`, `publishing`, `slack_channels` or `brain`.
     pub key: String,
     /// The value. Its shape depends on the key, see `docs/api.md`.
     pub value: serde_json::Value,
@@ -1088,8 +1089,7 @@ pub(crate) async fn values(Scoped(state): Scoped, caller: Caller) -> Json<Vec<Va
     )
 }
 
-/// Sets a single setting in a layer: `talk.agent`, `notifications`, `weather`,
-/// `timezone` or `language`.
+/// Sets a single setting in a layer. See `GET /settings/values` for the keys.
 #[utoipa::path(
     put,
     path = "/settings/{layer}/values/{key}",
@@ -1163,7 +1163,10 @@ fn personal_name(name: &str) -> Result<(), ApiError> {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, ':' | '-' | '_'))
         && !name.starts_with("oauth:");
-    if valid {
+    let slack = name.strip_prefix("slack:").is_some_and(|alias| {
+        !alias.is_empty() && alias.len() <= 100 && !alias.chars().any(char::is_control)
+    });
+    if valid || slack {
         Ok(())
     } else {
         Err(ApiError(

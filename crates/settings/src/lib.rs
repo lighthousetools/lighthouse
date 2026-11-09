@@ -34,8 +34,8 @@ pub use presets::{PresetConnector, PresetModel, PresetProvider, PresetSource, Pr
 pub use store::{ChangeRecord, SettingsStore};
 pub use validate::{KNOWN_TASKS, is_name};
 pub use values::{
-    ACCOUNTS, ADDRESSES, LANGUAGE, NOTIFICATIONS, TALK_AGENT, TIMEZONE, VALUE_KEYS, WEATHER,
-    check_value,
+    ACCOUNTS, ADDRESSES, BRAIN, LANGUAGE, NOTIFICATIONS, PUBLISHING, SLACK_CHANNELS, TALK_AGENT,
+    TIMEZONE, VALUE_KEYS, WEATHER, check_value,
 };
 
 use lighthouse_config::{ConnectorAuth, ModelConfig, ProviderKind, RouteConfig};

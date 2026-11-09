@@ -264,9 +264,17 @@ pub(crate) async fn save(
 )]
 pub(crate) async fn switch(
     Scoped(state): Scoped,
+    caller: crate::Caller,
     Path(id): Path<String>,
     Json(switch): Json<AutomationSwitch>,
 ) -> Result<Json<AutomationInfo>, ApiError> {
+    // One that belongs to the caller is theirs to switch; a shared one is for
+    // owners and admins, and a member switches it off for themselves in
+    // `/settings/me/automations/{id}/enabled`.
+    let known = state.automations.get(&id).await.map_err(crate::internal)?;
+    if known.is_some_and(|automation| automation.layer != "personal") {
+        caller.require_manager()?;
+    }
     let automation = state
         .automations
         .set_enabled(&id, switch.enabled)
