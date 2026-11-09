@@ -116,7 +116,7 @@ docs = "https://developers.cloudflare.com/agents/model-context-protocol/mcp-serv
 
 [[connectors]]
 id = "cloudflare-autorag"
-label = "Cloudflare AI Search (AutoRAG)"
+label = "Cloudflare AI Search"
 vendor = "Cloudflare"
 category = "ai"
 url = "https://autorag.mcp.cloudflare.com/mcp"
@@ -133,17 +133,6 @@ url = "https://mcp.fal.ai/mcp"
 auth = "oauth"
 registration = "dynamic"
 docs = "https://docs.fal.ai/"
-
-[[connectors]]
-id = "firecrawl-2"
-label = "Firecrawl"
-vendor = "Firecrawl"
-category = "ai"
-url = "https://mcp.firecrawl.dev/mcp"
-auth = "bearer"
-key_url = "https://www.firecrawl.dev/app/api-keys"
-docs = "https://docs.firecrawl.dev/mcp-server"
-note = "Documented form puts the key in the path: https://mcp.firecrawl.dev/{API_KEY}/v2/mcp"
 
 [[connectors]]
 id = "hugging-face"
@@ -293,7 +282,7 @@ docs = "https://docs.statsig.com/"
 
 [[connectors]]
 id = "activepieces"
-label = "Activepieces MCP"
+label = "Activepieces"
 vendor = "Activepieces"
 category = "automation"
 url = "https://cloud.activepieces.com/mcp"
@@ -304,7 +293,7 @@ note = "Cloud instance; self-hosted at https://<instance>/mcp. Manages flows and
 
 [[connectors]]
 id = "ifttt"
-label = "IFTTT MCP"
+label = "IFTTT"
 vendor = "IFTTT"
 category = "automation"
 url = "https://ifttt.com/mcp"
@@ -326,7 +315,7 @@ note = "Strata instance URL created via API; Klavis API key. 401 without WWW-Aut
 
 [[connectors]]
 id = "make"
-label = "Make MCP"
+label = "Make"
 vendor = "Make (Celonis)"
 category = "automation"
 url = "https://mcp.make.com/v2"
@@ -337,7 +326,7 @@ note = "OAuth via www.make.com; API-key variant https://<zone>/mcp/v2 with Beare
 
 [[connectors]]
 id = "nango"
-label = "Nango MCP"
+label = "Nango"
 vendor = "Nango"
 category = "automation"
 url = "https://api.nango.dev/mcp"
@@ -348,7 +337,7 @@ note = "Bearer Nango secret key plus connection-id and provider-config-key heade
 
 [[connectors]]
 id = "pipedream"
-label = "Pipedream MCP"
+label = "Pipedream"
 vendor = "Pipedream (Workday)"
 category = "automation"
 url = "https://mcp.pipedream.net/v2"
@@ -359,7 +348,7 @@ note = "Static OAuth URL for end users; developer/embedded variant https://remot
 
 [[connectors]]
 id = "stackone"
-label = "StackOne MCP"
+label = "StackOne"
 vendor = "StackOne"
 category = "automation"
 url = "https://mcp.stackone.com/mcp"
@@ -370,7 +359,7 @@ note = "B2B integration platform; 640+ connectors, 44,000+ actions."
 
 [[connectors]]
 id = "unified-to"
-label = "Unified.to MCP"
+label = "Unified.to"
 vendor = "Unified.to"
 category = "automation"
 url = "https://mcp-api.unified.to/mcp"
@@ -381,7 +370,7 @@ note = "Regional hosts: mcp-api-eu.unified.to, mcp-api-au.unified.to. Developer 
 
 [[connectors]]
 id = "viasocket"
-label = "viaSocket MCP"
+label = "viaSocket"
 vendor = "viaSocket"
 category = "automation"
 url = "https://mcp.viasocket.com/mcp"
@@ -392,7 +381,7 @@ note = "Each user gets a personal Cluster URL from the dashboard (secret in URL)
 
 [[connectors]]
 id = "zapier"
-label = "Zapier MCP"
+label = "Zapier"
 vendor = "Zapier"
 category = "automation"
 url = "https://mcp.zapier.com/api/v1/connect"
@@ -506,7 +495,7 @@ docs = "https://docs.saucelabs.com/"
 
 [[connectors]]
 id = "testmu-lambdatest"
-label = "TestMu AI (LambdaTest)"
+label = "TestMu AI"
 vendor = "LambdaTest"
 category = "ci"
 url = "https://mcp.lambdatest.com/mcp"
@@ -516,7 +505,7 @@ note = "initialize and tools/list open without auth; tool calls need LambdaTest 
 
 [[connectors]]
 id = "cloudflare-api"
-label = "Cloudflare API (Code Mode)"
+label = "Cloudflare API"
 vendor = "Cloudflare"
 category = "cloud"
 url = "https://mcp.cloudflare.com/mcp"
@@ -578,7 +567,7 @@ docs = "https://docs.digitalocean.com/reference/mcp/"
 
 [[connectors]]
 id = "expo"
-label = "Expo (EAS)"
+label = "Expo"
 vendor = "Expo"
 category = "cloud"
 url = "https://mcp.expo.dev/mcp"
@@ -610,7 +599,7 @@ note = "Google-managed remote MCP; initialize/tools list open, tool calls need a
 
 [[connectors]]
 id = "google-gke"
-label = "Google Cloud Kubernetes Engine (GKE)"
+label = "Google Cloud Kubernetes Engine"
 vendor = "Google"
 category = "cloud"
 url = "https://container.googleapis.com/mcp"
@@ -723,7 +712,7 @@ docs = "https://www.algolia.com/doc/"
 
 [[connectors]]
 id = "atlassian-rovo"
-label = "Atlassian Rovo (Jira, Confluence, Bitbucket)"
+label = "Atlassian Rovo"
 vendor = "Atlassian"
 category = "code"
 url = "https://mcp.atlassian.com/v1/mcp"
@@ -807,7 +796,7 @@ docs = "https://www.dm.de"
 
 [[connectors]]
 id = "instacart"
-label = "Instacart MCP"
+label = "Instacart"
 vendor = "Instacart"
 category = "commerce"
 url = "https://mcp.instacart.com/mcp"
@@ -879,17 +868,6 @@ registration = "dynamic"
 docs = "https://dev.wix.com/"
 
 [[connectors]]
-id = "dialpad-2"
-label = "Dialpad"
-vendor = "Dialpad"
-category = "communication"
-url = "https://mcp-public.us.karehq.com/mcp"
-auth = "oauth"
-registration = "dynamic"
-docs = "https://developers.dialpad.com/docs/dialpad-mcp-server"
-note = "Early access (ask CSM); US region; hosted on Dialpad-owned karehq.com, DCR at dialpad.com; mcp.dialpad.com also answers 401+DCR but is undocumented"
-
-[[connectors]]
 id = "dialpad-eu"
 label = "Dialpad (EU)"
 vendor = "Dialpad"
@@ -902,7 +880,7 @@ note = "Early access; EU region"
 
 [[connectors]]
 id = "discord"
-label = "Discord MCP"
+label = "Discord"
 vendor = "Discord"
 category = "communication"
 url = "https://mcp.discord.com/mcp"
@@ -922,6 +900,17 @@ registration = "dynamic"
 docs = "https://www.fastmail.com/dev/"
 
 [[connectors]]
+id = "google-gmail"
+label = "Gmail"
+vendor = "Google"
+category = "communication"
+url = "https://gmailmcp.googleapis.com/mcp/v1"
+auth = "oauth"
+registration = "preregistered"
+docs = "https://developers.google.com/workspace/gmail/api/guides/configure-mcp-server"
+note = "Google-managed Workspace MCP; initialize answers without auth, tools need Google OAuth token; needs OAuth client from a Google Cloud project (accounts.google.com has no DCR)"
+
+[[connectors]]
 id = "google-chat"
 label = "Google Chat"
 vendor = "Google"
@@ -931,17 +920,6 @@ auth = "oauth"
 registration = "preregistered"
 docs = "https://developers.google.com/workspace/guides/configure-mcp-servers"
 note = "Google-managed Workspace MCP; Workspace accounts only; OAuth client from Google Cloud project required"
-
-[[connectors]]
-id = "google-gmail"
-label = "Google Gmail"
-vendor = "Google"
-category = "communication"
-url = "https://gmailmcp.googleapis.com/mcp/v1"
-auth = "oauth"
-registration = "preregistered"
-docs = "https://developers.google.com/workspace/gmail/api/guides/configure-mcp-server"
-note = "Google-managed Workspace MCP; initialize answers without auth, tools need Google OAuth token; needs OAuth client from a Google Cloud project (accounts.google.com has no DCR)"
 
 [[connectors]]
 id = "hey"
@@ -1165,7 +1143,7 @@ note = "No DCR advertised in authorization server metadata"
 
 [[connectors]]
 id = "highlevel"
-label = "HighLevel (LeadConnector)"
+label = "HighLevel"
 vendor = "HighLevel"
 category = "crm"
 url = "https://services.leadconnectorhq.com/mcp/"
@@ -1288,7 +1266,7 @@ docs = "https://salesflare.com/"
 
 [[connectors]]
 id = "salesforce"
-label = "Salesforce Platform (sObject All)"
+label = "Salesforce Platform"
 vendor = "Salesforce"
 category = "crm"
 url = "https://api.salesforce.com/platform/mcp/v1/platform/sobject-all"
@@ -1603,7 +1581,7 @@ docs = "https://developers.gamma.app/docs/mcp"
 
 [[connectors]]
 id = "lucid"
-label = "Lucid (Lucidchart, Lucidspark)"
+label = "Lucid"
 vendor = "Lucid Software"
 category = "design"
 url = "https://mcp.lucid.app/mcp"
@@ -1939,7 +1917,7 @@ docs = "https://developer.brex.com/"
 
 [[connectors]]
 id = "coingecko"
-label = "CoinGecko MCP"
+label = "CoinGecko"
 vendor = "CoinGecko"
 category = "finance"
 url = "https://mcp.api.coingecko.com/mcp"
@@ -1949,7 +1927,7 @@ note = "Public keyless crypto market data (pro endpoint with key also exists)."
 
 [[connectors]]
 id = "copilot-money"
-label = "Copilot Money MCP"
+label = "Copilot Money"
 vendor = "Copilot Money"
 category = "finance"
 url = "https://mcp.copilot.money/mcp"
@@ -2012,7 +1990,7 @@ docs = "https://docs.financialdatasets.ai/mcp-server"
 
 [[connectors]]
 id = "fmp"
-label = "Financial Modeling Prep MCP"
+label = "Financial Modeling Prep"
 vendor = "Financial Modeling Prep"
 category = "finance"
 url = "https://financialmodelingprep.com/mcp"
@@ -2044,7 +2022,7 @@ docs = "https://developers.lseg.com/"
 
 [[connectors]]
 id = "massive"
-label = "Massive (Polygon.io) MCP"
+label = "Massive"
 vendor = "Massive"
 category = "finance"
 url = "https://mcp.massive.com/"
@@ -2140,7 +2118,7 @@ note = "EU spend management"
 
 [[connectors]]
 id = "public-com"
-label = "Public.com MCP"
+label = "Public.com"
 vendor = "Public.com"
 category = "finance"
 url = "https://mcp.public.com/mcp"
@@ -2172,7 +2150,7 @@ docs = "https://docs.ramp.com/"
 
 [[connectors]]
 id = "sp-kensho"
-label = "S&P Global (Kensho)"
+label = "S&P Global"
 vendor = "S&P Global"
 category = "finance"
 url = "https://kfinance.kensho.com/integrations/mcp"
@@ -2182,7 +2160,7 @@ docs = "https://docs.kensho.com/"
 
 [[connectors]]
 id = "scalable-capital"
-label = "Scalable Capital MCP"
+label = "Scalable Capital"
 vendor = "Scalable Capital"
 category = "finance"
 url = "https://mcp.scalable.capital/mcp"
@@ -2225,7 +2203,7 @@ note = "No DCR; authorization server supports CIMD"
 
 [[connectors]]
 id = "strava"
-label = "Strava MCP"
+label = "Strava"
 vendor = "Strava"
 category = "health"
 url = "https://mcp.strava.com/mcp"
@@ -2236,7 +2214,7 @@ note = "Activities and stats; DCR via www.strava.com/oauth/mcp/register_client."
 
 [[connectors]]
 id = "withings"
-label = "Withings MCP"
+label = "Withings"
 vendor = "Withings"
 category = "health"
 url = "https://mcp.withings.com/mcp"
@@ -2269,7 +2247,7 @@ note = "Recruiting/ATS"
 
 [[connectors]]
 id = "hibob"
-label = "HiBob (Bob)"
+label = "HiBob"
 vendor = "HiBob"
 category = "hr"
 url = "https://api.hibob.com/ai-mcp-public/mcp/public"
@@ -2322,7 +2300,7 @@ note = "Recruiting/ATS; no dedicated MCP doc page confirmed"
 
 [[connectors]]
 id = "ft"
-label = "Financial Times MCP"
+label = "Financial Times"
 vendor = "Financial Times"
 category = "knowledge"
 url = "https://mcp.ft.com/mcp"
@@ -2333,7 +2311,7 @@ note = "Search and read FT content with subscriber account; AS auth.ft.com has n
 
 [[connectors]]
 id = "handelsblatt"
-label = "Handelsblatt MCP"
+label = "Handelsblatt"
 vendor = "Handelsblatt Media Group"
 category = "knowledge"
 url = "https://mcp.handelsblatt.com/mcp"
@@ -2354,7 +2332,7 @@ note = "Swiss weather API; initialize open, account credentials likely required 
 
 [[connectors]]
 id = "openalex"
-label = "OpenAlex MCP"
+label = "OpenAlex"
 vendor = "OurResearch"
 category = "knowledge"
 url = "https://mcp.openalex.org/mcp"
@@ -2375,7 +2353,7 @@ note = "Weather data; initialize open, API key may be needed for tools."
 
 [[connectors]]
 id = "weatherapi"
-label = "WeatherAPI.com MCP"
+label = "WeatherAPI.com"
 vendor = "WeatherAPI.com"
 category = "knowledge"
 url = "https://mcp.weatherapi.com/mcp"
@@ -2386,7 +2364,7 @@ note = "API key; 401 without WWW-Authenticate."
 
 [[connectors]]
 id = "wikidata"
-label = "Wikidata MCP"
+label = "Wikidata"
 vendor = "Wikimedia Deutschland"
 category = "knowledge"
 url = "https://wd-mcp.wmcloud.org/mcp"
@@ -2396,7 +2374,7 @@ note = "Hosted by Wikimedia Deutschland on Wikimedia Cloud; read-only Wikidata s
 
 [[connectors]]
 id = "mapbox"
-label = "Mapbox MCP"
+label = "Mapbox"
 vendor = "Mapbox"
 category = "maps"
 url = "https://mcp.mapbox.com/mcp"
@@ -2539,7 +2517,7 @@ docs = "https://www.leadpages.com/"
 
 [[connectors]]
 id = "mandrill"
-label = "Mailchimp Transactional (Mandrill)"
+label = "Mailchimp Transactional"
 vendor = "Intuit Mailchimp"
 category = "marketing"
 url = "https://mandrillapp.com/mcp"
@@ -2621,7 +2599,7 @@ docs = "https://unbounce.com/"
 
 [[connectors]]
 id = "canva"
-label = "Canva MCP"
+label = "Canva"
 vendor = "Canva"
 category = "media"
 url = "https://mcp.canva.com/mcp"
@@ -2632,7 +2610,7 @@ note = "Designs; DCR."
 
 [[connectors]]
 id = "listen-notes"
-label = "Listen Notes MCP"
+label = "Listen Notes"
 vendor = "Listen Notes"
 category = "media"
 url = "https://mcp.listennotes.com/mcp/"
@@ -2642,7 +2620,7 @@ docs = "https://www.listennotes.com/api/"
 
 [[connectors]]
 id = "unsplash"
-label = "Unsplash MCP"
+label = "Unsplash"
 vendor = "Unsplash"
 category = "media"
 url = "https://mcp.unsplash.com/mcp"
@@ -2653,7 +2631,7 @@ note = "Photo search; AS supports only client ID metadata documents (no DCR)."
 
 [[connectors]]
 id = "vimeo"
-label = "Vimeo MCP"
+label = "Vimeo"
 vendor = "Vimeo"
 category = "media"
 url = "https://mcp.vimeo.com/mcp"
@@ -2762,7 +2740,7 @@ note = "German vendor; Keycloak AS with DCR and CIMD; no public doc page for hos
 
 [[connectors]]
 id = "zoom"
-label = "Zoom (all-in-one)"
+label = "Zoom"
 vendor = "Zoom"
 category = "meetings"
 url = "https://mcp.zoom.us/mcp/zoom/streamable"
@@ -3192,7 +3170,7 @@ note = "Personal access token as bearer also supported"
 
 [[connectors]]
 id = "akiflow"
-label = "Akiflow MCP"
+label = "Akiflow"
 vendor = "Akiflow"
 category = "productivity"
 url = "https://mcp.akiflow.com/mcp"
@@ -3203,7 +3181,7 @@ note = "Tasks and time blocking; DCR."
 
 [[connectors]]
 id = "amie"
-label = "Amie MCP"
+label = "Amie"
 vendor = "Amie"
 category = "productivity"
 url = "https://mcp.amie.so/mcp"
@@ -3214,7 +3192,7 @@ note = "Calendar + todos; DCR."
 
 [[connectors]]
 id = "any-do"
-label = "Any.do MCP"
+label = "Any.do"
 vendor = "Any.do"
 category = "productivity"
 url = "https://mcp.any.do/mcp"
@@ -3225,7 +3203,7 @@ note = "Tasks and lists; DCR."
 
 [[connectors]]
 id = "cal-com"
-label = "Cal.com MCP"
+label = "Cal.com"
 vendor = "Cal.com"
 category = "productivity"
 url = "https://mcp.cal.com/mcp"
@@ -3236,7 +3214,7 @@ note = "Open-source scheduling; DCR."
 
 [[connectors]]
 id = "calendly"
-label = "Calendly MCP"
+label = "Calendly"
 vendor = "Calendly"
 category = "productivity"
 url = "https://mcp.calendly.com"
@@ -3247,7 +3225,7 @@ note = "Scheduling links and events; DCR."
 
 [[connectors]]
 id = "evernote"
-label = "Evernote MCP"
+label = "Evernote"
 vendor = "Evernote (Bending Spoons)"
 category = "productivity"
 url = "https://mcp.evernote.com/mcp"
@@ -3258,7 +3236,7 @@ note = "Notes; DCR."
 
 [[connectors]]
 id = "fireflies"
-label = "Fireflies.ai MCP"
+label = "Fireflies.ai"
 vendor = "Fireflies.ai"
 category = "productivity"
 url = "https://api.fireflies.ai/mcp"
@@ -3291,7 +3269,7 @@ note = "Google-managed Workspace MCP; OAuth client from Google Cloud project req
 
 [[connectors]]
 id = "granola"
-label = "Granola MCP"
+label = "Granola"
 vendor = "Granola"
 category = "productivity"
 url = "https://mcp.granola.ai/mcp"
@@ -3323,7 +3301,7 @@ note = "401 without WWW-Authenticate; OAuth metadata at origin"
 
 [[connectors]]
 id = "mem"
-label = "Mem MCP"
+label = "Mem"
 vendor = "Mem"
 category = "productivity"
 url = "https://mcp.mem.ai/mcp"
@@ -3334,7 +3312,7 @@ note = "AI notes; DCR."
 
 [[connectors]]
 id = "microsoft-work-iq"
-label = "Microsoft 365 Work IQ (Outlook, Teams, OneDrive, SharePoint…"
+label = "Microsoft 365 Work IQ"
 vendor = "Microsoft"
 category = "productivity"
 url = "https://workiq.svc.cloud.microsoft/mcp"
@@ -3345,7 +3323,7 @@ note = "Single M365 endpoint (mail, calendar, Teams, files, Copilot); Entra ID a
 
 [[connectors]]
 id = "microsoft-enterprise-graph"
-label = "Microsoft Graph Enterprise MCP"
+label = "Microsoft Graph Enterprise"
 vendor = "Microsoft"
 category = "productivity"
 url = "https://mcp.svc.cloud.microsoft/enterprise"
@@ -3356,7 +3334,7 @@ note = "Read-only tenant/directory queries via Microsoft Graph (admin-oriented);
 
 [[connectors]]
 id = "notion"
-label = "Notion MCP"
+label = "Notion"
 vendor = "Notion"
 category = "productivity"
 url = "https://mcp.notion.com/mcp"
@@ -3367,7 +3345,7 @@ note = "Pages, databases, tasks; DCR."
 
 [[connectors]]
 id = "otter"
-label = "Otter.ai MCP"
+label = "Otter.ai"
 vendor = "Otter.ai"
 category = "productivity"
 url = "https://mcp.otter.ai/mcp"
@@ -3378,7 +3356,7 @@ note = "Meeting transcripts; DCR."
 
 [[connectors]]
 id = "philips-hue"
-label = "Philips Hue MCP"
+label = "Philips Hue"
 vendor = "Signify"
 category = "productivity"
 url = "https://mcp.meethue.com/mcp"
@@ -3389,7 +3367,7 @@ note = "Lights and scenes via Hue cloud; DCR."
 
 [[connectors]]
 id = "raindrop"
-label = "Raindrop.io MCP"
+label = "Raindrop.io"
 vendor = "Raindrop.io"
 category = "productivity"
 url = "https://api.raindrop.io/rest/v2/ai/mcp"
@@ -3400,7 +3378,7 @@ note = "Bookmarks; DCR."
 
 [[connectors]]
 id = "readwise"
-label = "Readwise MCP"
+label = "Readwise"
 vendor = "Readwise"
 category = "productivity"
 url = "https://mcp2.readwise.io/mcp"
@@ -3411,7 +3389,7 @@ note = "Highlights and Reader documents; DCR."
 
 [[connectors]]
 id = "smartthings"
-label = "SmartThings MCP"
+label = "SmartThings"
 vendor = "Samsung"
 category = "productivity"
 url = "https://mcp.smartthings.com/mcp"
@@ -3453,7 +3431,7 @@ docs = "https://help.ticktick.com/articles/7438129581631995904"
 
 [[connectors]]
 id = "todoist"
-label = "Todoist MCP"
+label = "Todoist"
 vendor = "Doist"
 category = "productivity"
 url = "https://ai.todoist.net/mcp"
@@ -3613,7 +3591,7 @@ note = "Wrike MCP v2 (streamable HTTP); 401 without WWW-Authenticate, PRM at /.w
 
 [[connectors]]
 id = "apify"
-label = "Apify MCP"
+label = "Apify"
 vendor = "Apify"
 category = "search"
 url = "https://mcp.apify.com"
@@ -3624,7 +3602,7 @@ note = "OAuth with DCR, or Apify API token as Bearer. Thousands of Actors (scrap
 
 [[connectors]]
 id = "bright-data"
-label = "Bright Data MCP"
+label = "Bright Data"
 vendor = "Bright Data"
 category = "search"
 url = "https://mcp.brightdata.com/mcp"
@@ -3635,7 +3613,7 @@ note = "OAuth with DCR, or ?token= API token."
 
 [[connectors]]
 id = "browser-use"
-label = "Browser Use Cloud MCP"
+label = "Browser Use Cloud"
 vendor = "Browser Use"
 category = "search"
 url = "https://api.browser-use.com/v3/mcp"
@@ -3646,7 +3624,7 @@ note = "API key header (X-Browser-Use-API-Key); initialize open."
 
 [[connectors]]
 id = "browserbase"
-label = "Browserbase MCP"
+label = "Browserbase"
 vendor = "Browserbase"
 category = "search"
 url = "https://mcp.browserbase.com/mcp"
@@ -3657,7 +3635,7 @@ note = "Stagehand browser automation; Browserbase API key."
 
 [[connectors]]
 id = "browserless"
-label = "Browserless MCP"
+label = "Browserless"
 vendor = "Browserless"
 category = "search"
 url = "https://mcp.browserless.io/mcp"
@@ -3668,7 +3646,7 @@ note = "Hosted headless Chrome."
 
 [[connectors]]
 id = "cloudflare-browser"
-label = "Cloudflare Browser Rendering MCP"
+label = "Cloudflare Browser Rendering"
 vendor = "Cloudflare"
 category = "search"
 url = "https://browser.mcp.cloudflare.com/mcp"
@@ -3679,7 +3657,7 @@ note = "Fetch pages, screenshots, markdown via Cloudflare account."
 
 [[connectors]]
 id = "decodo"
-label = "Decodo MCP"
+label = "Decodo"
 vendor = "Decodo (ex-Smartproxy)"
 category = "search"
 url = "https://mcp.decodo.com/mcp"
@@ -3690,7 +3668,7 @@ note = "Web scraping API."
 
 [[connectors]]
 id = "diffbot"
-label = "Diffbot MCP"
+label = "Diffbot"
 vendor = "Diffbot"
 category = "search"
 url = "https://mcp.diffbot.com/mcp"
@@ -3711,7 +3689,7 @@ note = "Works keyless with rate limits; optional ?exaApiKey= for higher limits."
 
 [[connectors]]
 id = "firecrawl"
-label = "Firecrawl MCP"
+label = "Firecrawl"
 vendor = "Firecrawl"
 category = "search"
 url = "https://mcp.firecrawl.dev/v2/mcp"
@@ -3722,7 +3700,7 @@ note = "API key as Bearer or in path https://mcp.firecrawl.dev/{KEY}/v2/mcp."
 
 [[connectors]]
 id = "jina"
-label = "Jina AI MCP"
+label = "Jina AI"
 vendor = "Jina AI (Elastic)"
 category = "search"
 url = "https://mcp.jina.ai/v1"
@@ -3733,7 +3711,7 @@ note = "Search, reader, embeddings. Optional Jina API key as Bearer; works keyle
 
 [[connectors]]
 id = "kagi"
-label = "Kagi MCP"
+label = "Kagi"
 vendor = "Kagi"
 category = "search"
 url = "https://mcp.kagi.com/mcp"
@@ -3744,7 +3722,7 @@ note = "Kagi API key as Bearer."
 
 [[connectors]]
 id = "kernel"
-label = "Kernel MCP"
+label = "Kernel"
 vendor = "Kernel"
 category = "search"
 url = "https://mcp.onkernel.com/mcp"
@@ -3755,7 +3733,7 @@ note = "Cloud browsers for agents."
 
 [[connectors]]
 id = "linkup"
-label = "Linkup MCP"
+label = "Linkup"
 vendor = "Linkup"
 category = "search"
 url = "https://mcp.linkup.so/mcp"
@@ -3766,7 +3744,7 @@ note = "API key via ?apiKey= or Bearer. Returns HTTP 200 with JSON-RPC error 're
 
 [[connectors]]
 id = "oxylabs"
-label = "Oxylabs MCP"
+label = "Oxylabs"
 vendor = "Oxylabs"
 category = "search"
 url = "https://mcp.oxylabs.io/mcp"
@@ -3777,7 +3755,7 @@ note = "Web Scraper API credentials; initialize open."
 
 [[connectors]]
 id = "parallel-search"
-label = "Parallel Search MCP"
+label = "Parallel Search"
 vendor = "Parallel Web Systems"
 category = "search"
 url = "https://search-mcp.parallel.ai/mcp"
@@ -3788,7 +3766,7 @@ note = "OAuth (DCR via platform.parallel.ai) or API key Bearer. 401 without WWW-
 
 [[connectors]]
 id = "parallel-task"
-label = "Parallel Task MCP"
+label = "Parallel Task"
 vendor = "Parallel Web Systems"
 category = "search"
 url = "https://task-mcp.parallel.ai/mcp"
@@ -3799,7 +3777,7 @@ note = "Deep research / batch tasks."
 
 [[connectors]]
 id = "perplexity"
-label = "Perplexity MCP"
+label = "Perplexity"
 vendor = "Perplexity"
 category = "search"
 url = "https://api.perplexity.ai/mcp"
@@ -3810,7 +3788,7 @@ note = "OAuth with DCR; API key as Bearer also accepted."
 
 [[connectors]]
 id = "scrapegraph"
-label = "ScrapeGraphAI MCP"
+label = "ScrapeGraphAI"
 vendor = "ScrapeGraphAI"
 category = "search"
 url = "https://mcp.scrapegraphai.com/mcp"
@@ -3821,7 +3799,7 @@ note = "Resource metadata served from an onrender.com host."
 
 [[connectors]]
 id = "scraperapi"
-label = "ScraperAPI MCP"
+label = "ScraperAPI"
 vendor = "ScraperAPI"
 category = "search"
 url = "https://mcp.scraperapi.com/mcp"
@@ -3832,7 +3810,7 @@ note = "API key; 401 without WWW-Authenticate."
 
 [[connectors]]
 id = "scrapfly"
-label = "Scrapfly MCP"
+label = "Scrapfly"
 vendor = "Scrapfly"
 category = "search"
 url = "https://mcp.scrapfly.io/mcp"
@@ -3843,7 +3821,7 @@ note = "OAuth with DCR (AS metadata at trailing-slash path)."
 
 [[connectors]]
 id = "scrapingbee"
-label = "ScrapingBee MCP"
+label = "ScrapingBee"
 vendor = "ScrapingBee"
 category = "search"
 url = "https://mcp.scrapingbee.com/mcp"
@@ -3854,7 +3832,7 @@ note = "API key (?api_key=); initialize open."
 
 [[connectors]]
 id = "serpapi"
-label = "SerpApi MCP"
+label = "SerpApi"
 vendor = "SerpApi"
 category = "search"
 url = "https://mcp.serpapi.com/mcp"
@@ -3865,7 +3843,7 @@ note = "Google and other SERPs. Key in path https://mcp.serpapi.com/{KEY}/mcp or
 
 [[connectors]]
 id = "spider"
-label = "Spider MCP"
+label = "Spider"
 vendor = "Spider"
 category = "search"
 url = "https://mcp.spider.cloud/mcp"
@@ -3876,7 +3854,7 @@ note = "Crawling/scraping."
 
 [[connectors]]
 id = "steel"
-label = "Steel MCP"
+label = "Steel"
 vendor = "Steel"
 category = "search"
 url = "https://mcp.steel.dev/mcp"
@@ -3887,7 +3865,7 @@ note = "Steel API key as Bearer. OAuth also offered but AS supports only client 
 
 [[connectors]]
 id = "tavily"
-label = "Tavily MCP"
+label = "Tavily"
 vendor = "Tavily"
 category = "search"
 url = "https://mcp.tavily.com/mcp/"
@@ -3898,7 +3876,7 @@ note = "OAuth with DCR, or ?tavilyApiKey= in URL."
 
 [[connectors]]
 id = "valyu"
-label = "Valyu MCP"
+label = "Valyu"
 vendor = "Valyu"
 category = "search"
 url = "https://mcp.valyu.ai/mcp"
@@ -3909,7 +3887,7 @@ note = "Web + proprietary data search; OAuth (Supabase-hosted AS) with DCR, or A
 
 [[connectors]]
 id = "you-com"
-label = "You.com MCP"
+label = "You.com"
 vendor = "You.com"
 category = "search"
 url = "https://api.you.com/mcp"
@@ -3920,7 +3898,7 @@ note = "OAuth with DCR; API key Bearer also possible."
 
 [[connectors]]
 id = "zenrows"
-label = "ZenRows MCP"
+label = "ZenRows"
 vendor = "ZenRows"
 category = "search"
 url = "https://mcp.zenrows.com/mcp"
@@ -4104,7 +4082,7 @@ docs = "https://typefully.com/"
 
 [[connectors]]
 id = "x"
-label = "X API (xmcp)"
+label = "X API"
 vendor = "X"
 category = "social"
 url = "https://api.x.com/mcp"
@@ -4126,7 +4104,7 @@ note = "No DCR; needs Box OAuth app (client id/secret); admin must enable Box MC
 
 [[connectors]]
 id = "dropbox"
-label = "Dropbox (incl. Dropbox Sign)"
+label = "Dropbox"
 vendor = "Dropbox"
 category = "storage"
 url = "https://mcp.dropbox.com/mcp"
@@ -4307,7 +4285,7 @@ note = "Per-account URL; probed on a sample subdomain: 401 without WWW-Authentic
 
 [[connectors]]
 id = "duffel"
-label = "Duffel MCP"
+label = "Duffel"
 vendor = "Duffel"
 category = "travel"
 url = "https://mcp.duffel.com/mcp"
