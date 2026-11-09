@@ -57,7 +57,7 @@ pub use decks::{DeckAttachment, DeckBrief, NewDeck, render_html as render_deck};
 pub use holdings::{HoldingNotes, NewThesis, ReminderRequest, ReminderResult};
 pub use layers::{
     ConnectorView, LayerView, ModelView, ProviderView, RouteView, SettingsView, StoredProvider,
-    StoredRoute, StoredSwitch,
+    StoredRoute, StoredSwitch, ValueView,
 };
 pub use pipeline::{DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult, median};
 pub use posts::{
@@ -677,6 +677,7 @@ impl utoipa::Modify for SecurityAddon {
         ready::feed, ready::dismiss_draft, ready::snooze, ready::unsnooze, ready::rewrite,
         ready::edit_text, ready::run_basis, settings::get_budget, settings::set_budget,
         settings::models,
+        layers::values, layers::put_value, layers::delete_value,
         layers::presets, layers::effective, layers::entries, layers::changes,
         layers::put_provider, layers::delete_provider, layers::put_model, layers::delete_model,
         layers::put_route, layers::delete_route, layers::put_connector, layers::delete_connector,
@@ -751,7 +752,7 @@ impl utoipa::Modify for SecurityAddon {
         DeckBrief, DeckAttachment, lighthouse_desk::Variant, NewTemplate, ComposeRequest, Composed,
         DealSuggestion, SimilarDeal, TopDealsRequest, TopDealsResult, NewThesis, HoldingNotes, ReminderRequest,
         ReminderResult,
-        SettingsView, ProviderView, ModelView, RouteView, ConnectorView, LayerView, StoredProvider,
+        ValueView, SettingsView, ProviderView, ModelView, RouteView, ConnectorView, LayerView, StoredProvider,
         StoredRoute, StoredSwitch, lighthouse_settings::Layer, lighthouse_settings::ProviderInput,
         lighthouse_settings::ModelInput, lighthouse_settings::RouteInput,
         lighthouse_settings::ConnectorInput, lighthouse_settings::SwitchInput,
@@ -836,6 +837,11 @@ pub fn router_with(state: Instance, extensions: Extensions) -> Router {
         )
         .route("/settings/models", get(settings::models))
         .route("/settings/presets", get(layers::presets))
+        .route("/settings/values", get(layers::values))
+        .route(
+            "/settings/{layer}/values/{key}",
+            put(layers::put_value).delete(layers::delete_value),
+        )
         .route("/settings/effective", get(layers::effective))
         .route("/settings/{layer}/entries", get(layers::entries))
         .route("/settings/{layer}/changes", get(layers::changes))

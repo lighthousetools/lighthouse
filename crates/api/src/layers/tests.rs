@@ -623,3 +623,128 @@ async fn entitlements_can_refuse_changes() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
+
+#[tokio::test]
+async fn single_settings_resolve_per_person() {
+    let harness = harness(true, false).await;
+    let app = &harness.app;
+    let owner = signed_in(app).await;
+    let robin = member(app, &owner, "robin@example.com").await;
+    let (status, _) = put(
+        app,
+        &robin,
+        "/settings/tenant/values/timezone",
+        json!("Asia/Tokyo"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = put(
+        app,
+        &owner,
+        "/settings/tenant/values/timezone",
+        json!("Asia/Tokyo"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (status, _) = put(
+        app,
+        &robin,
+        "/settings/me/values/timezone",
+        json!("America/Lima"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = put(app, &robin, "/settings/me/values/language", json!("de")).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let for_robin = get(app, &robin, "/settings/values").await;
+    let zone = find(&for_robin, "key", "timezone");
+    assert_eq!(
+        (zone["value"].as_str(), zone["source"].as_str()),
+        (Some("America/Lima"), Some("personal"))
+    );
+    assert_eq!(find(&for_robin, "key", "language")["value"], "de");
+    let for_owner = get(app, &owner, "/settings/values").await;
+    assert_eq!(find(&for_owner, "key", "timezone")["source"], "tenant");
+    assert!(
+        for_owner
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|value| value["key"] != "language")
+    );
+    assert_eq!(get(app, &robin, "/me").await["timezone"], "America/Lima");
+    assert_eq!(get(app, &owner, "/me").await["timezone"], "Asia/Tokyo");
+    let (status, _) = call(app, "DELETE", "/settings/me/values/timezone", Some(&robin)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(get(app, &robin, "/me").await["timezone"], "Asia/Tokyo");
+    let (status, _) = call(app, "DELETE", "/settings/me/values/timezone", Some(&robin)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    for (key, value, expected) in [
+        (
+            "timezone",
+            json!("Mars/Base"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        ("language", json!("fr"), StatusCode::UNPROCESSABLE_ENTITY),
+        ("server.bind", json!("0.0.0.0"), StatusCode::NOT_FOUND),
+        (
+            "notifications",
+            json!({"deliver": ["mail:someone@example.com"]}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "weather",
+            json!({"latitude": 1.0, "longitude": 1.0, "base_url": "https://x.example.com"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let (status, body) = put(app, &robin, &format!("/settings/me/values/{key}"), value).await;
+        assert_eq!(status, expected, "{key}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn the_talk_agent_is_each_persons_choice() {
+    let harness = harness(true, false).await;
+    let app = &harness.app;
+    let owner = signed_in(app).await;
+    let (status, body) = send(
+        app,
+        "POST",
+        "/talk/threads",
+        Some(&owner),
+        Some(json!({"title": "Hi"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let thread = json_of(&body)["id"].as_str().unwrap().to_owned();
+    let uri = format!("/talk/threads/{thread}/messages");
+    // Without a Talk agent, the Second Brain answers at once.
+    let (status, body) = send(
+        app,
+        "POST",
+        &uri,
+        Some(&owner),
+        Some(json!({"text": "hello"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = put(
+        app,
+        &owner,
+        "/settings/me/values/talk.agent",
+        json!("known"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // With one, a run answers later.
+    let (status, body) = send(
+        app,
+        "POST",
+        &uri,
+        Some(&owner),
+        Some(json!({"text": "again"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+}

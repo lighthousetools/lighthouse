@@ -143,6 +143,7 @@ pub struct Outcomes {
     agents: Arc<AgentRegistry>,
     zone: chrono_tz::Tz,
     weather: Option<lighthouse_config::WeatherConfig>,
+    settings: Option<lighthouse_settings::TenantSettings>,
 }
 
 impl std::fmt::Debug for Outcomes {
@@ -173,6 +174,9 @@ pub struct OutcomeParts {
     pub zone: chrono_tz::Tz,
     /// Where the owner is, for the weather in briefs.
     pub weather: Option<lighthouse_config::WeatherConfig>,
+    /// Settings of the tenant and its members. Without them, the values above
+    /// apply to everyone.
+    pub settings: Option<lighthouse_settings::TenantSettings>,
 }
 
 impl Outcomes {
@@ -188,7 +192,35 @@ impl Outcomes {
             agents: parts.agents,
             zone: parts.zone,
             weather: parts.weather,
+            settings: parts.settings,
         }
+    }
+
+    /// What to push about the work of a user, or of the tenant for `None`.
+    fn pushes_for(&self, user: Option<Uuid>) -> Pushes {
+        self.settings
+            .as_ref()
+            .and_then(|settings| {
+                let effective = settings.effective(user);
+                let (value, _) = effective.values.get(lighthouse_settings::NOTIFICATIONS)?;
+                let config: NotificationsConfig = serde_json::from_value(value.clone()).ok()?;
+                Pushes::from_config(&config).ok()
+            })
+            .unwrap_or_else(|| self.pushes.clone())
+    }
+
+    /// Where a user is, for the weather in their briefs.
+    fn weather_for(&self, user: Option<Uuid>) -> Option<lighthouse_config::WeatherConfig> {
+        let Some(settings) = &self.settings else {
+            return self.weather.clone();
+        };
+        let effective = settings.effective(user);
+        let (value, _) = effective.values.get(lighthouse_settings::WEATHER)?;
+        let mut place: lighthouse_config::WeatherConfig =
+            serde_json::from_value(value.clone()).ok()?;
+        // The weather service stays what the instance configured.
+        place.base_url = self.weather.as_ref().and_then(|own| own.base_url.clone());
+        Some(place)
     }
 
     /// Warns when this month's model costs reach the share of the budget the
@@ -251,9 +283,9 @@ impl Outcomes {
             .unwrap_or_default()
     }
 
-    async fn push(&self, subject: &str, markdown: &str) {
+    async fn push(&self, pushes: &Pushes, subject: &str, markdown: &str) {
         let subject = format!("{SUBJECT_PREFIX}: {subject}");
-        for target in &self.pushes.targets {
+        for target in &pushes.targets {
             if let Err(error) = self.notifier.deliver(target, &subject, markdown).await {
                 tracing::warn!(%error, "cannot push to the owner");
             }
@@ -270,12 +302,13 @@ impl Outcomes {
                    "new": raised.is_new}),
         );
         let notable = raised.is_new || raised.escalated;
-        if notable && alert.severity >= self.pushes.alerts {
+        let pushes = self.pushes_for(None);
+        if notable && alert.severity >= pushes.alerts {
             let mut text = format!("**{}**", alert.title);
             if let Some(detail) = &alert.detail {
                 text.push_str(&format!("\n\n{detail}"));
             }
-            self.push(&alert.title, &text).await;
+            self.push(&pushes, &alert.title, &text).await;
         }
         Ok(())
     }
@@ -296,6 +329,8 @@ impl Outcomes {
         let record = detail.run;
         let agent = record.agent_id.clone();
         let name = self.agent_name(&agent);
+        let user = self.audit.run_user(run).await?;
+        let pushes = self.pushes_for(user);
         if record.status == "waiting" {
             let tools: Vec<String> = self
                 .audit
@@ -309,7 +344,7 @@ impl Outcomes {
                 "run.waiting",
                 json!({"run_id": run, "agent_id": agent, "proposals": tools.len()}),
             );
-            if self.pushes.decisions && !tools.is_empty() {
+            if pushes.decisions && !tools.is_empty() {
                 let text = format!(
                     "{name} waits for your decision on {}: {}.",
                     if tools.len() == 1 {
@@ -319,7 +354,8 @@ impl Outcomes {
                     },
                     tools.join(", ")
                 );
-                self.push(&format!("{name} needs a decision"), &text).await;
+                self.push(&pushes, &format!("{name} needs a decision"), &text)
+                    .await;
             }
             return Ok(Some(record));
         }
@@ -350,7 +386,7 @@ impl Outcomes {
         if record.status == "succeeded" {
             if let Some(mut document) = self.desk.run_document(run).await? {
                 if let (Some(place), true) = (
-                    &self.weather,
+                    &self.weather_for(user),
                     document.kind == lighthouse_desk::MORNING_BRIEF
                         && document.content.weather.is_none(),
                 ) && let Some(weather) = crate::weather::today(place).await
@@ -373,8 +409,9 @@ impl Outcomes {
                 self.resolve_alerts(&format!("connector:{connector}"))
                     .await?;
             }
-            if self.pushes.done {
+            if pushes.done {
                 self.push(
+                    &pushes,
                     &format!("{name} is done"),
                     &format!("{name} finished its run."),
                 )
@@ -487,6 +524,7 @@ mod tests {
             agents,
             zone: chrono_tz::UTC,
             weather: None,
+            settings: None,
         });
         Fixture {
             outcomes,
@@ -589,6 +627,70 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn pushes_and_places_follow_the_person_a_run_works_for() {
+        let mut fixture = fixture(loud()).await;
+        let sam = Uuid::now_v7();
+        lighthouse_store::sqlx::query(
+            "INSERT INTO users (id, email, name) VALUES ($1, 'sam@example.com', 'Sam')",
+        )
+        .bind(sam)
+        .execute(fixture.store.pool())
+        .await
+        .unwrap();
+        let settings = lighthouse_settings::TenantSettings::open(
+            fixture.store.clone(),
+            TenantId::DEFAULT,
+            Arc::default(),
+            lighthouse_settings::Options::default(),
+        )
+        .await
+        .unwrap();
+        settings
+            .set_value(
+                None,
+                None,
+                lighthouse_settings::NOTIFICATIONS,
+                &json!({"deliver": ["owner"], "done": false}),
+            )
+            .await
+            .unwrap();
+        settings
+            .set_value(
+                Some(sam),
+                Some(sam),
+                lighthouse_settings::NOTIFICATIONS,
+                &json!({"deliver": ["owner"], "done": true}),
+            )
+            .await
+            .unwrap();
+        settings
+            .set_value(
+                Some(sam),
+                Some(sam),
+                lighthouse_settings::WEATHER,
+                &json!({"latitude": 1.0, "longitude": 2.0}),
+            )
+            .await
+            .unwrap();
+        fixture.outcomes.settings = Some(settings);
+        let run = finished(&fixture.audit, "brief", RunStatus::Succeeded, "").await;
+        fixture.outcomes.after_run(run).await.unwrap();
+        assert!(
+            fixture.pushed.0.lock().unwrap().is_empty(),
+            "the tenant wants none"
+        );
+        let as_sam = fixture.audit.for_user(Some(sam));
+        let run = finished(&as_sam, "brief", RunStatus::Succeeded, "").await;
+        fixture.outcomes.after_run(run).await.unwrap();
+        assert_eq!(fixture.pushed.0.lock().unwrap().len(), 1, "Sam wants them");
+        assert_eq!(
+            fixture.outcomes.weather_for(Some(sam)).unwrap().longitude,
+            2.0
+        );
+        assert!(fixture.outcomes.weather_for(None).is_none());
     }
 
     #[tokio::test]

@@ -181,6 +181,17 @@ pub struct LayerView {
     pub switches: Vec<StoredSwitch>,
 }
 
+/// A single setting as it applies to the caller.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct ValueView {
+    /// `talk.agent`, `notifications`, `weather`, `timezone` or `language`.
+    pub key: String,
+    /// The value. Its shape depends on the key, see `docs/api.md`.
+    pub value: serde_json::Value,
+    /// Where it comes from.
+    pub source: Layer,
+}
+
 /// Which layer a request touches.
 #[derive(Deserialize)]
 pub(crate) struct ChangesQuery {
@@ -810,6 +821,85 @@ pub(crate) async fn switch_connector(
     state
         .settings
         .switch_connector(owner, caller.user, &name, input.enabled)
+        .await
+        .map_err(settings_error)?;
+    changed(&state);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Lists the single settings that apply to the caller, each with its source.
+#[utoipa::path(
+    get,
+    path = "/settings/values",
+    responses((status = 200, body = Vec<ValueView>)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn values(Scoped(state): Scoped, caller: Caller) -> Json<Vec<ValueView>> {
+    let effective = state.settings.effective(caller.user);
+    Json(
+        lighthouse_settings::VALUE_KEYS
+            .iter()
+            .filter_map(|key| {
+                effective.values.get(*key).map(|(value, source)| ValueView {
+                    key: (*key).to_owned(),
+                    value: value.clone(),
+                    source: *source,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Sets a single setting in a layer: `talk.agent`, `notifications`, `weather`,
+/// `timezone` or `language`.
+#[utoipa::path(
+    put,
+    path = "/settings/{layer}/values/{key}",
+    params(("layer" = String, Path, description = "`tenant` or `me`"),
+        ("key" = String, Path, description = "Setting key")),
+    request_body = serde_json::Value,
+    responses((status = 204), (status = 404, description = "Unknown key"),
+        (status = 422, description = "Invalid value")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn put_value(
+    State(instance): State<Instance>,
+    Scoped(state): Scoped,
+    caller: Caller,
+    Path((layer, key)): Path<(String, String)>,
+    Json(value): Json<serde_json::Value>,
+) -> Result<StatusCode, ApiError> {
+    let owner = may_change(&instance, &caller, &layer, "value").await?;
+    let value =
+        lighthouse_settings::check_value(&key, &value, owner.is_some()).map_err(settings_error)?;
+    state
+        .settings
+        .set_value(owner, caller.user, &key, &value)
+        .await
+        .map_err(settings_error)?;
+    changed(&state);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deletes a single setting of a layer, so the lower layer's applies again.
+#[utoipa::path(
+    delete,
+    path = "/settings/{layer}/values/{key}",
+    params(("layer" = String, Path, description = "`tenant` or `me`"),
+        ("key" = String, Path, description = "Setting key")),
+    responses((status = 204), (status = 404, description = "Not in this layer")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn delete_value(
+    State(instance): State<Instance>,
+    Scoped(state): Scoped,
+    caller: Caller,
+    Path((layer, key)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let owner = may_change(&instance, &caller, &layer, "value").await?;
+    state
+        .settings
+        .delete_value(owner, caller.user, &key)
         .await
         .map_err(settings_error)?;
     changed(&state);

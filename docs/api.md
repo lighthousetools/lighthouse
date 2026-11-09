@@ -326,8 +326,20 @@ personal layer, and the admin token has none.
 | `PUT /settings/{layer}/connectors/{name}` | Adds or replaces a connector over streamable HTTP: `{"url", "auth": "none", "bearer" or "oauth", "client_id", "scopes", "read_tools", "draft_tools", "enabled"}` |
 | `DELETE /settings/{layer}/connectors/{name}` | Deletes a connector of the layer |
 | `PUT /settings/{layer}/connectors/{name}/enabled` | `{"enabled"}`: switches a connector of the layer, or one of a lower layer for this layer only |
+| `GET /settings/values` | The single settings that apply to the caller, each with `key`, `value` and `source` |
+| `PUT` and `DELETE /settings/{layer}/values/{key}` | Sets or removes a single setting of a layer, see below |
 | `GET /me/credentials`, `PUT` and `DELETE /me/credentials/{name}` | The caller's own credentials in this tenant, such as their own provider key or a connector's bearer token. Values are never returned |
 | `POST /connectors/{name}/connect?scope=personal` | Starts the OAuth flow for the caller's own account. Without `scope`, an owner or admin connects the tenant's shared account; personal connectors always connect personally |
+
+Single settings take the value as the JSON body:
+
+| Key | Value | Effect |
+|---|---|---|
+| `talk.agent` | An agent ID, or `null` so the Second Brain answers | Answers the person's conversations |
+| `notifications` | `{"deliver", "decisions", "done", "alerts"}` as in `[notifications]` | Pushes about a person's runs follow their setting, alerts and work without a user the tenant's. In a personal layer, `deliver` takes `owner` and `slack:<alias>`, not other mail addresses |
+| `weather` | `{"latitude", "longitude", "location"}` | The weather in a person's brief. The weather service itself stays in `lighthouse.toml` |
+| `timezone` | An IANA name | The zone `GET /me` reports, for the apps. Schedules and months of the budget keep the zone of the server |
+| `language` | `en` or `de` | Kept for the apps, so a person's language follows them to other devices |
 
 Names are lower-case identifiers of up to 40 characters. Tasks are the ones the server routes (`text`). Prices are
 from 0 to 10000 EUR per million tokens. URLs must be public `https` URLs unless `[tenancy] allow_private_endpoints`

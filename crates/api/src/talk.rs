@@ -201,7 +201,7 @@ pub(crate) async fn send(
     let history = state.desk.messages(id).await.map_err(desk_error)?;
     let earlier = transcript(&history, HISTORY);
     // A refused run or question leaves the conversation as it was.
-    let run = match &state.talk_agent {
+    let run = match &talk_agent(&state, caller.user) {
         Some(agent) => {
             let context = format!(
                 "This run answers the owner in a conversation. Answer the latest message.\n\n\
@@ -279,6 +279,16 @@ pub(crate) async fn send(
     };
     changed(&state, id);
     Ok((status, Json(Exchange { question, answer })))
+}
+
+/// The agent that answers a person's conversations: their own choice, the
+/// tenant's, then the instance's. Without one, the Second Brain answers.
+fn talk_agent(state: &ApiState, user: Option<uuid::Uuid>) -> Option<String> {
+    let effective = state.settings.effective(user);
+    match effective.values.get(lighthouse_settings::TALK_AGENT) {
+        Some((value, _)) => value.as_str().map(str::to_owned),
+        None => state.talk_agent.clone(),
+    }
 }
 
 #[cfg(test)]

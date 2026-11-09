@@ -288,7 +288,13 @@ pub(crate) async fn me(
         name: user
             .as_ref()
             .map_or_else(String::new, |user| user.name.clone()),
-        timezone: state.zone.name().to_owned(),
+        timezone: state
+            .settings
+            .effective(caller.user)
+            .values
+            .get(lighthouse_settings::TIMEZONE)
+            .and_then(|(zone, _)| zone.as_str().map(str::to_owned))
+            .unwrap_or_else(|| state.zone.name().to_owned()),
         user_id: caller.user,
         email: caller
             .user

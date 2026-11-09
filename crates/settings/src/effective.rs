@@ -28,7 +28,7 @@ impl Defaults {
             providers: config.providers.clone(),
             routing: config.routing.clone(),
             connectors: config.connectors.clone(),
-            values: BTreeMap::new(),
+            values: crate::values::instance_values(config),
         }
     }
 

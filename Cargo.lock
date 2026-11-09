@@ -2260,6 +2260,7 @@ name = "lighthouse-settings"
 version = "0.2.0"
 dependencies = [
  "chrono",
+ "chrono-tz",
  "lighthouse-config",
  "lighthouse-core",
  "lighthouse-router",

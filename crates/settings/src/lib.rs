@@ -23,6 +23,7 @@ mod handle;
 mod presets;
 mod store;
 mod validate;
+mod values;
 
 pub use effective::{
     Defaults, Effective, EffectiveConnector, EffectiveModel, EffectiveProvider, EffectiveRoute,
@@ -31,6 +32,7 @@ pub use handle::{Options, TenantSettings};
 pub use presets::{PresetConnector, PresetModel, PresetProvider, Presets, presets};
 pub use store::{ChangeRecord, SettingsStore};
 pub use validate::{KNOWN_TASKS, is_name};
+pub use values::{LANGUAGE, NOTIFICATIONS, TALK_AGENT, TIMEZONE, VALUE_KEYS, WEATHER, check_value};
 
 use lighthouse_config::{ConnectorAuth, ModelConfig, ProviderKind, RouteConfig};
 use serde::{Deserialize, Serialize};

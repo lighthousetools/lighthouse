@@ -1106,6 +1106,7 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         agents: agents.clone(),
         zone,
         weather: config.weather.clone(),
+        settings: Some(settings.clone()),
     }));
     let automation_files = Arc::new(AutomationRegistry::load(
         config.paths.automations.clone(),

@@ -173,6 +173,15 @@ Merge rules:
   tenant can switch an instance connector off for itself, and a person can switch an instance or tenant connector off
   for themselves.
 
+Single settings follow the same layers: `[talk] agent`, `[notifications]`, the place of `[weather]` and the time zone
+shown in the apps, plus the language of the apps, which has no entry in the file. See
+[api.md](api.md#providers-models-and-connectors) for their values. Everything operational stays in the file: `[server]`,
+`[database]`, `[vault]`, `[tenancy]`, SMTP, `[paths]`, the Brain's directory, the weather service's `base_url` and
+`[extensions]`.
+
+Not in layers yet, and still only in the file: `[sources]`, `[publishing]`, the models of `[brain]`, `slack_channels` of
+`[delivery]` and `[owner] accounts`. Agents, automations and skills stay files per tenant.
+
 Keys and tokens never sit in these settings. They stay in the vault:
 
 - A provider's key is read from the person's own vault, then the tenant's, then the instance's if
