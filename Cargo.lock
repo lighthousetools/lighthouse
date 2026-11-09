@@ -1929,6 +1929,7 @@ dependencies = [
  "lighthouse-sync",
  "lighthouse-vault",
  "pulldown-cmark",
+ "rmcp",
  "secrecy",
  "serde",
  "serde_json",

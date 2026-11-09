@@ -19,6 +19,7 @@ mod documents;
 mod holdings;
 pub mod hooks;
 mod layers;
+mod mcp;
 mod memory;
 mod organizations;
 mod pipeline;
@@ -1134,7 +1135,7 @@ pub fn router_with(state: Instance, extensions: Extensions) -> Router {
     let admin = Router::new().route("/auth/setup", post(auth::setup)).layer(
         middleware::from_fn_with_state(state.clone(), auth::require_admin),
     );
-    Router::new()
+    let api = Router::new()
         .route("/health", get(health))
         .route("/openapi.json", get(openapi))
         .route("/oauth/callback", get(oauth_callback))
@@ -1148,7 +1149,15 @@ pub fn router_with(state: Instance, extensions: Extensions) -> Router {
         .merge(extensions.public)
         .merge(signed_in)
         .merge(admin)
-        .with_state(state)
+        .with_state(state.clone());
+    let mcp = Router::new()
+        .route_service("/mcp", mcp::service(api.clone()))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_auth,
+        ))
+        .with_state(state);
+    api.merge(mcp)
 }
 
 #[cfg(test)]

@@ -28,6 +28,7 @@ lighthouse-settings.workspace = true
 lighthouse-sync.workspace = true
 lighthouse-vault.workspace = true
 pulldown-cmark.workspace = true
+rmcp.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -35,6 +36,7 @@ subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
+tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 utoipa.workspace = true
@@ -43,4 +45,3 @@ uuid.workspace = true
 [dev-dependencies]
 base64.workspace = true
 lighthouse-store = { workspace = true, features = ["testing"] }
-tower.workspace = true

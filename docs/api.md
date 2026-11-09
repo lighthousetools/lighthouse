@@ -385,3 +385,29 @@ context. The answer is `pending` (`202`) until the run ends, then `done` or `fai
 with its tool calls and approvals, so the apps can show them inline. Anything the agent wants to send waits for your
 approval as usual. Without a talk agent, the built-in assistant answers the same way, with the Brain and every service the person has connected. Its tools are looked up for each message, so a new connection works at once, and a connection that cannot be reached is left out and named. Tools the connector does not list as read or draft wait for approval. With nothing connected, the Second Brain answers at once (`200`) and the answer lists its `sources`.
 The first message names a thread that has no title of its own.
+
+## MCP
+
+`/mcp` serves Lighthouse itself as an MCP server over the streamable HTTP transport. It answers with JSON and keeps no
+sessions. Every tool is a request to this API with the caller's own token, so a client sees and does exactly what the
+token may: the same tenant, roles and approvals as in the apps. Without a token, `/mcp` answers `401`.
+
+Connect Claude Code with a token from `POST /auth/tokens`:
+
+```sh
+claude mcp add --transport http lighthouse https://lighthouse.example/mcp \
+  --header "Authorization: Bearer lht_..."
+```
+
+| Tool | Request |
+|---|---|
+| `search_brain`, `get_brain_entry`, `ask_brain` | `GET /brain/search`, `GET /brain/entries/{id}`, `POST /brain/ask` |
+| `save_to_brain` | `POST /brain/entries` with the source `mcp` |
+| `list_facts`, `remember_fact` | `GET /memory?status=confirmed`, `POST /memory` |
+| `list_rules` | `GET /rules` |
+| `list_tasks`, `create_task`, `complete_task` | `GET /tasks`, `POST /tasks`, `POST /tasks/{id}/complete` |
+| `whats_ready`, `list_inbox`, `list_calendar`, `list_issues` | `GET /ready`, `GET /inbox`, `GET /calendar/events`, `GET /issues` |
+| `list_agents`, `run_agent`, `get_run` | `GET /agents`, `POST /agents/{id}/run`, `GET /runs/{id}` |
+| `report_event` | `POST /automations/events` |
+
+Answers longer than 60,000 characters are cut. A failed request comes back as a tool error with its status.

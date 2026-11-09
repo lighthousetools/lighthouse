@@ -2396,3 +2396,78 @@ async fn background_work_runs_for_the_person_it_belongs_to() {
     let (_, theirs) = as_user(&base, &owner, reqwest::Method::GET, "/mail/threads", None).await;
     assert_eq!(theirs["items"], json!([]), "{theirs}");
 }
+
+/// One JSON-RPC request to `/mcp`.
+async fn mcp(
+    base: &str,
+    token: Option<&str>,
+    method: &str,
+    params: Value,
+) -> (reqwest::StatusCode, Value) {
+    let mut request = reqwest::Client::new()
+        .post(format!("{base}/mcp"))
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2025-06-18")
+        .json(&json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}));
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().await.unwrap();
+    let status = response.status();
+    let body = response.json().await.unwrap_or(Value::Null);
+    (status, body)
+}
+
+#[tokio::test]
+async fn lighthouse_is_an_mcp_server_with_the_callers_rights() {
+    let (base, _dir, _store) = start().await;
+    let (status, _) = mcp(&base, None, "tools/list", json!({})).await;
+    assert_eq!(status, 401);
+    let token = owner_token(&base).await;
+    let init = json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}});
+    let (status, body) = mcp(&base, Some(&token), "initialize", init).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["result"]["serverInfo"]["name"], "lighthouse");
+    let (_, body) = mcp(&base, Some(&token), "tools/list", json!({})).await;
+    let names: Vec<&str> = body["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"save_to_brain") && names.contains(&"create_task"),
+        "{names:?}"
+    );
+    let call = |name: &str, arguments: Value| json!({"name": name, "arguments": arguments});
+    let (_, body) = mcp(
+        &base,
+        Some(&token),
+        "tools/call",
+        call("create_task", json!({"title": "Prepare the weekly report"})),
+    )
+    .await;
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    let (_, body) = mcp(
+        &base,
+        Some(&token),
+        "tools/call",
+        call("list_tasks", json!({})),
+    )
+    .await;
+    assert!(
+        body["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Prepare the weekly report"),
+        "{body}"
+    );
+    let (_, body) = mcp(
+        &base,
+        Some(&token),
+        "tools/call",
+        call("get_run", json!({"id": "not-a-run"})),
+    )
+    .await;
+    assert_eq!(body["result"]["isError"], true, "{body}");
+}
