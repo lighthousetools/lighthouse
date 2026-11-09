@@ -19,8 +19,17 @@ that needs a model runs.
 
 ## 2. Connect services
 
-Under Connections, add a connector per service and connect it with your own account. Most hosted MCP servers support
-OAuth with dynamic client registration, so connecting is one click and a consent screen.
+Under Connections, add a connector per service and connect it with your own account. The dialog offers a catalog of
+about 400 MCP servers that their vendors run, grouped and searchable. Its badge tells how connecting works:
+
+| Badge | Meaning |
+|---|---|
+| 1 click | OAuth with dynamic client registration: connect, consent once, done |
+| Own app | The vendor only accepts registered apps: create one there, then set its client ID and secret |
+| Token | Create an API token at the vendor and store it |
+| Open | No sign-in |
+
+Automation platforms in the catalog reach thousands of further apps through one connection.
 
 | Kind of server | What to do |
 |---|---|
@@ -28,6 +37,7 @@ OAuth with dynamic client registration, so connecting is one click and a consent
 | OAuth that only accepts registered clients, such as GitHub | Register an OAuth app with the redirect `<public_url>/oauth/callback`, set its `client_id` and store its secret as `oauth-client:<connector>` |
 | Static token | `auth = "bearer"` and the token as `mcp:<connector>` |
 | Needs a header such as a tenant ID | `headers` in the connector settings |
+| A REST API without an MCP server | An `openapi` connector turns its OpenAPI description into tools, see [configuration.md](configuration.md#apis-without-an-mcp-server) |
 | Only runs on your machine (stdio, local apps) | Keep it in Claude Code on that machine and let Lighthouse start sessions there, see step 6 |
 
 Some hosted connectors of other products accept only clients on their own allowlist, and some exist only inside
@@ -103,6 +113,16 @@ Two kinds of work, two ways:
 Recurring jobs that people did by hand in Claude Code are worth moving first: a weekly report, a daily briefing, inbox
 triage, drafts of replies. Write each as a skill with the steps and the rules the person insisted on, so every run
 follows them.
+
+## Lessons from real moves
+
+- Recurring work hides in chat history, not in files. Read the sessions for jobs that come back every week, such as a
+  report before a meeting, and write down the rules the person corrected along the way. Those rules make the skill.
+- Many business systems have no MCP server and are used through a command line tool on the machine. Such jobs run best
+  as launches on that machine until a connector or an OpenAPI description exists.
+- Chat histories contain pasted keys. The import redacts them, but the keys should still be rotated.
+- Memories are spread over project folders and partly outdated. A curated plan beats a raw import.
+- Keep the person's own data, such as facts, rules, skills and reports, in their instance and out of shared repositories.
 
 ## Checklist
 
