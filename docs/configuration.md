@@ -186,10 +186,13 @@ Keys and tokens never sit in these settings. They stay in the vault:
 
 - A provider's key is read from the person's own vault, then the tenant's, then the instance's if
   `allow_instance_keys` permits it. A vault is only read for a provider whose endpoint its own layer or a lower one
-  chose. Providers of `lighthouse.toml` keep `<provider>` as entry name; providers added in the apps use
+  chose, and a person's own key is never used for a base URL that a tenant set, since owners and admins could change it
+  and collect the key. Providers of `lighthouse.toml` keep `<provider>` as entry name; providers added in the apps use
   `provider:<name>`, so they never read another entry of the vault.
 - A connector's tokens (`mcp:<connector>`, `oauth:<connector>`) are read from the person's own vault, then the
-  tenant's. A personal connector only uses the person's own vault, so no other member can use its tokens. People
+  tenant's. A personal connector only uses the person's own vault, so no other member can use its tokens. When the URL
+  of a tenant connector changes, or it is deleted, members' own tokens for it are removed, so they never reach an
+  endpoint those members did not connect to. People
   store their own credentials through `/me/credentials`, and connect OAuth connectors for themselves with
   `POST /connectors/{name}/connect?scope=personal`.
 

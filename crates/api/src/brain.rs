@@ -301,7 +301,12 @@ pub(crate) async fn ask_stream(
                 }
             }
         });
-        let result = state.assistant.ask_stream(&request.question, deltas).await;
+        // The spawned task has left the request, so it names the user again.
+        let result = lighthouse_audit::acting_user::scope(
+            caller.user,
+            state.assistant.ask_stream(&request.question, deltas),
+        )
+        .await;
         let _ = forward.await;
         let event = match result {
             Ok(answer) => Event::default()

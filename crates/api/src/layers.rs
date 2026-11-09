@@ -59,6 +59,9 @@ pub struct ProviderView {
     pub key: Option<Layer>,
     /// Whether it needs a key at all.
     pub needs_key: bool,
+    /// Whether a member's own key can be used for it. Not for a URL an owner
+    /// or admin of the tenant chose.
+    pub own_key: bool,
     /// Models by task.
     pub models: Vec<ModelView>,
 }
@@ -385,6 +388,7 @@ fn view(
                 },
                 key_name,
                 needs_key,
+                own_key: provider.key_layers().contains(&Layer::Personal),
                 models: provider
                     .models
                     .iter()

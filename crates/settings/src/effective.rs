@@ -88,11 +88,16 @@ impl EffectiveProvider {
     /// The vaults its key is read from, the first that has it wins: the
     /// user's own, then the tenant's, then the instance's. A vault is only
     /// read if its layer or a lower one chose the endpoint.
+    ///
+    /// A member's own key never goes to a URL an owner or admin of the tenant
+    /// chose and can change later, or they could collect it. It is only used
+    /// for the provider's public endpoint.
     pub fn key_layers(&self) -> &'static [Layer] {
-        match self.defined_at {
-            Layer::Instance => &[Layer::Personal, Layer::Tenant, Layer::Instance],
-            Layer::Tenant => &[Layer::Personal, Layer::Tenant],
-            Layer::Personal => &[Layer::Personal],
+        match (self.defined_at, &self.base_url) {
+            (Layer::Instance, _) => &[Layer::Personal, Layer::Tenant, Layer::Instance],
+            (Layer::Tenant, None) => &[Layer::Personal, Layer::Tenant],
+            (Layer::Tenant, Some(_)) => &[Layer::Tenant],
+            (Layer::Personal, _) => &[Layer::Personal],
         }
     }
 
@@ -496,7 +501,11 @@ mod tests {
         assert_eq!(anthropic.models["text"].config.model, "tenant-model");
         let local = &effective.providers["local"];
         assert_eq!(local.key_name("local"), "provider:local");
-        assert_eq!(local.key_layers(), [Layer::Personal, Layer::Tenant]);
+        assert_eq!(
+            local.key_layers(),
+            [Layer::Tenant],
+            "no member's key for this URL"
+        );
         assert!(local.guarded());
         assert_eq!(effective.routing["text"].source, Layer::Personal);
         assert!(effective.route_problem("text").is_none());

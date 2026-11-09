@@ -518,6 +518,15 @@ impl TenantSettings {
                     }
                     self.check_total(&snapshot)?;
                 }
+                // Members connected to the old URL. Their tokens must not go to
+                // a new one that an owner or admin chose.
+                let moved = current
+                    .connectors
+                    .get(name)
+                    .is_none_or(|old| old.url != entry.url);
+                if owner.is_none() && moved {
+                    self.inner.store.remove_personal_tokens(None, name).await?;
+                }
                 self.inner.store.put_connector(owner, name, &entry).await
             },
         )
@@ -533,7 +542,7 @@ impl TenantSettings {
     ) -> Result<(), SettingsError> {
         self.change(owner, actor, "connector", name, "delete", |_| async move {
             if self.inner.store.delete_connector(owner, name).await? {
-                Ok(())
+                self.inner.store.remove_personal_tokens(owner, name).await
             } else {
                 Err(SettingsError::NotFound("connector".to_owned()))
             }

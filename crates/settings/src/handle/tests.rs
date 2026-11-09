@@ -520,3 +520,83 @@ async fn another_process_sees_changes_on_refresh() {
         "an old snapshot stays as it was"
     );
 }
+
+#[tokio::test]
+async fn members_tokens_never_reach_a_url_they_did_not_connect_to() {
+    let store = fresh_store().await;
+    let sam = user(&store, "sam@example.com").await;
+    let robin = user(&store, "robin@example.com").await;
+    let settings = settings(&store, TenantId::DEFAULT, options()).await;
+    let token = |owner: Option<Uuid>, name: &'static str| {
+        let store = store.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO credentials (tenant_id, user_id, name, nonce, ciphertext) \
+                 VALUES ($1, $2, $3, '\\x00', '\\x00')",
+            )
+            .bind(TenantId::DEFAULT.as_uuid())
+            .bind(owner)
+            .bind(name)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        }
+    };
+    let count = |owner: Option<Uuid>| {
+        let store = store.clone();
+        async move {
+            let (count,): (i64,) = sqlx::query_as(
+                "SELECT count(*) FROM credentials WHERE user_id IS NOT DISTINCT FROM $1",
+            )
+            .bind(owner)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+            count
+        }
+    };
+    settings
+        .set_connector(None, None, "mail", &connector("http://10.0.0.3/mcp"))
+        .await
+        .unwrap();
+    token(Some(sam), "mcp:mail").await;
+    token(Some(robin), "oauth:mail").await;
+    token(None, "mcp:mail").await;
+    settings
+        .set_connector(None, None, "mail", &connector("http://10.0.0.3/mcp"))
+        .await
+        .unwrap();
+    assert_eq!(count(Some(sam)).await, 1, "the same URL keeps them");
+    settings
+        .set_connector(None, None, "mail", &connector("http://10.0.0.4/mcp"))
+        .await
+        .unwrap();
+    assert_eq!((count(Some(sam)).await, count(Some(robin)).await), (0, 0));
+    assert_eq!(count(None).await, 1, "the tenant's own token stays");
+
+    settings
+        .set_connector(
+            Some(sam),
+            Some(sam),
+            "own",
+            &connector("http://10.0.0.5/mcp"),
+        )
+        .await
+        .unwrap();
+    token(Some(sam), "mcp:own").await;
+    token(Some(robin), "mcp:own").await;
+    settings
+        .delete_connector(Some(sam), Some(sam), "own")
+        .await
+        .unwrap();
+    assert_eq!((count(Some(sam)).await, count(Some(robin)).await), (0, 1));
+    // A new tenant connector takes over a name only without old tokens.
+    settings
+        .set_connector(None, None, "own", &connector("http://10.0.0.6/mcp"))
+        .await
+        .unwrap();
+    assert_eq!(count(Some(robin)).await, 0);
+    token(Some(sam), "mcp:own").await;
+    settings.delete_connector(None, None, "own").await.unwrap();
+    assert_eq!(count(Some(sam)).await, 0);
+}

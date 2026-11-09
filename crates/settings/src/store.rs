@@ -429,6 +429,25 @@ impl SettingsStore {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Removes members' own tokens of a connector name, so they never reach an
+    /// endpoint they did not connect to. With an owner, only theirs.
+    pub async fn remove_personal_tokens(
+        &self,
+        owner: Owner,
+        name: &str,
+    ) -> Result<(), SettingsError> {
+        sqlx::query(
+            "DELETE FROM credentials WHERE tenant_id = $1 AND user_id IS NOT NULL \
+             AND ($2::uuid IS NULL OR user_id = $2) AND name = ANY($3)",
+        )
+        .bind(self.id())
+        .bind(owner)
+        .bind([format!("mcp:{name}"), format!("oauth:{name}")].as_slice())
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
     /// Switches an entry of a lower layer on or off for this layer.
     pub async fn put_switch(
         &self,
