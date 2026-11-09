@@ -3,7 +3,7 @@
 `lighthouse-node` connects Claude Code on your machine to Lighthouse. You see your sessions in the apps and can answer
 permission prompts from your phone.
 
-It uses official Claude Code hooks only. It reads no transcripts and opens no public port: hooks reach it on the loopback
+It uses official Claude Code hooks. It opens no public port: hooks reach it on the loopback
 address, and it talks to your server over an outbound connection.
 
 ## Setup
@@ -48,8 +48,16 @@ The hooks also report what a session does. `GET /sessions/{node}/{id}` returns:
 | `timeline` | The latest 200 events: prompts, tool calls with a one-line summary such as the command, file changes and stops |
 | `messages` | Messages you sent to the session |
 
-Events reach the server in the background and never hold up a hook. Prompts and summaries are cut at 300 characters,
-diffs at 20,000.
+Events reach the server in the background and never hold up a hook. One-line summaries of tool calls are cut at 300
+characters, prompts at 4,000, and the answer at a stop and diffs at 20,000.
+
+## What a session says
+
+Hooks carry only the last answer at a stop. The texts Claude writes while it works, between its tool calls, sit in the
+session's transcript under `~/.claude/projects`. The agent reads the new lines of that file at every tool call and stop
+and sends the text blocks of the main session as `say` events, at most 20,000 characters each. It never sends tool input
+or output, thinking, subagent messages or the history from before it first saw the session. The apps show them in the
+session's timeline as Claude writes them. Turn it off with `replies = false` in `node.toml`.
 
 ## Messages to a session
 
@@ -84,7 +92,7 @@ both temporalities work.
 |---|---|
 | See every tool call before it runs | Only `PostToolUse` is reported, and the permission hook fires only when a prompt would appear |
 | Changes made through the shell | Files changed by `Bash`, such as `git checkout` or `sed`, are not visible. Diffs come from the tool input, not from Git |
-| Text and reasoning of the model | Only the last assistant message at a stop arrives. The agent does not read transcripts, by design |
+| Reasoning of the model | Only the texts Claude writes to you arrive, see [What a session says](#what-a-session-says). Thinking stays on the machine |
 | Type into an idle session at any time | Hooks only run during a turn. `stop_hold_seconds` is the closest official way |
 | Remote Control | A separate official product with no interface for other programs |
 | Context window fill | Claude Code exports tokens, not how full the context window is. `usage` shows the tokens |

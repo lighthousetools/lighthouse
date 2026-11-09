@@ -32,6 +32,14 @@ pub struct NodeConfig {
     /// The Claude Code binary for launches.
     #[serde(default = "default_claude")]
     pub claude: String,
+    /// Whether the texts Claude writes between tool calls reach the apps. They are read from the session's own
+    /// transcript and stay between this machine and your server.
+    #[serde(default = "replies_on")]
+    pub replies: bool,
+}
+
+fn replies_on() -> bool {
+    true
 }
 
 fn default_claude() -> String {
@@ -88,6 +96,7 @@ mod tests {
             launch: true,
             launch_roots: vec!["~/code".to_owned()],
             claude: default_claude(),
+            replies: true,
         };
         config.save(&path).unwrap();
         assert_eq!(NodeConfig::load(&path).unwrap(), config);

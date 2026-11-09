@@ -85,7 +85,8 @@ async fn run(config: NodeConfig) -> anyhow::Result<()> {
     let server = Server::new(&config.server, &config.token);
     let agent = Arc::new(
         Agent::new(server.clone(), config.name.clone())
-            .with_stop_hold(std::time::Duration::from_secs(config.stop_hold_seconds)),
+            .with_stop_hold(std::time::Duration::from_secs(config.stop_hold_seconds))
+            .with_replies(config.replies),
     );
     tokio::spawn(agent.clone().run_reports());
     if config.launch {
@@ -171,6 +172,7 @@ async fn main() -> anyhow::Result<()> {
                 launch: false,
                 launch_roots: Vec::new(),
                 claude: "claude".to_owned(),
+                replies: true,
             };
             paired.save(&path)?;
             println!("Paired. Run `lighthouse-node install`, then `lighthouse-node run`.");

@@ -4,7 +4,12 @@
 use lighthouse_sessions::NewSessionEvent;
 use serde_json::{Value, json};
 
+/// One-line summaries of tool calls.
 const MAX_SUMMARY: usize = 300;
+/// What the owner typed.
+const MAX_PROMPT: usize = 4_000;
+/// The answer of the session at a stop, shown in full in the apps.
+const MAX_REPLY: usize = 20_000;
 const MAX_DIFF: usize = 20_000;
 const MAX_PLAN: usize = 20_000;
 const FILE_TOOLS: [&str; 4] = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
@@ -22,6 +27,19 @@ fn lines(prefix: char, text: &str) -> String {
     text.lines()
         .map(|line| format!("{prefix}{line}\n"))
         .collect()
+}
+
+/// A text the session wrote to its owner while it works.
+pub fn said(session: &str, text: String) -> NewSessionEvent {
+    NewSessionEvent {
+        session_id: session.to_owned(),
+        kind: "say".to_owned(),
+        tool: None,
+        summary: Some(clip(&text, MAX_REPLY)),
+        file_path: None,
+        detail: json!({}),
+        at: None,
+    }
 }
 
 /// Builds a diff from the input of a file tool.
@@ -80,7 +98,7 @@ pub fn event_of(hook: &Value) -> Option<NewSessionEvent> {
         };
     match hook["hook_event_name"].as_str()? {
         "UserPromptSubmit" => {
-            let prompt = hook["prompt"].as_str().map(|text| clip(text, MAX_SUMMARY));
+            let prompt = hook["prompt"].as_str().map(|text| clip(text, MAX_PROMPT));
             Some(event("prompt", None, prompt, json!({})))
         }
         "PreCompact" => {
@@ -92,7 +110,7 @@ pub fn event_of(hook: &Value) -> Option<NewSessionEvent> {
         "Stop" => {
             let summary = hook["last_assistant_message"]
                 .as_str()
-                .map(|text| clip(text, MAX_SUMMARY));
+                .map(|text| clip(text, MAX_REPLY));
             Some(event("stop", None, summary, json!({})))
         }
         "PostToolUse" => {
@@ -192,17 +210,23 @@ mod tests {
 
     #[test]
     fn prompts_and_stops_are_recorded_and_others_are_not() {
-        let long = "x".repeat(400);
+        let long = "x".repeat(MAX_PROMPT + 100);
         let prompt = event_of(
             &json!({"session_id": "s1", "hook_event_name": "UserPromptSubmit",
                                       "prompt": long}),
         )
         .unwrap();
-        assert_eq!(prompt.summary.unwrap().chars().count(), MAX_SUMMARY + 1);
+        assert_eq!(prompt.summary.unwrap().chars().count(), MAX_PROMPT + 1);
+        let answer = format!("**Done.**\n\n- {}\n", "y".repeat(2_000));
         let stop = event_of(&json!({"session_id": "s1", "hook_event_name": "Stop",
-                                    "last_assistant_message": "Done"}))
+                                    "last_assistant_message": answer}))
         .unwrap();
         assert_eq!(stop.kind, "stop");
+        assert_eq!(
+            stop.summary.as_deref(),
+            Some(answer.as_str()),
+            "the whole answer reaches the apps"
+        );
         assert!(
             event_of(&json!({"session_id": "s1", "hook_event_name": "SessionStart"})).is_none()
         );

@@ -8,6 +8,7 @@ pub mod activity;
 pub mod config;
 pub mod hooks;
 pub mod launcher;
+pub mod replies;
 
 use axum::Json;
 use axum::extract::State;
@@ -180,6 +181,7 @@ pub struct Agent {
     paused: Mutex<bool>,
     hold_limit: Duration,
     stop_hold: Duration,
+    replies: Option<replies::Replies>,
 }
 
 /// State shown by `lighthouse-node status`.
@@ -259,6 +261,7 @@ impl Agent {
             paused: Mutex::new(false),
             hold_limit: HOLD_LIMIT,
             stop_hold: Duration::ZERO,
+            replies: None,
         }
     }
 
@@ -270,13 +273,56 @@ impl Agent {
         self
     }
 
-    fn send_event(&self, hook: &Value) {
-        let Some(event) = activity::event_of(hook) else {
-            return;
+    /// Sends the texts Claude wrote between tool calls along with the hook's own events.
+    #[must_use]
+    pub fn with_replies(mut self, on: bool) -> Self {
+        self.replies = on.then(replies::Replies::default);
+        self
+    }
+
+    /// New texts of the session since the last hook, as `say` events.
+    fn said(&self, hook: &Value) -> Vec<NewSessionEvent> {
+        let (Some(replies), Some(session), Some(path)) = (
+            &self.replies,
+            hook["session_id"].as_str(),
+            hook["transcript_path"].as_str(),
+        ) else {
+            return Vec::new();
         };
+        let path = std::path::Path::new(path);
+        match hook["hook_event_name"].as_str().unwrap_or_default() {
+            "SessionStart" => {
+                replies.start(session, path);
+                Vec::new()
+            }
+            "PostToolUse" | "Stop" | "PreCompact" => replies
+                .read_new(session, path)
+                .into_iter()
+                .map(|text| activity::said(session, text))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn send_event(&self, hook: &Value) {
+        let mut events = self.said(hook);
+        if let Some(event) = activity::event_of(hook) {
+            // The last text already is the answer at the stop; show it once.
+            if event.kind == "stop"
+                && events
+                    .last()
+                    .is_some_and(|said| said.summary == event.summary)
+            {
+                events.pop();
+            }
+            events.push(event);
+        }
+        if events.is_empty() {
+            return;
+        }
         let server = self.server.clone();
         tokio::spawn(async move {
-            if let Err(error) = server.events(&[event]).await {
+            if let Err(error) = server.events(&events).await {
                 tracing::debug!(%error, "event not reported");
             }
         });
@@ -627,6 +673,79 @@ mod tests {
         let body: Value = requests.last().unwrap().body_json().unwrap();
         assert_eq!(body["sessions"][0]["status"], "done");
         assert_eq!(requests.len(), 3, "every change is reported at once");
+    }
+
+    #[tokio::test]
+    async fn texts_between_tool_calls_reach_the_server_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/node/report"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"paused": false})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/node/events"))
+            .respond_with(ResponseTemplate::new(202))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/node/sessions/s1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&server)
+            .await;
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".claude/projects/-tmp-app");
+        std::fs::create_dir_all(&dir).unwrap();
+        let transcript = dir.join("s1.jsonl");
+        std::fs::write(&transcript, "").unwrap();
+        let path = transcript.to_string_lossy().into_owned();
+        let say = |text: &str| {
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{text}"}}]}}}}"#
+            ) + "\n"
+        };
+        let agent =
+            Agent::new(Server::new(&server.uri(), "token"), "mac".to_owned()).with_replies(true);
+        let hook = |name: &str| {
+            json!({"hook_event_name": name, "session_id": "s1", "cwd": "/tmp/app",
+            "transcript_path": path, "tool_name": "Bash", "tool_input": {"command": "ls"},
+            "last_assistant_message": "All green."})
+        };
+        agent.handle(hook("SessionStart")).await;
+        std::fs::write(&transcript, say("Running the tests now.")).unwrap();
+        agent.handle(hook("PostToolUse")).await;
+        let mut written = std::fs::read_to_string(&transcript).unwrap();
+        written.push_str(&say("All green."));
+        std::fs::write(&transcript, written).unwrap();
+        agent.handle(hook("Stop")).await;
+        let mut sent: Vec<Value> = Vec::new();
+        for _ in 0..50 {
+            sent = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| request.url.path() == "/node/events")
+                .flat_map(|request| {
+                    request.body_json::<Value>().unwrap()["events"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .collect();
+            if sent.iter().any(|event| event["kind"] == "stop") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let said: Vec<&str> = sent
+            .iter()
+            .filter(|event| event["kind"] == "say")
+            .filter_map(|event| event["summary"].as_str())
+            .collect();
+        assert_eq!(said, ["Running the tests now."]);
+        let stop = sent.iter().find(|event| event["kind"] == "stop").unwrap();
+        assert_eq!(stop["summary"], "All green.");
     }
 
     #[tokio::test]
