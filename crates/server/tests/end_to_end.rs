@@ -2471,3 +2471,182 @@ async fn lighthouse_is_an_mcp_server_with_the_callers_rights() {
     .await;
     assert_eq!(body["result"]["isError"], true, "{body}");
 }
+
+async fn call_json(
+    base: &str,
+    token: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+) -> (reqwest::StatusCode, Value) {
+    let mut request = reqwest::Client::new()
+        .request(method, format!("{base}{path}"))
+        .bearer_auth(token);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await.unwrap();
+    let status = response.status();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn lighthouse_launches_sessions_and_hands_them_their_context() {
+    use reqwest::Method;
+    let (base, _dir, _store) = start().await;
+    let owner = owner_token(&base).await;
+    let (_, issued) = call_json(
+        &base,
+        &owner,
+        Method::POST,
+        "/auth/tokens",
+        Some(json!({"name": "mac", "kind": "node"})),
+    )
+    .await;
+    let node_token = issued["token"].as_str().unwrap().to_owned();
+    let report = json!({"name": "mac", "sessions": [{"id": "s0", "project": "app", "branch": null,
+                        "status": "done", "summary": "Tests are green"}]});
+    call_json(
+        &base,
+        &node_token,
+        Method::POST,
+        "/node/report",
+        Some(report),
+    )
+    .await;
+    let (_, nodes) = call_json(&base, &owner, Method::GET, "/nodes", None).await;
+    let node = nodes[0]["id"].as_str().unwrap().to_owned();
+
+    let entry = json!({"type": "project", "title": "App release plan", "body": "Ship the app on Friday.",
+                       "links": ["project:app"], "sources": [{"kind": "app", "ref": "test"}]});
+    let (status, _) = call_json(&base, &owner, Method::POST, "/brain/entries", Some(entry)).await;
+    assert!(status.is_success(), "{status}");
+    let (status, context) = call_json(
+        &base,
+        &node_token,
+        Method::GET,
+        "/node/sessions/s0/context?cwd=/work/app&source=compact",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let text = context["text"].as_str().unwrap();
+    assert!(text.contains("App release plan"), "{text}");
+    assert!(text.contains("Tests are green"), "{text}");
+    let (status, _) = call_json(
+        &base,
+        &owner,
+        Method::GET,
+        "/node/sessions/s0/context",
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "only desktop agents");
+
+    let (status, launch) = call_json(
+        &base,
+        &owner,
+        Method::POST,
+        "/sessions/launch",
+        Some(json!({"node": node, "cwd": "/work/app", "prompt": "Prepare the release"})),
+    )
+    .await;
+    assert_eq!(status, 202, "{launch}");
+    assert_eq!(launch["status"], "queued");
+    let id = launch["id"].as_str().unwrap().to_owned();
+    let (_, queue) = call_json(
+        &base,
+        &node_token,
+        Method::GET,
+        "/node/launches?wait=1",
+        None,
+    )
+    .await;
+    assert_eq!(queue["launches"][0]["id"], id.as_str());
+    let done =
+        json!({"status": "succeeded", "session_id": "s7", "result": "Released", "cost_usd": 0.4});
+    let (status, _) = call_json(
+        &base,
+        &node_token,
+        Method::POST,
+        &format!("/node/launches/{id}"),
+        Some(done),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (_, seen) = call_json(
+        &base,
+        &owner,
+        Method::GET,
+        &format!("/sessions/launches/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(seen["status"], "succeeded");
+    assert_eq!(seen["result"], "Released");
+    let (_, list) = call_json(
+        &base,
+        &owner,
+        Method::GET,
+        &format!("/sessions/launches?node={node}"),
+        None,
+    )
+    .await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+
+    // A message to the ended session resumes it.
+    let report = json!({"name": "mac", "sessions": [{"id": "s7", "project": "app", "branch": null,
+                        "status": "done", "summary": null}]});
+    call_json(
+        &base,
+        &node_token,
+        Method::POST,
+        "/node/report",
+        Some(report),
+    )
+    .await;
+    let (status, _) = call_json(
+        &base,
+        &owner,
+        Method::POST,
+        &format!("/sessions/{node}/s7/messages"),
+        Some(json!({"text": "Also write the changelog"})),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let (_, queue) = call_json(&base, &node_token, Method::GET, "/node/launches", None).await;
+    assert_eq!(queue["launches"][0]["resume"], "s7");
+    assert_eq!(queue["launches"][0]["prompt"], "Also write the changelog");
+    let (_, pending) = call_json(
+        &base,
+        &node_token,
+        Method::GET,
+        "/node/sessions/s7/messages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        pending,
+        json!([]),
+        "the message travels with the launch only"
+    );
+
+    let (_, queued) = call_json(
+        &base,
+        &owner,
+        Method::POST,
+        "/sessions/launch",
+        Some(json!({"node": node, "cwd": "/work/app", "prompt": "Later"})),
+    )
+    .await;
+    let later = queued["id"].as_str().unwrap();
+    let (_, cancelled) = call_json(
+        &base,
+        &owner,
+        Method::DELETE,
+        &format!("/sessions/launches/{later}"),
+        None,
+    )
+    .await;
+    assert_eq!(cancelled["status"], "cancelled");
+}

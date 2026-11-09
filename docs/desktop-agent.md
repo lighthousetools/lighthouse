@@ -86,9 +86,49 @@ both temporalities work.
 | Changes made through the shell | Files changed by `Bash`, such as `git checkout` or `sed`, are not visible. Diffs come from the tool input, not from Git |
 | Text and reasoning of the model | Only the last assistant message at a stop arrives. The agent does not read transcripts, by design |
 | Type into an idle session at any time | Hooks only run during a turn. `stop_hold_seconds` is the closest official way |
-| Start a new turn from outside | Possible with headless mode (`claude -p --resume <id>`), but it would run a second process on the same session next to your terminal. Not done |
 | Remote Control | A separate official product with no interface for other programs |
 | Context window fill | Claude Code exports tokens, not how full the context window is. `usage` shows the tokens |
+
+## Context across sessions and compaction
+
+The agent also installs the `PreCompact` hook, and answers `SessionStart` with what Lighthouse knows. Claude Code calls
+`SessionStart` when a session starts, resumes, is cleared and right after a compaction. The agent then asks
+`GET /node/sessions/{id}/context?cwd=&source=` and hands the Markdown to Claude Code as `additionalContext`:
+
+| Part | Content | `startup` |
+|---|---|---|
+| This session | Status and latest summary, plan, todos, the owner's latest prompts and messages, changed files | Left out |
+| Second Brain | Entries that link `project:<name>` or `session:<id>`, and the best search hits for the project name | Yes |
+| Open tasks | Up to ten open tasks that name the project in their title or notes | Yes |
+
+The project name is the last part of the working directory, as in the session list. The block is cut at 8,000
+characters. It also points the session at the MCP tools `search_brain` and `save_to_brain` (see [api.md](api.md#mcp)),
+so decisions and the state of work outlive the session. When the server is slow or answers with an error, the session
+starts without the block.
+
+## Launches
+
+Lighthouse can start Claude Code sessions on this machine and continue them, for work that runs long or while you are
+away. This lets the server run Claude Code on your computer, so it is off until you allow it in `node.toml`:
+
+```toml
+launch = true
+launch_roots = ["~/code"]   # launched sessions may only work below these directories
+claude = "claude"           # the Claude Code binary, optional
+```
+
+`POST /sessions/launch` with `{"node", "cwd", "prompt", "resume", "model"}` queues a launch. The agent takes it through
+`GET /node/launches`, checks that `cwd` lies below one of the roots after resolving links, and runs
+`claude -p <prompt> --output-format json` in that directory, with `--resume <id>` and `--model` when given. At most three
+run at once. It reports `running`, then `succeeded` or `failed` with the final answer (cut at 20,000 characters), the
+session ID and the costs. The session's own hooks report it like any other session, and its permission prompts reach
+your devices as usual. A directory outside the roots fails at once.
+
+`DELETE /sessions/launches/{id}` cancels a queued launch at once. A running one is stopped by the agent with its next
+poll, within 30 seconds, and ends as `cancelled`.
+
+A message to a session Lighthouse launched that has already ended resumes it: instead of waiting for a stop that never
+comes, the server queues a launch with `--resume` and the message as prompt.
 
 ## Kill switch
 
@@ -96,6 +136,10 @@ both temporalities work.
 in the apps.
 
 ## Security model
+
+Launches are opt-in per machine and limited to `launch_roots`. Anyone with your sign-in can start Claude Code there
+with your Claude Code settings and permissions, so keep the roots narrow and the permission prompts on.
+
 
 The agent reaches your own server directly over TLS, so tool arguments of permission requests are visible to that server.
 This fits a personal instance, where you run the server. End-to-end encryption through a relay becomes necessary only for

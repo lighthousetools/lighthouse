@@ -23,6 +23,19 @@ pub struct NodeConfig {
     /// Seconds a stopped session waits for a message from the owner, at most 60.
     #[serde(default)]
     pub stop_hold_seconds: u64,
+    /// Lets Lighthouse start and resume Claude Code sessions on this machine.
+    #[serde(default)]
+    pub launch: bool,
+    /// Directories launched sessions may work in, including everything below.
+    #[serde(default)]
+    pub launch_roots: Vec<String>,
+    /// The Claude Code binary for launches.
+    #[serde(default = "default_claude")]
+    pub claude: String,
+}
+
+fn default_claude() -> String {
+    "claude".to_owned()
 }
 
 fn default_port() -> u16 {
@@ -72,6 +85,9 @@ mod tests {
             name: "mac".to_owned(),
             port: DEFAULT_PORT,
             stop_hold_seconds: 0,
+            launch: true,
+            launch_roots: vec!["~/code".to_owned()],
+            claude: default_claude(),
         };
         config.save(&path).unwrap();
         assert_eq!(NodeConfig::load(&path).unwrap(), config);

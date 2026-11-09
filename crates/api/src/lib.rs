@@ -696,7 +696,9 @@ impl utoipa::Modify for SecurityAddon {
         sessions::report, sessions::request, sessions::await_decision, sessions::nodes,
         sessions::update_node, sessions::sessions, sessions::permissions, sessions::decide,
         sessions::record_events, sessions::take_messages, sessions::session, sessions::send_message,
-        sessions::export_metrics,
+        sessions::export_metrics, sessions::context, sessions::launch, sessions::launches,
+        sessions::get_launch, sessions::cancel_launch, sessions::take_launches,
+        sessions::report_launch,
         tasks::list, tasks::create, tasks::get, tasks::update, tasks::delete, tasks::complete,
         tasks::reopen, tasks::accept, tasks::reorder, tasks::delegate,
         rules::list, rules::create, rules::get, rules::update, rules::delete,
@@ -752,7 +754,9 @@ impl utoipa::Modify for SecurityAddon {
         Session, SessionReport, SessionEvents, NewSessionMessage, SessionDetail,
         lighthouse_sessions::NewSessionEvent, lighthouse_sessions::SessionEvent,
         lighthouse_sessions::SessionMessage, lighthouse_sessions::ChangedFile,
-        lighthouse_sessions::SessionUsage,
+        lighthouse_sessions::SessionUsage, lighthouse_sessions::Launch,
+        lighthouse_sessions::NewLaunch, lighthouse_sessions::LaunchReport,
+        lighthouse_sessions::LaunchQueue, sessions::SessionContext,
         Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Delegation, Origin, SourceLink,
         Rule, NewRule, RulePatch, Fact, FactSource, NewFact, FactPatch,
         Alert, AlertCounts, AlertView, lighthouse_desk::Severity, alerts::AlertSeries,
@@ -938,6 +942,15 @@ pub fn router_with(state: Instance, extensions: Extensions) -> Router {
         .route("/node/events", post(sessions::record_events))
         .route("/node/otel/v1/metrics", post(sessions::export_metrics))
         .route("/node/sessions/{id}/messages", get(sessions::take_messages))
+        .route("/node/sessions/{id}/context", get(sessions::context))
+        .route("/node/launches", get(sessions::take_launches))
+        .route("/node/launches/{id}", post(sessions::report_launch))
+        .route("/sessions/launch", post(sessions::launch))
+        .route("/sessions/launches", get(sessions::launches))
+        .route(
+            "/sessions/launches/{id}",
+            get(sessions::get_launch).delete(sessions::cancel_launch),
+        )
         .route("/permissions", get(sessions::permissions))
         .route("/permissions/{id}/decision", post(sessions::decide))
         .route("/connectors", get(catalog::connectors))

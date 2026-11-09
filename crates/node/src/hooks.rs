@@ -5,8 +5,9 @@
 
 use serde_json::{Value, json};
 
-const EVENTS: [&str; 7] = [
+const EVENTS: [&str; 8] = [
     "SessionStart",
+    "PreCompact",
     "UserPromptSubmit",
     "PermissionRequest",
     "Notification",

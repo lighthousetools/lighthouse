@@ -115,7 +115,7 @@ never report texts, tool arguments or other private content.
 | `ready.changed` | `{"id": <item>}` | An item was cleared from the ready feed |
 | `automations.changed` | `{"id": <automation>}` | An automation was created, switched or deleted, see [automations.md](automations.md) |
 | `connected.changed` | `{"source"}` or `{"run_id"}` | A source refreshed or an action ran, see [connected.md](connected.md) |
-| `sessions.changed` | `{"node_id", "session_id"}` | A Claude Code session reported work or got a message, see [desktop-agent.md](desktop-agent.md) |
+| `sessions.changed` | `{"node_id", "session_id"}`, and `launch_id` for launches | A Claude Code session reported work or got a message, or a launch changed, see [desktop-agent.md](desktop-agent.md) |
 | `posts.changed`, `decks.changed`, `branding.changed` | `{"id"}` or `{}` | Posts, decks or the brand profile changed, see [publishing.md](publishing.md) |
 | `organizations.changed` | `{"id"}` | An organization changed |
 | `talk.changed` | `{"thread_id"}` | A conversation got a message or an answer |
@@ -411,3 +411,20 @@ claude mcp add --transport http lighthouse https://lighthouse.example/mcp \
 | `report_event` | `POST /automations/events` |
 
 Answers longer than 60,000 characters are cut. A failed request comes back as a tool error with its status.
+
+## Launches
+
+Lighthouse starts and resumes Claude Code sessions on a desktop agent that allows it, see
+[desktop-agent.md](desktop-agent.md#launches).
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /sessions/launch` | `{"node", "cwd", "prompt", "resume", "model"}` queues a launch. `202` with the launch, `404` for an unknown node |
+| `GET /sessions/launches?node=&limit=` | Launches, newest first |
+| `GET /sessions/launches/{id}` | One launch: `status` (`queued`, `started`, `running`, `succeeded`, `failed`, `cancelled`), `session_id`, `result`, `cost_usd` |
+| `DELETE /sessions/launches/{id}` | Cancels it. `404` once it is over |
+| `GET /node/launches?wait=` | Desktop agents only: hands over queued launches, at most three, and names running ones to stop |
+| `POST /node/launches/{id}` | Desktop agents only: `{"status", "session_id", "result", "cost_usd"}` |
+| `GET /node/sessions/{id}/context?cwd=&source=` | Desktop agents only: the Markdown a session gets when it starts, resumes or was compacted |
+
+A user sees only launches on their own desktop agents.

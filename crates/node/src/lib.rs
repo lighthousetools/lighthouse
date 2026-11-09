@@ -7,6 +7,7 @@
 pub mod activity;
 pub mod config;
 pub mod hooks;
+pub mod launcher;
 
 use axum::Json;
 use axum::extract::State;
@@ -128,6 +129,34 @@ impl Server {
         Self::parse(response).await
     }
 
+    /// What Lighthouse knows for a session that starts, resumes or was compacted.
+    async fn context(
+        &self,
+        session: &str,
+        cwd: Option<&str>,
+        source: &str,
+    ) -> Result<String, NodeError> {
+        let mut url = url::Url::parse(&format!("{}/node/sessions/", self.url))
+            .and_then(|base| base.join(&format!("{}/context", encode_segment(session))))
+            .map_err(|_| NodeError::Status(StatusCode::BAD_REQUEST))?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs.append_pair("source", source);
+            if let Some(cwd) = cwd {
+                pairs.append_pair("cwd", cwd);
+            }
+        }
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(&self.token)
+            .timeout(EVENT_TIMEOUT)
+            .send()
+            .await?;
+        let context: Value = Self::parse(response).await?;
+        Ok(context["text"].as_str().unwrap_or_default().to_owned())
+    }
+
     async fn poll(&self, id: uuid::Uuid) -> Result<Permission, NodeError> {
         let response = self
             .http
@@ -181,6 +210,31 @@ async fn branch_of(cwd: Option<&str>) -> Option<String> {
         .ok()?;
     let branch = String::from_utf8(output.stdout).ok()?.trim().to_owned();
     (output.status.success() && !branch.is_empty()).then_some(branch)
+}
+
+/// Keeps a session ID inside its path segment.
+fn encode_segment(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
+/// Hands Lighthouse's context to a starting session.
+fn with_context(text: &str) -> Value {
+    if text.trim().is_empty() {
+        return no_decision();
+    }
+    json!({"hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": text,
+    }})
 }
 
 /// The answer that lets Claude Code decide by itself.
@@ -245,6 +299,26 @@ impl Agent {
             Ok(_) => no_decision(),
             Err(error) => {
                 tracing::debug!(%error, "cannot fetch messages");
+                no_decision()
+            }
+        }
+    }
+
+    /// Fetches the context of a starting session. Any failure leaves the
+    /// session as it is.
+    async fn session_context(&self, hook: &Value) -> Value {
+        let Some(session) = hook["session_id"].as_str() else {
+            return no_decision();
+        };
+        let source = hook["source"].as_str().unwrap_or("startup");
+        match self
+            .server
+            .context(session, hook["cwd"].as_str(), source)
+            .await
+        {
+            Ok(text) => with_context(&text),
+            Err(error) => {
+                tracing::debug!(%error, "no context for the session");
                 no_decision()
             }
         }
@@ -378,7 +452,11 @@ impl Agent {
                 self.touch(hook, "running").await;
                 answer
             }
-            "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => {
+            "SessionStart" => {
+                self.touch(hook, "running").await;
+                self.session_context(hook).await
+            }
+            "UserPromptSubmit" | "PreCompact" | "PreToolUse" | "PostToolUse" => {
                 self.touch(hook, "running").await;
                 no_decision()
             }
@@ -623,5 +701,49 @@ mod tests {
     fn project_names_come_from_the_directory() {
         assert_eq!(project_of(Some("/srv/billing")), "billing");
         assert_eq!(project_of(None), "unknown");
+    }
+
+    #[tokio::test]
+    async fn a_starting_session_gets_the_context_of_lighthouse() {
+        let (server, agent) = mount("pending", "allowed").await;
+        Mock::given(method("GET"))
+            .and(path("/node/sessions/s%201/context"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"text": "# Lighthouse"})))
+            .mount(&server)
+            .await;
+        let start = |session: &str| {
+            json!({"hook_event_name": "SessionStart", "session_id": session, "cwd": "/tmp/app",
+                   "source": "compact"})
+        };
+        let answer = agent.handle(start("s 1")).await;
+        assert_eq!(
+            answer["hookSpecificOutput"]["additionalContext"],
+            "# Lighthouse"
+        );
+        assert_eq!(
+            answer["hookSpecificOutput"]["hookEventName"],
+            "SessionStart"
+        );
+        let asked = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|request| request.url.path().ends_with("/context"))
+            .unwrap();
+        let query = asked.url.query().unwrap_or_default().to_owned();
+        assert!(
+            query.contains("source=compact") && query.contains("cwd=%2Ftmp%2Fapp"),
+            "{query}"
+        );
+        assert_eq!(
+            agent.handle(start("s2")).await,
+            json!({}),
+            "no context, no decision"
+        );
+        assert_eq!(with_context("  "), json!({}));
+        let compact =
+            json!({"hook_event_name": "PreCompact", "session_id": "s2", "trigger": "auto"});
+        assert_eq!(agent.handle(compact).await, json!({}));
     }
 }

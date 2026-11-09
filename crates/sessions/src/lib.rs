@@ -5,9 +5,11 @@
 //! requests. The first decision wins, whichever device it comes from.
 
 pub mod activity;
+pub mod launches;
 pub mod usage;
 
 pub use activity::{ChangedFile, NewSessionEvent, SessionEvent, SessionMessage};
+pub use launches::{Launch, LaunchQueue, LaunchReport, NewLaunch};
 pub use usage::{SessionUsage, UsageReport, parse_otlp};
 
 use chrono::{DateTime, Duration, Utc};

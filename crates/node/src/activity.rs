@@ -83,6 +83,12 @@ pub fn event_of(hook: &Value) -> Option<NewSessionEvent> {
             let prompt = hook["prompt"].as_str().map(|text| clip(text, MAX_SUMMARY));
             Some(event("prompt", None, prompt, json!({})))
         }
+        "PreCompact" => {
+            let trigger = hook["trigger"]
+                .as_str()
+                .map(|text| format!("compacted ({text})"));
+            Some(event("compact", None, trigger, json!({})))
+        }
         "Stop" => {
             let summary = hook["last_assistant_message"]
                 .as_str()

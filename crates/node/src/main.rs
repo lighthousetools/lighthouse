@@ -3,6 +3,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use lighthouse_node::config::{DEFAULT_PORT, NodeConfig, default_path};
+use lighthouse_node::launcher::Launcher;
 use lighthouse_node::{Agent, LocalStatus, Server, hooks, router};
 use serde_json::{Value, json};
 use std::net::{Ipv4Addr, SocketAddr};
@@ -83,10 +84,15 @@ fn hook_url(port: u16) -> String {
 async fn run(config: NodeConfig) -> anyhow::Result<()> {
     let server = Server::new(&config.server, &config.token);
     let agent = Arc::new(
-        Agent::new(server, config.name)
+        Agent::new(server.clone(), config.name.clone())
             .with_stop_hold(std::time::Duration::from_secs(config.stop_hold_seconds)),
     );
     tokio::spawn(agent.clone().run_reports());
+    if config.launch {
+        let launcher = Launcher::new(server.clone(), &config.launch_roots, &config.claude);
+        tokio::spawn(Arc::new(launcher).run());
+        tracing::info!(roots = ?config.launch_roots, "launches enabled");
+    }
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, config.port));
     let listener = tokio::net::TcpListener::bind(address)
         .await
@@ -162,6 +168,9 @@ async fn main() -> anyhow::Result<()> {
                 name,
                 port: DEFAULT_PORT,
                 stop_hold_seconds: 0,
+                launch: false,
+                launch_roots: Vec::new(),
+                claude: "claude".to_owned(),
             };
             paired.save(&path)?;
             println!("Paired. Run `lighthouse-node install`, then `lighthouse-node run`.");
