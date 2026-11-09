@@ -1,8 +1,14 @@
 # Suggestions the apps offer when a tenant or a person adds a provider or a
 # connector. They are data, not logic: the server only passes them on, and
-# everything stays editable after it is added. Prices are list prices in EUR per
-# million tokens, rounded from the providers' USD prices. Check them against the
-# provider's pricing page before relying on cost reports.
+# everything stays editable after it is added.
+#
+# Prices are EUR per million tokens at standard rates, rounded to cents.
+# Checked on 2026-11-09 against the providers' pricing pages:
+#   https://platform.claude.com/docs/en/about-claude/pricing
+#   https://developers.openai.com/api/docs/pricing
+# USD to EUR at the ECB reference rate of 2026-11-06: 1 EUR = 1.1165 USD.
+# List prices in USD are in the comments. Haiku's price is for prompts up to
+# 100,000 tokens; longer ones cost five times as much.
 
 [[providers]]
 id = "anthropic"
@@ -10,26 +16,29 @@ label = "Anthropic"
 kind = "anthropic"
 key_url = "https://console.anthropic.com/settings/keys"
 
+# USD 4 / 20
 [[providers.models]]
 task = "text"
 model = "claude-opus-5-5"
 label = "Claude Opus 5.5"
-input_eur_per_mtok = 3.7
-output_eur_per_mtok = 18.5
+input_eur_per_mtok = 3.58
+output_eur_per_mtok = 17.91
 
+# USD 2 / 10
 [[providers.models]]
 task = "text"
 model = "claude-sonnet-5-5"
 label = "Claude Sonnet 5.5"
-input_eur_per_mtok = 1.85
-output_eur_per_mtok = 9.25
+input_eur_per_mtok = 1.79
+output_eur_per_mtok = 8.96
 
+# USD 0.10 / 0.50
 [[providers.models]]
 task = "text"
 model = "claude-haiku-5-5"
 label = "Claude Haiku 5.5"
-input_eur_per_mtok = 0.1
-output_eur_per_mtok = 0.5
+input_eur_per_mtok = 0.09
+output_eur_per_mtok = 0.45
 
 [[providers]]
 id = "openai"
@@ -37,19 +46,29 @@ label = "OpenAI"
 kind = "openai"
 key_url = "https://platform.openai.com/api-keys"
 
+# USD 2 / 10
 [[providers.models]]
 task = "text"
-model = "gpt-5"
-label = "GPT-5"
-input_eur_per_mtok = 1.15
-output_eur_per_mtok = 9.25
+model = "gpt-6.1-sol"
+label = "GPT-6.1 Sol"
+input_eur_per_mtok = 1.79
+output_eur_per_mtok = 8.96
 
+# USD 1 / 5
 [[providers.models]]
 task = "text"
-model = "gpt-5-mini"
-label = "GPT-5 mini"
-input_eur_per_mtok = 0.25
-output_eur_per_mtok = 1.85
+model = "gpt-6.1-terra"
+label = "GPT-6.1 Terra"
+input_eur_per_mtok = 0.90
+output_eur_per_mtok = 4.48
+
+# USD 0.10 / 0.50
+[[providers.models]]
+task = "text"
+model = "gpt-6-luna"
+label = "GPT-6 Luna"
+input_eur_per_mtok = 0.09
+output_eur_per_mtok = 0.45
 
 [[connectors]]
 id = "linear"
@@ -67,3 +86,61 @@ read_tools = [
   "list_pull_requests", "list_releases", "search_issues", "search_pull_requests",
   "get_pull_request_status", "get_pull_request_files",
 ]
+
+[[sources]]
+id = "github"
+label = "GitHub"
+definition = { connector = "github", preset = "github" }
+
+[[sources]]
+id = "linear"
+label = "Linear"
+definition = { connector = "linear", preset = "linear" }
+
+# A mailbox: replace the tool and the paths with what your mail server returns.
+[[sources]]
+id = "mail"
+label = "Mail"
+
+[sources.definition]
+connector = "mail"
+domain = "mail"
+service = "mail"
+
+[sources.definition.collections.inbox]
+tool = "list_threads"
+items = "threads"
+kind = "thread"
+
+[sources.definition.collections.inbox.fields]
+external_id = "id"
+title = "subject"
+author = "from"
+summary = "snippet"
+occurred_at = "date"
+url = "url"
+labels = "labels"
+important = { path = "labels", contains = "IMPORTANT" }
+unread = { path = "labels", contains = "UNREAD" }
+
+# A calendar: replace the tool and the paths with what your server returns.
+[[sources]]
+id = "calendar"
+label = "Calendar"
+
+[sources.definition]
+connector = "calendar"
+domain = "calendar"
+service = "calendar"
+
+[sources.definition.collections.events]
+tool = "list_events"
+items = "events"
+kind = "event"
+
+[sources.definition.collections.events.fields]
+external_id = "id"
+title = "title"
+starts_at = "start"
+ends_at = "end"
+url = "url"
