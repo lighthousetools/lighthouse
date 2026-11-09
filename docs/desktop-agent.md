@@ -61,9 +61,11 @@ session's timeline as Claude writes them. Turn it off with `replies = false` in 
 
 ## Messages to a session
 
-`POST /sessions/{node}/{id}/messages` with `{"text": "..."}` queues a message. The next time the session stops, the
-`Stop` hook answers with `"decision": "block"` and your message as the reason, which is the official way to let Claude
-Code go on with a new instruction. The session then continues by itself.
+`POST /sessions/{node}/{id}/messages` with `{"text": "..."}` queues a message. A session that is working gets it with
+its next tool call: the `PostToolUse` hook adds it as context, so Claude reads it within seconds and goes on with it.
+A prompt typed in the terminal carries waiting messages along the same way. When the session stops first, the `Stop`
+hook answers with `"decision": "block"` and your message as the reason, the official way to let Claude Code go on with a
+new instruction.
 
 A session that already stopped and waits at its prompt runs no more hooks until someone types, so a message reaches it
 only at its next stop. To reach such sessions, set `stop_hold_seconds` (at most 60) in `~/.config/lighthouse/node.toml`.

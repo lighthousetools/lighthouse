@@ -328,6 +328,30 @@ impl Agent {
         });
     }
 
+    /// Hands messages that wait for a working session over at once, without waiting for it to stop.
+    async fn deliver_now(&self, hook: &Value) -> Value {
+        let (Some(session), Some(event)) = (
+            hook["session_id"].as_str(),
+            hook["hook_event_name"].as_str(),
+        ) else {
+            return no_decision();
+        };
+        if *self.paused.lock().expect("paused lock") {
+            return no_decision();
+        }
+        match self.server.messages(session, Duration::ZERO).await {
+            Ok(messages) if !messages.is_empty() => {
+                let texts: Vec<String> = messages.into_iter().map(|message| message.text).collect();
+                activity::context_with(event, &texts)
+            }
+            Ok(_) => no_decision(),
+            Err(error) => {
+                tracing::debug!(%error, "cannot fetch messages");
+                no_decision()
+            }
+        }
+    }
+
     /// Hands messages from the owner over when a session stops.
     async fn stop(&self, hook: &Value) -> Value {
         let Some(session) = hook["session_id"].as_str() else {
@@ -502,7 +526,11 @@ impl Agent {
                 self.touch(hook, "running").await;
                 self.session_context(hook).await
             }
-            "UserPromptSubmit" | "PreCompact" | "PreToolUse" | "PostToolUse" => {
+            "PostToolUse" | "UserPromptSubmit" => {
+                self.touch(hook, "running").await;
+                self.deliver_now(hook).await
+            }
+            "PreCompact" | "PreToolUse" => {
                 self.touch(hook, "running").await;
                 no_decision()
             }
@@ -776,21 +804,24 @@ mod tests {
             .await;
         let agent = Agent::new(Server::new(&server.uri(), "token"), "mac".to_owned())
             .with_stop_hold(Duration::from_secs(1));
-        agent
+        // A working session gets the message with its next tool call, not only when it stops.
+        let after_tool = agent
             .handle(
                 json!({"hook_event_name": "PostToolUse", "session_id": "s1", "cwd": "/tmp/app",
                            "tool_name": "Bash", "tool_input": {"command": "ls"}}),
             )
             .await;
-        let stop = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": "/tmp/app"});
-        let answer = agent.handle(stop.clone()).await;
-        assert_eq!(answer["decision"], "block");
+        assert_eq!(
+            after_tool["hookSpecificOutput"]["hookEventName"],
+            "PostToolUse"
+        );
         assert!(
-            answer["reason"]
+            after_tool["hookSpecificOutput"]["additionalContext"]
                 .as_str()
                 .unwrap()
                 .contains("Now run the tests")
         );
+        let stop = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": "/tmp/app"});
         assert_eq!(agent.status().sessions[0].status, "running");
         assert_eq!(agent.handle(stop).await, no_decision());
         for _ in 0..50 {

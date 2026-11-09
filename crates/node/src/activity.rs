@@ -161,6 +161,19 @@ pub fn continue_with(messages: &[String]) -> Value {
     })
 }
 
+/// Hands messages from the owner to a session that is still working, as context after a tool call or with a prompt.
+pub fn context_with(event: &str, messages: &[String]) -> Value {
+    json!({
+        "hookSpecificOutput": {
+            "hookEventName": event,
+            "additionalContext": format!(
+                "The owner sent you this through Lighthouse while you work. Take it into account now:\n\n{}",
+                messages.join("\n\n")
+            ),
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
