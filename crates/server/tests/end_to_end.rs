@@ -62,6 +62,19 @@ async fn start_with_hooks(
     extra: &str,
     hooks: lighthouse_server::Hooks,
 ) -> (String, tempfile::TempDir, lighthouse_store::Store) {
+    let (base, dir, database, _) = start_app(extra, hooks).await;
+    (base, dir, database)
+}
+
+async fn start_app(
+    extra: &str,
+    hooks: lighthouse_server::Hooks,
+) -> (
+    String,
+    tempfile::TempDir,
+    lighthouse_store::Store,
+    Arc<lighthouse_server::Workspaces>,
+) {
     let database = lighthouse_store::testing::fresh_store().await;
     let url: (String,) = lighthouse_store::sqlx::query_as("SELECT current_database()::text")
         .fetch_one(database.pool())
@@ -161,7 +174,8 @@ path = "{brain}"
     let app = lighthouse_server::build_with(Config::load(&path).unwrap(), hooks)
         .await
         .unwrap();
-    (serve(app.router).await, dir, database)
+    let workspaces = app.workspaces.clone();
+    (serve(app.router).await, dir, database, workspaces)
 }
 
 async fn run_to_end(base: &str, agent: &str) -> Value {
@@ -2196,4 +2210,144 @@ async fn a_member_connects_with_oauth_and_only_their_runs_use_the_tokens() {
         !threads["items"].as_array().unwrap().is_empty(),
         "{threads}"
     );
+}
+
+async fn user_id(base: &str, token: &str) -> String {
+    let (_, me) = as_user(base, token, reqwest::Method::GET, "/me", None).await;
+    me["user_id"].as_str().unwrap().to_owned()
+}
+
+/// Waits until a person's runs show something.
+async fn wait_for_run(base: &str, token: &str, check: impl Fn(&Value) -> bool) -> Value {
+    for _ in 0..600 {
+        let (_, runs) = as_user(base, token, reqwest::Method::GET, "/runs", None).await;
+        if runs.as_array().unwrap().iter().any(&check) {
+            return runs;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the run did not show up");
+}
+
+#[tokio::test]
+async fn background_work_runs_for_the_person_it_belongs_to() {
+    use lighthouse_scheduler::AgentRunner;
+    let (base, _dir, _database, workspaces) =
+        start_app(MEMBER_TENANCY, lighthouse_server::Hooks::default()).await;
+    let owner = owner_token(&base).await;
+    let robin = member_token(&base, &owner, "robin@example.com").await;
+    let robin_id = user_id(&base, &robin).await;
+    let url = mcp_url(&base).await;
+    let put = reqwest::Method::PUT;
+    let post = reqwest::Method::POST;
+    let (status, _) = as_user(
+        &base,
+        &robin,
+        put.clone(),
+        "/settings/me/connectors/mymail",
+        Some(json!({"url": url, "auth": "none", "read_tools": ["list_threads"]})),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        put,
+        "/settings/me/sources/inbox",
+        Some(mail_source("mymail")),
+    )
+    .await;
+    assert_eq!(status, 204, "{body}");
+
+    // A scheduled job of Robin's agent runs for Robin, and nobody else sees it.
+    let agent = "---\nname: Nightly\nscope: org\ntrigger:\n  cron: \"0 3 * * *\"\ntools:\n  - mymail.list_threads\n---\nGo.\n";
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        post.clone(),
+        "/agents",
+        Some(json!({"source": agent})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body["next_run"].is_string(), "{body}");
+    let workspace = workspaces.open(TenantId::DEFAULT).await.unwrap().unwrap();
+    workspace
+        .pool()
+        .start(&format!("nightly@{robin_id}"), "cron")
+        .await;
+    wait_for_run(&base, &robin, |run| {
+        run["agent_id"] == "nightly" && run["trigger"] == "cron"
+    })
+    .await;
+    let (_, runs) = as_user(&base, &owner, reqwest::Method::GET, "/runs", None).await;
+    assert!(!runs.to_string().contains("nightly"), "{runs}");
+
+    // The failure of Robin's own agent reaches Robin's automation, not shared ones.
+    let failing = "---\nname: Failing\nscope: org\ntrigger:\n  manual: true\ntools:\n  - nowhere.nothing: write\n---\nGo.\n";
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        post.clone(),
+        "/agents",
+        Some(json!({"source": failing})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let mine = "---\nname: Mine failed\ntrigger:\n  event: run.failed\n  match:\n    agent_id: failing\nsteps:\n  - agent: nightly\n---\nx\n";
+    let (status, body) = as_user(
+        &base,
+        &robin,
+        post.clone(),
+        "/automations",
+        Some(json!({"source": mine})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let shared =
+        "---\nname: Any failed\ntrigger:\n  event: run.failed\nsteps:\n  - agent: reader\n---\nx\n";
+    let (status, body) = as_user(
+        &base,
+        &owner,
+        post,
+        "/automations",
+        Some(json!({"source": shared})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let detail = run_as(&base, &robin, "failing").await;
+    assert_eq!(detail["run"]["status"], "failed", "{detail}");
+    wait_for_run(&base, &robin, |run| {
+        run["agent_id"] == "automation:mine-failed"
+    })
+    .await;
+    let (_, runs) = as_user(&base, &owner, reqwest::Method::GET, "/runs", None).await;
+    assert!(!runs.to_string().contains("any-failed"), "{runs}");
+
+    // A scheduled job of a person's automation fires for them too.
+    workspace
+        .pool()
+        .start(&format!("automation:mine-failed@{robin_id}"), "cron")
+        .await;
+    wait_for_run(&base, &robin, |run| {
+        run["agent_id"] == "automation:mine-failed" && run["trigger"] == "cron"
+    })
+    .await;
+
+    // The background refresh picks up a source nobody refreshed by hand, for its owner.
+    tokio::spawn(workspaces.clone().run());
+    let mut threads = Value::Null;
+    for _ in 0..600 {
+        (_, threads) = as_user(&base, &robin, reqwest::Method::GET, "/mail/threads", None).await;
+        if !threads["items"].as_array().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        !threads["items"].as_array().unwrap().is_empty(),
+        "{threads}"
+    );
+    let (_, theirs) = as_user(&base, &owner, reqwest::Method::GET, "/mail/threads", None).await;
+    assert_eq!(theirs["items"], json!([]), "{theirs}");
 }
