@@ -478,3 +478,80 @@ async fn headers_of_a_connector_reach_the_server() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn an_openapi_description_becomes_tools_that_call_the_api() {
+    async fn deals(request: Request) -> Response {
+        let query = request.uri().query().unwrap_or_default().to_owned();
+        if !query.contains("api_token=k1") {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        Json(json!({"data": [{"id": 7, "title": "Acme renewal"}], "query": query})).into_response()
+    }
+    let router = Router::new().route("/v1/deals", get(deals));
+    let base = serve(router).await;
+    let dir = tempfile::tempdir().unwrap();
+    let spec = dir.path().join("spec.yaml");
+    std::fs::write(
+        &spec,
+        format!(
+            "openapi: 3.0.0\nservers:\n  - url: {base}/v1\npaths:\n  /deals:\n    get:\n      summary: List deals\n      parameters:\n        - name: status\n          in: query\n          schema: {{type: string}}\n    post:\n      summary: Add a deal\n"
+        ),
+    )
+    .unwrap();
+    let config = ConnectorConfig {
+        transport: ConnectorTransport::OpenApi {
+            spec: spec.to_string_lossy().into_owned(),
+            base_url: None,
+            key: lighthouse_config::ApiKeyPlacement::Query,
+            key_name: Some("api_token".to_owned()),
+            headers: Default::default(),
+            operations: Vec::new(),
+            reads_are_safe: true,
+        },
+        read_tools: Vec::new(),
+        draft_tools: Vec::new(),
+    };
+    let vault = vault().await;
+    let connector = McpConnector::new(
+        BTreeMap::from([("crm".to_owned(), config.clone())]),
+        vault.clone(),
+    );
+    let tools = vec!["crm.get_deals".to_owned()];
+    assert!(matches!(
+        connector.session(&tools).await,
+        Err(McpError::NotAuthorized { .. })
+    ));
+    vault
+        .put("mcp:crm", &SecretString::from("k1"))
+        .await
+        .unwrap();
+    let session = connector.session(&tools).await.unwrap();
+    let names: Vec<_> = session
+        .all_tools("crm")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+    assert_eq!(names, ["get_deals", "post_deals"]);
+    let output = session
+        .call_tool("crm.get_deals", json!({"status": "open"}))
+        .await
+        .unwrap();
+    assert!(!output.is_error, "{}", output.text);
+    assert!(
+        output.text.contains("Acme renewal") && output.text.contains("status=open"),
+        "{}",
+        output.text
+    );
+    let policy = lighthouse_mcp::ToolPolicy::new(&BTreeMap::from([("crm".to_owned(), config)]));
+    assert_eq!(
+        policy.level("crm.get_deals"),
+        lighthouse_core::agent::ToolLevel::Read
+    );
+    assert_eq!(
+        policy.level("crm.post_deals"),
+        lighthouse_core::agent::ToolLevel::Write
+    );
+}

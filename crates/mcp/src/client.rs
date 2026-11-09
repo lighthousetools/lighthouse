@@ -1,7 +1,8 @@
 use crate::oauth::VaultCredentialStore;
+use crate::openapi::{self, ApiKey, OpenApiServer};
 use crate::{McpError, ToolHost, ToolHostFactory, ToolOutput, split_tool};
 use async_trait::async_trait;
-use lighthouse_config::{ConnectorAuth, ConnectorConfig, ConnectorTransport};
+use lighthouse_config::{ApiKeyPlacement, ConnectorAuth, ConnectorConfig, ConnectorTransport};
 use lighthouse_core::RunId;
 use lighthouse_router::ToolSpec;
 use lighthouse_vault::Vault;
@@ -92,6 +93,80 @@ async fn first_with(
     Ok(None)
 }
 
+/// Loads the description of an OpenAPI connector and builds its bridge.
+#[allow(clippy::too_many_arguments)]
+async fn openapi_server(
+    name: &str,
+    connection: &Connection,
+    spec: &str,
+    base_url: Option<&str>,
+    key: ApiKeyPlacement,
+    key_name: Option<&str>,
+    headers: &std::collections::BTreeMap<String, String>,
+    operations: &[String],
+) -> Result<OpenApiServer, McpError> {
+    let remote = spec.starts_with("https://") || spec.starts_with("http://");
+    if connection.guarded {
+        if !remote {
+            return Err(connect_error(
+                name,
+                "a description chosen in the apps must be a URL",
+            ));
+        }
+        lighthouse_router::net::check_url(spec).map_err(|error| connect_error(name, error))?;
+        if let Some(base) = base_url {
+            lighthouse_router::net::check_url(base).map_err(|error| connect_error(name, error))?;
+        }
+    }
+    let http = http_client(connection.guarded);
+    let text = if remote {
+        http.get(spec)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|error| connect_error(name, error.without_url()))?
+            .text()
+            .await
+            .map_err(|error| connect_error(name, error))?
+    } else {
+        tokio::fs::read_to_string(spec)
+            .await
+            .map_err(|error| connect_error(name, error))?
+    };
+    let document = openapi::parse_spec(&text).map_err(|error| connect_error(name, error))?;
+    let found =
+        openapi::operations(&document, operations).map_err(|error| connect_error(name, error))?;
+    let base =
+        openapi::base_url(&document, spec, base_url).map_err(|error| connect_error(name, error))?;
+    if connection.guarded {
+        lighthouse_router::net::check_url(&base).map_err(|error| connect_error(name, error))?;
+    }
+    let api_key = if key == ApiKeyPlacement::None {
+        ApiKey::None
+    } else {
+        let entry = format!("mcp:{name}");
+        let (_, secret) = first_with(&connection.vaults, &entry)
+            .await?
+            .ok_or_else(|| McpError::NotAuthorized {
+                connector: name.to_owned(),
+                detail: format!("vault entry `{entry}` is missing"),
+            })?;
+        let named = || {
+            key_name
+                .map(str::to_owned)
+                .ok_or_else(|| connect_error(name, "key_name is required for this key placement"))
+        };
+        match key {
+            ApiKeyPlacement::Bearer => ApiKey::Bearer(secret),
+            ApiKeyPlacement::Header => ApiKey::Header(named()?, secret),
+            ApiKeyPlacement::Query => ApiKey::Query(named()?, secret),
+            ApiKeyPlacement::None => ApiKey::None,
+        }
+    };
+    let headers = header_map(name, headers)?.into_iter().collect();
+    Ok(OpenApiServer::new(found, base, api_key, headers, http))
+}
+
 /// Redirect URI given to the OAuth client when it only refreshes tokens.
 const REFRESH_REDIRECT: &str = "http://localhost/oauth/callback";
 
@@ -171,6 +246,36 @@ impl McpConnector {
                 let transport =
                     TokioChildProcess::new(process).map_err(|error| connect_error(name, error))?;
                 ().serve(transport)
+                    .await
+                    .map_err(|error| connect_error(name, error))
+            }
+            ConnectorTransport::OpenApi {
+                spec,
+                base_url,
+                key,
+                key_name,
+                headers,
+                operations,
+                ..
+            } => {
+                let server = openapi_server(
+                    name,
+                    connection,
+                    spec,
+                    base_url.as_deref(),
+                    *key,
+                    key_name.as_deref(),
+                    headers,
+                    operations,
+                )
+                .await?;
+                let (client_side, server_side) = tokio::io::duplex(1 << 20);
+                tokio::spawn(async move {
+                    if let Ok(running) = server.serve(server_side).await {
+                        let _ = running.waiting().await;
+                    }
+                });
+                ().serve(client_side)
                     .await
                     .map_err(|error| connect_error(name, error))
             }

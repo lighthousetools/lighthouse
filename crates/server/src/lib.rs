@@ -540,6 +540,13 @@ async fn connector_infos(
             let has = |key: String| stored.contains(&key);
             let (auth, connected) = match &connector.transport {
                 ConnectorTransport::Stdio { .. } => ("process", true),
+                ConnectorTransport::OpenApi { key, .. } => {
+                    if *key == lighthouse_config::ApiKeyPlacement::None {
+                        ("none", true)
+                    } else {
+                        ("bearer", has(format!("mcp:{name}")))
+                    }
+                }
                 ConnectorTransport::Http { auth, .. } => match auth {
                     ConnectorAuth::None => ("none", true),
                     ConnectorAuth::Bearer => ("bearer", has(format!("mcp:{name}"))),

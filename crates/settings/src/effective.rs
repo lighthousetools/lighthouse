@@ -150,6 +150,7 @@ impl EffectiveConnector {
                 allow_private_addresses,
                 ..
             } => self.source != Layer::Instance && !allow_private_addresses,
+            ConnectorTransport::OpenApi { .. } => self.source != Layer::Instance,
             ConnectorTransport::Stdio { .. } => false,
         }
     }

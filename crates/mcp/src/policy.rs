@@ -39,6 +39,8 @@ impl std::fmt::Debug for ToolPolicy {
 struct Lists {
     read_tools: BTreeMap<String, BTreeSet<String>>,
     draft_tools: BTreeMap<String, BTreeSet<String>>,
+    /// OpenAPI connectors whose `get_` and `head_` tools only read.
+    safe_reads: BTreeSet<String>,
 }
 
 /// A tool that stops an agent from running.
@@ -119,12 +121,26 @@ impl Lists {
             .map(|(name, connector)| (name.clone(), connector.read_tools.iter().cloned().collect()))
             .collect();
         let mut draft_tools: BTreeMap<String, BTreeSet<String>> = connectors
+            .clone()
             .map(|(name, connector)| {
                 (
                     name.clone(),
                     connector.draft_tools.iter().cloned().collect(),
                 )
             })
+            .collect();
+        let safe_reads = connectors
+            .clone()
+            .filter(|(_, connector)| {
+                matches!(
+                    connector.transport,
+                    lighthouse_config::ConnectorTransport::OpenApi {
+                        reads_are_safe: true,
+                        ..
+                    }
+                )
+            })
+            .map(|(name, _)| name.clone())
             .collect();
         let builtin = |tools: &[&str]| tools.iter().map(|tool| (*tool).to_owned()).collect();
         read_tools.insert(BRAIN.to_owned(), builtin(&BRAIN_READ_TOOLS));
@@ -135,6 +151,7 @@ impl Lists {
         Self {
             read_tools,
             draft_tools,
+            safe_reads,
         }
     }
 
@@ -145,7 +162,9 @@ impl Lists {
         let lists = |tools: &BTreeMap<String, BTreeSet<String>>| {
             tools.get(connector).is_some_and(|set| set.contains(tool))
         };
-        if lists(&self.read_tools) {
+        let safe_read = self.safe_reads.contains(connector)
+            && (tool.starts_with("get_") || tool.starts_with("head_"));
+        if lists(&self.read_tools) || safe_read {
             ToolLevel::Read
         } else if lists(&self.draft_tools) {
             ToolLevel::Draft

@@ -428,6 +428,25 @@ pub enum ConnectorAuth {
     Oauth,
 }
 
+/// How an OpenAPI connector sends its key.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiKeyPlacement {
+    /// No key.
+    #[default]
+    None,
+    /// `Authorization: Bearer <key>`.
+    Bearer,
+    /// A header named by `key_name`.
+    Header,
+    /// A query parameter named by `key_name`.
+    Query,
+}
+
+fn reads_are_safe() -> bool {
+    true
+}
+
 /// How to reach an MCP server.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "transport", rename_all = "lowercase", deny_unknown_fields)]
@@ -452,6 +471,30 @@ pub enum ConnectorTransport {
         /// a bearer token under `mcp:<connector>`, an OAuth client secret under `oauth-client:<connector>`.
         #[serde(default)]
         headers: BTreeMap<String, String>,
+    },
+    /// A REST API with an OpenAPI 3 description, turned into tools by Lighthouse.
+    #[serde(rename = "openapi")]
+    OpenApi {
+        /// URL or file path of the description, in JSON or YAML.
+        spec: String,
+        /// Base URL of the API, if not the first server of the description.
+        #[serde(default)]
+        base_url: Option<String>,
+        /// How the key from the vault entry `mcp:<connector>` is sent.
+        #[serde(default)]
+        key: ApiKeyPlacement,
+        /// Name of the header or query parameter for `key = "header"` or `key = "query"`.
+        #[serde(default)]
+        key_name: Option<String>,
+        /// Extra headers that are not secret.
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
+        /// Only these tools, such as `get_deals`. Empty means every operation.
+        #[serde(default)]
+        operations: Vec<String>,
+        /// Whether `GET` and `HEAD` operations count as read-only without listing them.
+        #[serde(default = "reads_are_safe")]
+        reads_are_safe: bool,
     },
     /// A local child process speaking stdio.
     Stdio {

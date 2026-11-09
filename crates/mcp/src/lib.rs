@@ -3,6 +3,7 @@
 mod client;
 pub mod demo;
 pub mod oauth;
+pub mod openapi;
 mod policy;
 
 pub use client::{Connection, ConnectorSource, FixedConnectors, McpConnector, McpSession};

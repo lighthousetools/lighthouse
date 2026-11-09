@@ -68,7 +68,7 @@ approval. `service`, such as `linkedin`, names the network for logos in the apps
 
 | Key | Meaning |
 |---|---|
-| `transport` | `http` or `stdio` |
+| `transport` | `http`, `openapi` or `stdio` |
 | `read_tools` | Allowlist of read-only tools |
 | `draft_tools` | Allowlist of reversible tools without external effect. Every tool on neither list counts as `write` |
 | `url`, `auth` | For `http`. `auth` is `none`, `bearer` or `oauth` |
@@ -77,6 +77,26 @@ approval. `service`, such as `linkedin`, names the network for logos in the apps
 | `headers` | For `http`: extra headers sent with every request, such as `{ "X-Tenant-Id" = "acme" }`. Values are not secret; tokens belong in the vault |
 | `command`, `args` | For `stdio` |
 | `secret_env` | For `stdio`: environment variables filled from vault entries |
+
+### APIs without an MCP server
+
+`transport = "openapi"` turns a REST API with an OpenAPI 3 description into tools. Every operation becomes a tool named
+after its method and path, such as `get_deals_id` for `GET /deals/{id}`. Parameters become its input, and a JSON body
+becomes `body`.
+
+```toml
+[connectors.crm]
+transport = "openapi"
+spec = "https://api.example.com/openapi.yaml"   # or a file path, JSON or YAML
+base_url = "https://api.example.com/v1"         # optional, else the first server of the description
+key = "query"                                   # none, bearer, header or query
+key_name = "api_token"                          # the header or query parameter for header and query
+operations = ["get_deals", "post_deals"]        # optional, else every operation
+```
+
+The key is the vault entry `mcp:<connector>`. `GET` and `HEAD` operations count as read-only, so agents can use them
+without listing them in `read_tools`; set `reads_are_safe = false` to list them yourself. Every other operation writes
+and waits for approval, unless `draft_tools` names it. Only the instance configuration can add `openapi` connectors.
 
 For OAuth connectors, `server.public_url` must be reachable from your browser. Run `lht connect <connector>` and open
 the printed URL. The redirect goes to `<public_url>/oauth/callback`. Tokens are stored in the vault and refreshed

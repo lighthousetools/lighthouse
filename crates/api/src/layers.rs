@@ -90,9 +90,9 @@ pub struct RouteView {
 pub struct ConnectorView {
     /// Name.
     pub name: String,
-    /// `http` or `stdio`. Only the instance has `stdio` connectors.
+    /// `http`, `openapi` or `stdio`. Only the instance has `stdio` and `openapi` connectors.
     pub transport: String,
-    /// Server URL of an `http` connector.
+    /// Server URL of an `http` connector, or the description of an `openapi` one.
     pub url: Option<String>,
     /// `none`, `bearer`, `oauth` or `process`.
     pub auth: String,
@@ -357,6 +357,17 @@ fn connector_view(
             auth_name(*auth),
             client_id.clone(),
             scopes.clone(),
+        ),
+        ConnectorTransport::OpenApi { spec, key, .. } => (
+            "openapi",
+            Some(spec.clone()),
+            if *key == lighthouse_config::ApiKeyPlacement::None {
+                "none"
+            } else {
+                "bearer"
+            },
+            None,
+            Vec::new(),
         ),
         ConnectorTransport::Stdio { .. } => ("stdio", None, "process", None, Vec::new()),
     };
