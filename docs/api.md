@@ -425,6 +425,18 @@ Lighthouse starts and resumes Claude Code sessions on a desktop agent that allow
 | `DELETE /sessions/launches/{id}` | Cancels it. `404` once it is over |
 | `GET /node/launches?wait=` | Desktop agents only: hands over queued launches, at most three, and names running ones to stop |
 | `POST /node/launches/{id}` | Desktop agents only: `{"status", "session_id", "result", "cost_usd"}` |
+
+### What a machine has
+
+A desktop agent reports what it finds on its machine, see [desktop-agent.md](desktop-agent.md#what-the-agent-finds-on-the-machine).
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /sessions/history?node=&q=&limit=` | Claude Code sessions found on your machines, newest first: `session_id`, `project`, `cwd`, `branch`, `first_prompt`, `messages`, `last_active_at`. `q` matches project, branch and first prompt. Resume one with `POST /sessions/launch` and its ID as `resume` |
+| `GET /sessions/skills` | Claude Code skills on your machines: `name`, `description`, `path`, `scope` (`user` or `project`) and `project` |
+| `POST /node/history` | Desktop agents only: `{"sessions": [...]}`, stored by machine and session ID |
+| `POST /node/skills` | Desktop agents only: `{"skills": [...]}`, replacing what the machine reported before |
+| `POST /node/memories` | Desktop agents only: `{"projects": [{"project", "memories": [{"file", "content"}]}]}`. Each project becomes one Brain entry of the type `project`, created or updated, and memories about the owner become proposed facts. Answers `{"entries", "facts"}` |
 | `GET /node/sessions/{id}/context?cwd=&source=` | Desktop agents only: the Markdown a session gets when it starts, resumes or was compacted |
 
 A user sees only launches on their own desktop agents.

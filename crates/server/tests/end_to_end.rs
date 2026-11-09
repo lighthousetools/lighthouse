@@ -2711,3 +2711,110 @@ async fn an_automation_launches_a_session_on_a_machine_by_name() {
     assert_eq!(launches[0]["prompt"], "Build the report for KW45");
     assert_eq!(launches[0]["status"], "queued");
 }
+
+#[tokio::test]
+async fn a_machine_reports_past_sessions_skills_and_memories() {
+    use reqwest::Method;
+    let (base, _dir, _store) = start().await;
+    let owner = owner_token(&base).await;
+    let (_, issued) = call_json(
+        &base,
+        &owner,
+        Method::POST,
+        "/auth/tokens",
+        Some(json!({"name": "mac", "kind": "node"})),
+    )
+    .await;
+    let node = issued["token"].as_str().unwrap().to_owned();
+    call_json(
+        &base,
+        &node,
+        Method::POST,
+        "/node/report",
+        Some(json!({"name": "mac", "sessions": []})),
+    )
+    .await;
+
+    let history = json!({"sessions": [
+        {"id": "old-1", "project": "billing", "cwd": "/work/billing", "branch": "main",
+         "first_prompt": "Fix the invoice export", "messages": 42, "last_active_at": "2026-11-01T10:00:00Z"},
+        {"id": "old-2", "project": "atlas", "cwd": "/work/atlas", "first_prompt": "Ship search",
+         "messages": 7, "last_active_at": "2026-11-08T10:00:00Z"}
+    ]});
+    let (status, _) = call_json(
+        &base,
+        &node,
+        Method::POST,
+        "/node/history",
+        Some(history.clone()),
+    )
+    .await;
+    assert_eq!(status, 202);
+    let (status, _) = call_json(&base, &owner, Method::POST, "/node/history", Some(history)).await;
+    assert_eq!(status, 403, "only desktop agents report");
+    let (_, listed) = call_json(
+        &base,
+        &owner,
+        Method::GET,
+        "/sessions/history?q=invoice",
+        None,
+    )
+    .await;
+    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(listed[0]["session_id"], "old-1");
+    let (_, all) = call_json(&base, &owner, Method::GET, "/sessions/history", None).await;
+    assert_eq!(all[0]["session_id"], "old-2", "newest first");
+
+    let skills = json!({"skills": [{"name": "jumpstart", "description": "The daily briefing", "path": "/work/sales/.claude/skills/jumpstart",
+        "scope": "project", "project": "/work/sales"}]});
+    let (status, _) = call_json(&base, &node, Method::POST, "/node/skills", Some(skills)).await;
+    assert_eq!(status, 202);
+    let (_, skills) = call_json(&base, &owner, Method::GET, "/sessions/skills", None).await;
+    assert_eq!(skills[0]["name"], "jumpstart");
+
+    let memories = json!({"projects": [
+        {"project": "billing", "memories": [
+            {"file": "deploy.md", "content": "---\nname: deploy\ntype: project\n---\nDeploys on push to main."},
+            {"file": "role.md", "content": "---\nname: role\ntype: user\n---\nThe owner runs sales too."}
+        ]}
+    ]});
+    let (status, applied) = call_json(
+        &base,
+        &node,
+        Method::POST,
+        "/node/memories",
+        Some(memories.clone()),
+    )
+    .await;
+    assert_eq!(status, 200, "{applied}");
+    assert_eq!(applied, json!({"entries": 1, "facts": 1}));
+    let (_, again) = call_json(&base, &node, Method::POST, "/node/memories", Some(memories)).await;
+    assert_eq!(
+        again,
+        json!({"entries": 1, "facts": 0}),
+        "the entry is updated, the fact not proposed twice"
+    );
+    let (_, resolved) = call_json(
+        &base,
+        &owner,
+        Method::GET,
+        "/brain/resolve?title=billing",
+        None,
+    )
+    .await;
+    let id = resolved["id"].as_str().unwrap();
+    let (_, entry) = call_json(
+        &base,
+        &owner,
+        Method::GET,
+        &format!("/brain/entries/{id}"),
+        None,
+    )
+    .await;
+    assert!(
+        entry.to_string().contains("Deploys on push to main."),
+        "{entry}"
+    );
+    let (_, facts) = call_json(&base, &owner, Method::GET, "/memory?status=proposed", None).await;
+    assert_eq!(facts[0]["text"], "The owner runs sales too.");
+}

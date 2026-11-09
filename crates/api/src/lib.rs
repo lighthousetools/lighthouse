@@ -442,7 +442,7 @@ fn not_found(what: &str) -> ApiError {
     ApiError(StatusCode::NOT_FOUND, format!("unknown {what}"))
 }
 
-fn desk_error(error: DeskError) -> ApiError {
+pub(crate) fn desk_error(error: DeskError) -> ApiError {
     match error {
         DeskError::Invalid(message) => ApiError(StatusCode::BAD_REQUEST, message),
         other => internal(other),
@@ -706,7 +706,8 @@ impl utoipa::Modify for SecurityAddon {
         sessions::record_events, sessions::take_messages, sessions::session, sessions::send_message,
         sessions::export_metrics, sessions::context, sessions::launch, sessions::launches,
         sessions::get_launch, sessions::cancel_launch, sessions::take_launches,
-        sessions::report_launch,
+        sessions::report_launch, sessions::report_history, sessions::report_skills,
+        sessions::report_memories, sessions::history, sessions::local_skills,
         tasks::list, tasks::create, tasks::get, tasks::update, tasks::delete, tasks::complete,
         tasks::reopen, tasks::accept, tasks::reorder, tasks::delegate,
         rules::list, rules::create, rules::get, rules::update, rules::delete,
@@ -765,6 +766,9 @@ impl utoipa::Modify for SecurityAddon {
         lighthouse_sessions::SessionUsage, lighthouse_sessions::Launch,
         lighthouse_sessions::NewLaunch, lighthouse_sessions::LaunchReport,
         lighthouse_sessions::LaunchQueue, sessions::SessionContext,
+        lighthouse_sessions::PastSession, lighthouse_sessions::HistoryEntry, lighthouse_sessions::LocalSkill,
+        lighthouse_sessions::StoredSkill, sessions::HistoryReport, sessions::SkillsReport,
+        sessions::ProjectMemories, sessions::MemoryFile, sessions::MemoriesReport, sessions::MemoriesApplied,
         Task, NewTask, TaskPatch, TaskStatus, TaskView, TaskOrder, TaskOrderResult, Delegation, Origin, SourceLink,
         Rule, NewRule, RulePatch, Fact, FactSource, NewFact, FactPatch,
         Alert, AlertCounts, AlertView, lighthouse_desk::Severity, alerts::AlertSeries,
@@ -953,6 +957,11 @@ pub fn router_with(state: Instance, extensions: Extensions) -> Router {
         .route("/node/sessions/{id}/context", get(sessions::context))
         .route("/node/launches", get(sessions::take_launches))
         .route("/node/launches/{id}", post(sessions::report_launch))
+        .route("/node/history", post(sessions::report_history))
+        .route("/node/skills", post(sessions::report_skills))
+        .route("/node/memories", post(sessions::report_memories))
+        .route("/sessions/history", get(sessions::history))
+        .route("/sessions/skills", get(sessions::local_skills))
         .route("/sessions/launch", post(sessions::launch))
         .route("/sessions/launches", get(sessions::launches))
         .route(

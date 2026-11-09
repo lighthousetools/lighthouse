@@ -20,7 +20,7 @@ use uuid::Uuid;
 const DEFAULT_LIMIT: i64 = 50;
 const DEFAULT_HITS: usize = 10;
 
-fn brain_error(error: BrainError) -> ApiError {
+pub(crate) fn brain_error(error: BrainError) -> ApiError {
     match error {
         BrainError::Invalid(_) | BrainError::Media(_) => {
             ApiError(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())

@@ -23,6 +23,7 @@ lighthouse-core.workspace = true
 lighthouse-desk.workspace = true
 lighthouse-mcp.workspace = true
 lighthouse-runtime.workspace = true
+lighthouse-sessions.workspace = true
 lighthouse-store.workspace = true
 lighthouse-sync.workspace = true
 lighthouse-vault.workspace = true
@@ -35,7 +36,6 @@ tokio.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-lighthouse-sessions.workspace = true
 lighthouse-store = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 wiremock.workspace = true

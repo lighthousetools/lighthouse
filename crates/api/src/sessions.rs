@@ -1057,3 +1057,270 @@ mod tests {
         assert_eq!(body, "[]");
     }
 }
+
+/// Sessions a desktop agent found on its machine.
+#[derive(Deserialize, ToSchema)]
+pub struct HistoryReport {
+    /// The sessions.
+    pub sessions: Vec<lighthouse_sessions::PastSession>,
+}
+
+/// Skills a desktop agent found on its machine.
+#[derive(Deserialize, ToSchema)]
+pub struct SkillsReport {
+    /// Every skill, replacing what the machine reported before.
+    pub skills: Vec<lighthouse_sessions::LocalSkill>,
+}
+
+/// The memory files of one project.
+#[derive(Deserialize, ToSchema)]
+pub struct ProjectMemories {
+    /// Project name, or none for the home folder.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// All its memory files, already redacted by the agent.
+    pub memories: Vec<MemoryFile>,
+}
+
+/// One memory file of Claude Code.
+#[derive(Deserialize, ToSchema)]
+pub struct MemoryFile {
+    /// File name.
+    pub file: String,
+    /// Its content.
+    pub content: String,
+}
+
+/// Memories a desktop agent found new or changed.
+#[derive(Deserialize, ToSchema)]
+pub struct MemoriesReport {
+    /// Projects whose memories changed, each with all its files.
+    pub projects: Vec<ProjectMemories>,
+}
+
+/// What became of reported memories.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct MemoriesApplied {
+    /// Brain entries created or updated.
+    pub entries: usize,
+    /// Facts proposed to the owner.
+    pub facts: usize,
+}
+
+/// Parameters of the history.
+#[derive(Deserialize)]
+pub(crate) struct HistoryQuery {
+    node: Option<Uuid>,
+    q: Option<String>,
+    limit: Option<i64>,
+}
+
+/// Takes the sessions a desktop agent found on its machine, so they can be resumed from the apps.
+#[utoipa::path(
+    post,
+    operation_id = "report_history",
+    path = "/node/history",
+    request_body = HistoryReport,
+    responses((status = 202, description = "Stored"), (status = 403, description = "Not a desktop agent")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn report_history(
+    Scoped(state): Scoped,
+    caller: Caller,
+    Json(body): Json<HistoryReport>,
+) -> Result<StatusCode, ApiError> {
+    let node = node_of(caller)?;
+    state
+        .sessions
+        .record_history(node, &body.sessions)
+        .await
+        .map_err(internal)?;
+    state.events.emit(
+        "sessions.changed",
+        json!({"node_id": node, "history": true}),
+    );
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// Takes the skills a desktop agent found on its machine.
+#[utoipa::path(
+    post,
+    operation_id = "report_skills",
+    path = "/node/skills",
+    request_body = SkillsReport,
+    responses((status = 202, description = "Stored"), (status = 403, description = "Not a desktop agent")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn report_skills(
+    Scoped(state): Scoped,
+    caller: Caller,
+    Json(body): Json<SkillsReport>,
+) -> Result<StatusCode, ApiError> {
+    let node = node_of(caller)?;
+    state
+        .sessions
+        .record_skills(node, &body.skills)
+        .await
+        .map_err(internal)?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// Takes memories Claude Code wrote on a machine: one Brain entry per project, and facts about the owner as
+/// proposals.
+#[utoipa::path(
+    post,
+    operation_id = "report_memories",
+    path = "/node/memories",
+    request_body = MemoriesReport,
+    responses((status = 200, body = MemoriesApplied), (status = 403, description = "Not a desktop agent")),
+    security(("bearer" = []))
+)]
+pub(crate) async fn report_memories(
+    Scoped(state): Scoped,
+    caller: Caller,
+    Json(body): Json<MemoriesReport>,
+) -> Result<Json<MemoriesApplied>, ApiError> {
+    use lighthouse_sessions::claude;
+    node_of(caller)?;
+    let known: std::collections::BTreeSet<String> = state
+        .desk
+        .facts(&lighthouse_desk::FactFilter::default())
+        .await
+        .map_err(crate::desk_error)?
+        .into_iter()
+        .map(|fact| fact.text)
+        .collect();
+    let mut applied = MemoriesApplied {
+        entries: 0,
+        facts: 0,
+    };
+    let mut proposed = std::collections::BTreeSet::new();
+    for project in body.projects.iter().take(500) {
+        let title = project
+            .project
+            .clone()
+            .unwrap_or_else(|| "General".to_owned());
+        let mut sections: std::collections::BTreeMap<&str, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for file in project.memories.iter().take(1_000) {
+            let Some(memory) = claude::parse_memory(&file.content) else {
+                continue;
+            };
+            let (text, _) = claude::redact(&memory.text);
+            if memory.kind == "user" {
+                let fact = claude::statement(&text);
+                if !known.contains(&fact) && proposed.insert(fact.clone()) {
+                    let proposal = lighthouse_desk::ProposedFact {
+                        text: fact,
+                        category: Some("profile".to_owned()),
+                        confidence: 0.8,
+                        evidence: Some(format!("Claude Code memory {}", file.file)),
+                    };
+                    let proposer = lighthouse_desk::Proposer {
+                        origin: lighthouse_desk::Origin::Agent,
+                        agent_id: Some("claude-code".to_owned()),
+                        run_id: None,
+                    };
+                    state
+                        .desk
+                        .propose_fact(proposal, &proposer)
+                        .await
+                        .map_err(crate::desk_error)?;
+                    applied.facts += 1;
+                }
+                continue;
+            }
+            let section = if project.project.is_some() {
+                claude::section_of(&memory.kind)
+            } else {
+                "Notes"
+            };
+            sections
+                .entry(section)
+                .or_default()
+                .push(claude::item(&memory, &text));
+        }
+        if sections.is_empty() {
+            continue;
+        }
+        let body = claude::project_body(&sections);
+        let existing = state
+            .brain
+            .find_by_title(&title)
+            .await
+            .map_err(crate::brain::brain_error)?;
+        match existing {
+            Some(id) => {
+                let patch = lighthouse_brain::EntryPatch {
+                    body: Some(body),
+                    ..Default::default()
+                };
+                state
+                    .brain
+                    .update(id, patch)
+                    .await
+                    .map_err(crate::brain::brain_error)?;
+            }
+            None => {
+                let new = lighthouse_brain::NewEntry {
+                    kind: "project".to_owned(),
+                    title: title.clone(),
+                    body,
+                    sources: vec![lighthouse_brain::Source {
+                        kind: "claude-code".to_owned(),
+                        reference: title.clone(),
+                    }],
+                    links: Vec::new(),
+                };
+                state
+                    .brain
+                    .remember(new)
+                    .await
+                    .map_err(crate::brain::brain_error)?;
+            }
+        }
+        applied.entries += 1;
+    }
+    Ok(Json(applied))
+}
+
+/// Lists Claude Code sessions found on the caller's machines, newest first.
+#[utoipa::path(
+    get,
+    operation_id = "list_history",
+    path = "/sessions/history",
+    params(
+        ("node" = Option<Uuid>, Query, description = "Only sessions of this machine"),
+        ("q" = Option<String>, Query, description = "Matches project, branch and first prompt"),
+        ("limit" = Option<i64>, Query, description = "Maximum number of sessions")
+    ),
+    responses((status = 200, body = Vec<lighthouse_sessions::HistoryEntry>)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn history(
+    Scoped(state): Scoped,
+    Query(query): Query<HistoryQuery>,
+) -> Result<Json<Vec<lighthouse_sessions::HistoryEntry>>, ApiError> {
+    let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 500);
+    Ok(Json(
+        state
+            .sessions
+            .history(query.node, query.q.as_deref(), limit)
+            .await
+            .map_err(internal)?,
+    ))
+}
+
+/// Lists the Claude Code skills on the caller's machines.
+#[utoipa::path(
+    get,
+    operation_id = "list_local_skills",
+    path = "/sessions/skills",
+    responses((status = 200, body = Vec<lighthouse_sessions::StoredSkill>)),
+    security(("bearer" = []))
+)]
+pub(crate) async fn local_skills(
+    Scoped(state): Scoped,
+) -> Result<Json<Vec<lighthouse_sessions::StoredSkill>>, ApiError> {
+    Ok(Json(state.sessions.skills().await.map_err(internal)?))
+}

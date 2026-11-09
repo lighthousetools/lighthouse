@@ -18,11 +18,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::client::Client;
+use lighthouse_sessions::claude::{
+    item, parse_memory, project_body, project_name, redact, section_of, statement,
+};
 
-/// The longest rule or fact in characters.
-const MAX_SENTENCE: usize = 500;
-/// The longest Brain entry in characters.
-const MAX_BODY: usize = 200_000;
 
 /// What an import would create.
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -97,180 +96,6 @@ pub struct PlannedSkill {
     pub has_references: bool,
 }
 
-/// One memory file.
-#[derive(Debug, PartialEq)]
-struct Memory {
-    name: String,
-    kind: String,
-    text: String,
-}
-
-/// Reads a memory file: frontmatter with `name`, `description` and `type` (or `metadata.type`), then the text.
-fn parse_memory(content: &str) -> Option<Memory> {
-    let rest = content.strip_prefix("---")?;
-    let (front, body) = rest.split_once("\n---")?;
-    let mut name = None;
-    let mut kind = None;
-    let mut description = None;
-    for line in front.lines() {
-        let trimmed = line.trim();
-        if let Some((key, value)) = trimmed.split_once(':') {
-            let value = value.trim().trim_matches('"').to_owned();
-            match key.trim() {
-                "name" if !value.is_empty() => name = Some(value),
-                "type" if !value.is_empty() => kind = Some(value),
-                "description" if !value.is_empty() => description = Some(value),
-                _ => {}
-            }
-        }
-    }
-    let body = body.trim_start_matches(['-', '\n']).trim();
-    let text = if body.is_empty() {
-        description?
-    } else {
-        body.to_owned()
-    };
-    Some(Memory {
-        name: name?,
-        kind: kind.unwrap_or_else(|| "project".to_owned()),
-        text,
-    })
-}
-
-/// The statement of a memory, without its `**Why:**` and `**How to apply:**` parts.
-fn statement(text: &str) -> String {
-    let end = ["**Why:**", "**How to apply:**", "Why:"]
-        .iter()
-        .filter_map(|marker| text.find(marker))
-        .min()
-        .unwrap_or(text.len());
-    let sentence = text[..end].split_whitespace().collect::<Vec<_>>().join(" ");
-    cut(&sentence, MAX_SENTENCE)
-}
-
-fn cut(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        return text.to_owned();
-    }
-    let mut short: String = text.chars().take(limit).collect();
-    short.push('…');
-    short
-}
-
-/// Prefixes of well-known keys and tokens.
-const SECRET_PREFIXES: [&str; 14] = [
-    "sk-",
-    "sk_live_",
-    "sk_test_",
-    "pk_live_",
-    "ghp_",
-    "gho_",
-    "github_pat_",
-    "glpat-",
-    "xoxb-",
-    "xoxp-",
-    "lin_api_",
-    "lht_",
-    "AKIA",
-    "AIza",
-];
-
-/// Whether a word looks like a secret: a known prefix, a private key, or a long random string.
-fn is_secret(word: &str) -> bool {
-    let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-');
-    if word.len() < 16 {
-        return false;
-    }
-    if SECRET_PREFIXES
-        .iter()
-        .any(|prefix| word.starts_with(prefix))
-    {
-        return true;
-    }
-    let digits = word.chars().filter(char::is_ascii_digit).count();
-    let upper = word.chars().filter(char::is_ascii_uppercase).count();
-    let lower = word.chars().filter(char::is_ascii_lowercase).count();
-    let plain = word
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '='));
-    plain && word.len() >= 32 && digits >= 4 && upper >= 2 && lower >= 2
-}
-
-/// Replaces secrets. Returns the text and whether anything was replaced.
-fn redact(text: &str) -> (String, bool) {
-    if text.contains("-----BEGIN") {
-        return ("[redacted: contained a private key]".to_owned(), true);
-    }
-    let mut changed = false;
-    let lines: Vec<String> = text
-        .lines()
-        .map(|line| {
-            let lower = line.to_lowercase();
-            let labelled = [
-                "password:",
-                "password=",
-                "passwort:",
-                "secret:",
-                "token:",
-                "api key:",
-                "api_key=",
-            ]
-            .iter()
-            .any(|label| lower.contains(label));
-            line.split(' ')
-                .map(|word| {
-                    let after_label = labelled
-                        && word.len() >= 8
-                        && !word.ends_with(':')
-                        && word.chars().any(|c| c.is_ascii_digit());
-                    if is_secret(word) || after_label {
-                        changed = true;
-                        "[redacted]".to_owned()
-                    } else {
-                        word.to_owned()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .collect();
-    (lines.join("\n"), changed)
-}
-
-/// Turns a Claude Code project folder like `-Users-jane-code-my-app` back into a path, checking which hyphens were
-/// slashes. Falls back to the folder name.
-fn folder_path(folder: &str) -> PathBuf {
-    let parts: Vec<&str> = folder.trim_start_matches('-').split('-').collect();
-    let mut path = PathBuf::from("/");
-    let mut pending = String::new();
-    for part in parts {
-        if pending.is_empty() {
-            pending = part.to_owned();
-        } else {
-            pending = format!("{pending}-{part}");
-        }
-        let candidate = path.join(&pending);
-        if candidate.is_dir() {
-            path = candidate;
-            pending.clear();
-        }
-    }
-    if !pending.is_empty() {
-        path = path.join(pending);
-    }
-    path
-}
-
-/// The name of a project folder: the last part of its path.
-fn project_name(folder: &str, home: &Path) -> Option<String> {
-    let path = folder_path(folder);
-    if path == home || path == Path::new("/") {
-        return None;
-    }
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-}
-
 /// Reads `~/.claude` into a plan.
 pub fn from_claude(claude: &Path, home: &Path) -> anyhow::Result<Plan> {
     let mut plan = Plan::default();
@@ -326,50 +151,25 @@ pub fn from_claude(claude: &Path, home: &Path) -> anyhow::Result<Plan> {
                     text: statement(&text),
                     category: None,
                 }),
-                (kind, Some(project)) => {
-                    let section = match kind {
-                        "feedback" => "Conventions",
-                        "reference" => "References",
-                        _ => "State",
-                    };
-                    let item = format!(
-                        "- **{}:** {}",
-                        memory.name,
-                        text.split_whitespace().collect::<Vec<_>>().join(" ")
-                    );
-                    projects
-                        .entry(project.clone())
-                        .or_default()
-                        .entry(section)
-                        .or_default()
-                        .push(item);
-                }
-                (_, None) => {
-                    let item = format!(
-                        "- **{}:** {}",
-                        memory.name,
-                        text.split_whitespace().collect::<Vec<_>>().join(" ")
-                    );
-                    projects
-                        .entry("General".to_owned())
-                        .or_default()
-                        .entry("Notes")
-                        .or_default()
-                        .push(item);
-                }
+                (kind, Some(project)) => projects
+                    .entry(project.clone())
+                    .or_default()
+                    .entry(section_of(kind))
+                    .or_default()
+                    .push(item(&memory, &text)),
+                (_, None) => projects
+                    .entry("General".to_owned())
+                    .or_default()
+                    .entry("Notes")
+                    .or_default()
+                    .push(item(&memory, &text)),
             }
         }
     }
     for (project, sections) in projects {
-        let mut body = String::new();
-        for name in ["State", "Conventions", "References", "Notes"] {
-            if let Some(items) = sections.get(name) {
-                body.push_str(&format!("## {name}\n\n{}\n\n", items.join("\n")));
-            }
-        }
         plan.brain.push(PlannedEntry {
             title: project.clone(),
-            body: cut(body.trim(), MAX_BODY),
+            body: project_body(&sections),
             kind: "project".to_owned(),
             links: Vec::new(),
             source: format!("claude-code/{project}"),
@@ -509,31 +309,6 @@ mod tests {
     fn write(path: &Path, content: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();
-    }
-
-    #[test]
-    fn memories_are_parsed_with_either_type_field() {
-        let nested = "---\nname: no-trailers\ndescription: d\nmetadata:\n  type: feedback\n---\n\nNo trailers.\n**Why:** asked.";
-        let memory = parse_memory(nested).unwrap();
-        assert_eq!(memory.kind, "feedback");
-        assert_eq!(statement(&memory.text), "No trailers.");
-        let flat = "---\nname: role\ndescription: The owner is a CTO\ntype: user\n---\n";
-        assert_eq!(parse_memory(flat).unwrap().text, "The owner is a CTO");
-        assert!(parse_memory("no frontmatter").is_none());
-    }
-
-    #[test]
-    fn secrets_are_redacted() {
-        let (text, changed) = redact("use lin_api_abcdefghijklmnop1234 here");
-        assert!(changed);
-        assert_eq!(text, "use [redacted] here");
-        let (text, changed) = redact("password: Hunter2Hunter2");
-        assert!(changed && !text.contains("Hunter2"));
-        let (_, changed) = redact("Deploy with GitHub Actions to the server on Fridays.");
-        assert!(!changed);
-        assert!(redact("-----BEGIN OPENSSH PRIVATE KEY-----").1);
-        assert!(is_secret("Ab3dEf9hIj2kLm5nOp8qRs1tUv4wXy7z"));
-        assert!(!is_secret("crates/server/tests/end_to_end.rs"));
     }
 
     #[test]

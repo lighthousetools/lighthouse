@@ -5,10 +5,13 @@
 //! requests. The first decision wins, whichever device it comes from.
 
 pub mod activity;
+pub mod claude;
+pub mod history;
 pub mod launches;
 pub mod usage;
 
 pub use activity::{ChangedFile, NewSessionEvent, SessionEvent, SessionMessage};
+pub use history::{HistoryEntry, LocalSkill, PastSession, StoredSkill};
 pub use launches::{Launch, LaunchQueue, LaunchReport, NewLaunch};
 pub use usage::{SessionUsage, UsageReport, parse_otlp};
 
