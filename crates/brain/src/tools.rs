@@ -191,4 +191,8 @@ impl ToolHostFactory for BrainToolFactory {
             run: run.as_uuid().to_string(),
         }))
     }
+
+    async fn offered(&self, connector: &str) -> Result<Vec<String>, McpError> {
+        self.inner.offered(connector).await
+    }
 }

@@ -239,6 +239,12 @@ impl ToolHostFactory for McpConnector {
     async fn open(&self, tools: &[String], _run: RunId) -> Result<Box<dyn ToolHost>, McpError> {
         Ok(Box::new(self.session(tools).await?))
     }
+
+    async fn offered(&self, connector: &str) -> Result<Vec<String>, McpError> {
+        let session = self.session(&[format!("{connector}.tools")]).await?;
+        let tools = session.all_tools(connector).await?;
+        Ok(tools.into_iter().map(|tool| tool.name).collect())
+    }
 }
 
 /// Open connections for one run.

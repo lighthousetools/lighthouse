@@ -447,10 +447,11 @@ impl Outcomes {
             }
         } else if let Some(alert) = classify(&record) {
             // A person's own agent failing is their concern, not the tenant's.
-            let own = self
-                .agents
-                .get_for(user, &agent)
-                .is_some_and(|known| known.layer == lighthouse_settings::Layer::Personal);
+            let own = agent == crate::assistant::ASSISTANT_ID
+                || self
+                    .agents
+                    .get_for(user, &agent)
+                    .is_some_and(|known| known.layer == lighthouse_settings::Layer::Personal);
             if own {
                 self.push(
                     &pushes,

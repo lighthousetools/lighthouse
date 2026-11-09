@@ -5,7 +5,7 @@ use lighthouse_config::{Config, NotificationsConfig, PublishingConfig, WeatherCo
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-/// The Talk agent: an agent ID, or `null` so the Second Brain answers.
+/// The Talk agent: an agent ID, or `null` for the built-in assistant.
 pub const TALK_AGENT: &str = "talk.agent";
 /// What is pushed through the delivery channels: `[notifications]`.
 pub const NOTIFICATIONS: &str = "notifications";

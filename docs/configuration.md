@@ -61,7 +61,7 @@ approval. `service`, such as `linkedin`, names the network for logos in the apps
 
 ## Talk
 
-`[talk] agent` names the agent that answers conversations in the apps. Without it, the Second Brain answers. See
+`[talk] agent` names the agent that answers conversations in the apps. Without it, the built-in assistant answers with the Brain and the connected services. See
 [api.md](api.md#talk).
 
 ## Connectors

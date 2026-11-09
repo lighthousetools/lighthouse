@@ -79,6 +79,11 @@ pub trait ToolHost: Send + Sync {
 pub trait ToolHostFactory: Send + Sync {
     /// Connects to everything the given qualified tools need for a run.
     async fn open(&self, tools: &[String], run: RunId) -> Result<Box<dyn ToolHost>, McpError>;
+
+    /// Lists the tools a connector offers, with unqualified names.
+    async fn offered(&self, connector: &str) -> Result<Vec<String>, McpError> {
+        Err(McpError::UnknownConnector(connector.to_owned()))
+    }
 }
 
 pub(crate) fn split_tool(qualified: &str) -> Result<(&str, &str), McpError> {

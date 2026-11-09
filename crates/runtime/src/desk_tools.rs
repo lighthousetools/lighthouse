@@ -225,6 +225,10 @@ impl ToolHostFactory for DeskToolFactory {
             inner,
         }))
     }
+
+    async fn offered(&self, connector: &str) -> Result<Vec<String>, McpError> {
+        self.inner.offered(connector).await
+    }
 }
 
 #[cfg(test)]

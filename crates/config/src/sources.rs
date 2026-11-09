@@ -133,7 +133,7 @@ pub struct PublishingConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TalkConfig {
-    /// Agent that answers. Without one, the Second Brain answers.
+    /// Agent that answers. Without one, the built-in assistant answers.
     #[serde(default)]
     pub agent: Option<String>,
 }

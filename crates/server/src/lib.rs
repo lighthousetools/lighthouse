@@ -42,6 +42,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
+pub mod assistant;
 pub mod automations;
 pub mod connected;
 pub mod outcomes;
@@ -82,6 +83,8 @@ pub struct AgentPool {
     outcomes: Arc<Outcomes>,
     engine: Arc<AutomationEngine>,
     connected: Arc<ConnectedService>,
+    settings: TenantSettings,
+    vault: Vault,
 }
 
 async fn after_run(outcomes: &Outcomes, engine: &Arc<AutomationEngine>, run: RunId) {
@@ -135,6 +138,26 @@ impl AgentPool {
 }
 
 impl AgentPool {
+    /// Builds the assistant for the user the task acts for, if they connected anything.
+    async fn build_assistant(&self, message: &str) -> Result<Option<AgentDefinition>, String> {
+        let effective = self
+            .settings
+            .effective(lighthouse_audit::acting_user::current());
+        let connectors: Vec<String> = connector_infos(&effective, &self.vault)
+            .await?
+            .into_iter()
+            .filter(|connector| connector.connected)
+            .map(|connector| connector.name)
+            .collect();
+        Ok(assistant::assistant(
+            self.runtime.tools.as_ref(),
+            &self.runtime.policy,
+            &connectors,
+            message,
+        )
+        .await)
+    }
+
     async fn resume_run(&self, run: Uuid) -> anyhow::Result<()> {
         let audit = &self.runtime.audit;
         let Some(checkpoint) = audit.take_checkpoint(run).await? else {
@@ -178,11 +201,20 @@ impl AgentPool {
             return Ok(());
         }
         let user = audit.run_user(run).await?;
-        let Some(agent) = self
-            .agents
-            .get_for(user, &checkpoint.agent_id)
-            .map(|known| known.agent)
-        else {
+        let known = if checkpoint.agent_id == assistant::ASSISTANT_ID {
+            // The saved state holds the conversation, so the message is not needed again.
+            let built = self
+                .runtime
+                .as_user(user, self.build_assistant(""))
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            built.map(Arc::new)
+        } else {
+            self.agents
+                .get_for(user, &checkpoint.agent_id)
+                .map(|known| known.agent)
+        };
+        let Some(agent) = known else {
             let reason = format!("the agent `{}` no longer exists", checkpoint.agent_id);
             let end = RunEnd {
                 status: RunStatus::Failed,
@@ -272,6 +304,27 @@ impl RunTrigger for AgentPool {
             .await
             .map_err(|error| TriggerError::Failed(error.to_string()))?;
         Ok(run.as_uuid())
+    }
+
+    async fn trigger_assistant(
+        &self,
+        message: &str,
+        earlier: &str,
+    ) -> Result<Option<Uuid>, TriggerError> {
+        let Some(agent) = self
+            .build_assistant(message)
+            .await
+            .map_err(TriggerError::Failed)?
+        else {
+            return Ok(None);
+        };
+        self.allowed(assistant::ASSISTANT_ID).await?;
+        let context = (!earlier.is_empty()).then(|| format!("Conversation so far:\n{earlier}"));
+        let run = self
+            .spawn_with(Arc::new(agent), "task", context)
+            .await
+            .map_err(|error| TriggerError::Failed(error.to_string()))?;
+        Ok(Some(run.as_uuid()))
     }
 
     async fn resume(&self, run: Uuid) -> Result<(), TriggerError> {
@@ -462,6 +515,46 @@ fn delivery_name(delivery: &Delivery) -> String {
         Delivery::Mail(address) => address.clone(),
         Delivery::Slack(alias) => format!("slack:{alias}"),
     }
+}
+
+/// The enabled connectors for the user the task acts for, and whether they have
+/// what they need to sign in.
+async fn connector_infos(
+    effective: &Effective,
+    vault: &Vault,
+) -> Result<Vec<ConnectorInfo>, String> {
+    let mut stored = vault.list().await.map_err(|error| error.to_string())?;
+    if let Some(user) = lighthouse_audit::acting_user::current() {
+        stored.extend(
+            vault
+                .personal(user)
+                .list()
+                .await
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    Ok(effective
+        .enabled_connectors()
+        .iter()
+        .map(|(name, connector)| {
+            let has = |key: String| stored.contains(&key);
+            let (auth, connected) = match &connector.transport {
+                ConnectorTransport::Stdio { .. } => ("process", true),
+                ConnectorTransport::Http { auth, .. } => match auth {
+                    ConnectorAuth::None => ("none", true),
+                    ConnectorAuth::Bearer => ("bearer", has(format!("mcp:{name}"))),
+                    ConnectorAuth::Oauth => ("oauth", has(format!("oauth:{name}"))),
+                },
+            };
+            ConnectorInfo {
+                name: name.clone(),
+                auth: auth.to_owned(),
+                connected,
+                read_tools: connector.read_tools.clone(),
+                draft_tools: connector.draft_tools.clone(),
+            }
+        })
+        .collect())
 }
 
 impl ServerCatalog {
@@ -722,39 +815,7 @@ impl Catalog for ServerCatalog {
     }
 
     async fn connectors(&self) -> Result<Vec<ConnectorInfo>, String> {
-        let mut stored = self.vault.list().await.map_err(|error| error.to_string())?;
-        if let Some(user) = lighthouse_audit::acting_user::current() {
-            stored.extend(
-                self.vault
-                    .personal(user)
-                    .list()
-                    .await
-                    .map_err(|error| error.to_string())?,
-            );
-        }
-        Ok(self
-            .effective()
-            .enabled_connectors()
-            .iter()
-            .map(|(name, connector)| {
-                let has = |key: String| stored.contains(&key);
-                let (auth, connected) = match &connector.transport {
-                    ConnectorTransport::Stdio { .. } => ("process", true),
-                    ConnectorTransport::Http { auth, .. } => match auth {
-                        ConnectorAuth::None => ("none", true),
-                        ConnectorAuth::Bearer => ("bearer", has(format!("mcp:{name}"))),
-                        ConnectorAuth::Oauth => ("oauth", has(format!("oauth:{name}"))),
-                    },
-                };
-                ConnectorInfo {
-                    name: name.clone(),
-                    auth: auth.to_owned(),
-                    connected,
-                    read_tools: connector.read_tools.clone(),
-                    draft_tools: connector.draft_tools.clone(),
-                }
-            })
-            .collect())
+        connector_infos(&self.effective(), &self.vault).await
     }
 
     fn models(&self) -> Vec<ModelRoute> {
@@ -1541,6 +1602,8 @@ async fn open_tenant(shared: &Arc<Shared>, tenant: TenantId) -> anyhow::Result<W
         outcomes,
         engine: engine.clone(),
         connected: connected.clone(),
+        settings: settings.clone(),
+        vault: vault.clone(),
     });
     let scheduler = Scheduler::new(
         store.clone(),

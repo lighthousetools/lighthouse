@@ -146,6 +146,15 @@ pub trait RunTrigger: Send + Sync {
         agent_id: &str,
         context: &str,
     ) -> Result<Uuid, TriggerError>;
+
+    /// Starts a run of the built-in assistant with the person's connected
+    /// services, for a message with the earlier conversation as context. `None`
+    /// means no service is connected, so the assistant has nothing to add.
+    async fn trigger_assistant(
+        &self,
+        message: &str,
+        earlier: &str,
+    ) -> Result<Option<Uuid>, TriggerError>;
 }
 
 /// Answers questions from the Second Brain.
@@ -1511,6 +1520,14 @@ mod tests {
         ) -> Result<Uuid, TriggerError> {
             assert!(!context.is_empty(), "context reaches the trigger");
             self.trigger(agent_id).await
+        }
+
+        async fn trigger_assistant(
+            &self,
+            _message: &str,
+            _earlier: &str,
+        ) -> Result<Option<Uuid>, TriggerError> {
+            Ok(None)
         }
     }
 

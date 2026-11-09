@@ -832,6 +832,51 @@ async fn a_talk_agent_answers_a_conversation_through_a_run() {
 }
 
 #[tokio::test]
+async fn without_a_talk_agent_the_assistant_uses_the_connected_services() {
+    let (base, _dir, database) = start().await;
+    let client = reqwest::Client::new();
+    let saved = client
+        .put(format!("{base}/settings/tenant/values/talk.agent"))
+        .bearer_auth(TOKEN)
+        .json(&Value::Null)
+        .send()
+        .await
+        .unwrap();
+    assert!(saved.status().is_success(), "{}", saved.status());
+    let thread: Value = client
+        .post(format!("{base}/talk/threads"))
+        .bearer_auth(TOKEN)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = thread["id"].as_str().unwrap().to_owned();
+    let response = client
+        .post(format!("{base}/talk/threads/{id}/messages"))
+        .bearer_auth(TOKEN)
+        .json(&json!({"text": "What is open?"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 202, "a run answers, the Brain does not");
+    let detail = wait_for(&base, &format!("/talk/threads/{id}"), |detail| {
+        detail["messages"][1]["status"] == "done"
+    })
+    .await;
+    assert_eq!(detail["messages"][1]["text"], "mock answer");
+    let agent: (String,) = lighthouse_store::sqlx::query_as(
+        "SELECT agent_id FROM runs ORDER BY started_at DESC LIMIT 1",
+    )
+    .fetch_one(database.pool())
+    .await
+    .unwrap();
+    assert_eq!(agent.0, "talk:assistant");
+}
+
+#[tokio::test]
 async fn a_signed_up_tenant_works_on_its_own_and_can_be_deleted() {
     let (base, dir, _database) =
         start_with("[tenancy]\nsignup = \"open\"\ndata_dir = \"{dir}/tenants\"\n").await;

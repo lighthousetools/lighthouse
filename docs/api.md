@@ -336,7 +336,7 @@ Single settings take the value as the JSON body:
 
 | Key | Value | Effect |
 |---|---|---|
-| `talk.agent` | An agent ID, or `null` so the Second Brain answers | Answers the person's conversations |
+| `talk.agent` | An agent ID, or `null` for the built-in assistant | Answers the person's conversations |
 | `notifications` | `{"deliver", "decisions", "done", "alerts"}` as in `[notifications]` | Pushes about a person's runs follow their setting, alerts and work without a user the tenant's. `owner` mails the person a run belongs to, and for alerts the tenant's first owner. In a personal layer, `deliver` takes `owner` and `slack:<alias>`, not other mail addresses |
 | `weather` | `{"latitude", "longitude", "location"}` | The weather in a person's brief. The weather service itself stays in `lighthouse.toml` |
 | `timezone` | An IANA name | A person's day boundaries in the API, prompts of their runs, the schedules of what runs for them, and the zone `GET /me` reports. Budget months use the tenant's zone |
@@ -383,5 +383,5 @@ Talk is a conversation with the assistant, kept as threads of messages.
 With `[talk] agent = "<agent id>"` in the configuration, a run of that agent answers, with the last twelve messages as
 context. The answer is `pending` (`202`) until the run ends, then `done` or `failed`, and its `run_id` leads to the run
 with its tool calls and approvals, so the apps can show them inline. Anything the agent wants to send waits for your
-approval as usual. Without a talk agent, the Second Brain answers at once (`200`) and the answer lists its `sources`.
+approval as usual. Without a talk agent, the built-in assistant answers the same way, with the Brain and every service the person has connected. Its tools are looked up for each message, so a new connection works at once, and a connection that cannot be reached is left out and named. Tools the connector does not list as read or draft wait for approval. With nothing connected, the Second Brain answers at once (`200`) and the answer lists its `sources`.
 The first message names a thread that has no title of its own.

@@ -167,9 +167,11 @@ pub(crate) async fn delete(
 
 /// Sends a message and gets the answer.
 ///
-/// With a talk agent configured, a run of that agent answers with the thread as
+/// With a talk agent chosen, a run of that agent answers with the thread as
 /// context: the answer is `pending` until the run ends, and the run shows the
-/// tool calls and approvals. Without one, the Second Brain answers at once.
+/// tool calls and approvals. Without one, the built-in assistant answers the
+/// same way with the person's connected services, or, when none is connected,
+/// the Second Brain answers at once.
 #[utoipa::path(
     post,
     operation_id = "send_message",
@@ -217,8 +219,15 @@ pub(crate) async fn send(
             )
         }
         None => {
-            may_ask(&instance, &caller).await?;
-            None
+            let run = state
+                .trigger
+                .trigger_assistant(&message.text, &earlier)
+                .await
+                .map_err(trigger_error)?;
+            if run.is_none() {
+                may_ask(&instance, &caller).await?;
+            }
+            run
         }
     };
     let question = state
@@ -282,7 +291,7 @@ pub(crate) async fn send(
 }
 
 /// The agent that answers a person's conversations: their own choice, the
-/// tenant's, then the instance's. Without one, the Second Brain answers.
+/// tenant's, then the instance's. Without one, the built-in assistant answers.
 fn talk_agent(state: &ApiState, user: Option<uuid::Uuid>) -> Option<String> {
     let effective = state.settings.effective(user);
     match effective.values.get(lighthouse_settings::TALK_AGENT) {
