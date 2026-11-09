@@ -37,6 +37,7 @@ fn defaults() -> Defaults {
             client_id: None,
             scopes: Vec::new(),
             allow_private_addresses: false,
+            headers: Default::default(),
         },
         read_tools: vec!["list_issues".to_owned()],
         draft_tools: Vec::new(),

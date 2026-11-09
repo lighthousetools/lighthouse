@@ -74,12 +74,17 @@ approval. `service`, such as `linkedin`, names the network for logos in the apps
 | `url`, `auth` | For `http`. `auth` is `none`, `bearer` or `oauth` |
 | `client_id`, `scopes` | Optional OAuth settings, for servers without dynamic client registration |
 | `allow_private_addresses` | Allows OAuth discovery on private addresses |
+| `headers` | For `http`: extra headers sent with every request, such as `{ "X-Tenant-Id" = "acme" }`. Values are not secret; tokens belong in the vault |
 | `command`, `args` | For `stdio` |
 | `secret_env` | For `stdio`: environment variables filled from vault entries |
 
 For OAuth connectors, `server.public_url` must be reachable from your browser. Run `lht connect <connector>` and open
 the printed URL. The redirect goes to `<public_url>/oauth/callback`. Tokens are stored in the vault and refreshed
 automatically. A pending authorization lives in the server's memory, so finish it before the server restarts.
+
+Some servers only accept a registered confidential client, for example GitHub with an OAuth app of your own. Set its
+`client_id` and store the secret as `oauth-client:<connector>` with `lht keys set oauth-client:<connector>`. Lighthouse
+sends it when it exchanges the code and every time it refreshes a token.
 
 ## API
 

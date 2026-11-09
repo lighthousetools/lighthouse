@@ -42,6 +42,7 @@ fn http_connector(url: String, auth: ConnectorAuth) -> ConnectorConfig {
             client_id: None,
             scopes: Vec::new(),
             allow_private_addresses: true,
+            headers: Default::default(),
         },
         read_tools: vec!["list_issues".to_owned()],
         draft_tools: Vec::new(),
@@ -137,8 +138,15 @@ async fn register(Json(body): Json<Value>) -> (StatusCode, Json<Value>) {
 
 async fn token(
     State(state): State<AuthServer>,
-    Form(form): Form<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    Form(mut form): Form<HashMap<String, String>>,
 ) -> Json<Value> {
+    if let Some(value) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+    {
+        form.insert("authorization".to_owned(), value.to_owned());
+    }
     let refresh = form
         .get("grant_type")
         .is_some_and(|grant| grant == "refresh_token");
@@ -375,4 +383,98 @@ async fn oauth_start_rejects_other_connectors() {
         flows.start("nobody", &vault).await,
         Err(McpError::UnknownConnector(_))
     ));
+}
+
+/// Whether a token request carried the client secret, as a form field or with basic auth.
+fn carries_secret(form: &HashMap<String, String>, id: &str, secret: &str) -> bool {
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!("{id}:{secret}"));
+    form.get("client_secret")
+        .is_some_and(|value| value == secret)
+        || form
+            .get("authorization")
+            .is_some_and(|value| value == &format!("Basic {basic}"))
+}
+
+#[tokio::test]
+async fn a_confidential_client_sends_its_secret_on_exchange_and_refresh() {
+    let (base, server) = oauth_server().await;
+    let mut demo = http_connector(format!("{base}/mcp"), ConnectorAuth::Oauth);
+    if let ConnectorTransport::Http { client_id, .. } = &mut demo.transport {
+        *client_id = Some("own-app".to_owned());
+    }
+    let config = connectors(demo);
+    let vault = vault().await;
+    vault
+        .put("oauth-client:demo", &SecretString::from("app-secret"))
+        .await
+        .unwrap();
+    let flows = OAuthFlows::new(config.clone(), "https://lighthouse.test/");
+    let authorize = flows.start("demo", &vault).await.unwrap();
+    let query: HashMap<_, _> = url::Url::parse(&authorize)
+        .unwrap()
+        .query_pairs()
+        .into_owned()
+        .collect();
+    assert_eq!(query["client_id"], "own-app");
+    flows
+        .finish("the-code", &query["state"], None)
+        .await
+        .unwrap();
+    assert!(carries_secret(
+        &server.forms.lock().await[0],
+        "own-app",
+        "app-secret"
+    ));
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let session = McpConnector::new(config, vault)
+        .session(&tools())
+        .await
+        .unwrap();
+    assert_works(&session).await;
+    let forms = server.forms.lock().await;
+    let refresh = forms
+        .iter()
+        .find(|form| form["grant_type"] == "refresh_token")
+        .expect("refreshed");
+    assert!(
+        carries_secret(refresh, "own-app", "app-secret"),
+        "{refresh:?}"
+    );
+}
+
+#[tokio::test]
+async fn headers_of_a_connector_reach_the_server() {
+    async fn require_tenant(request: Request, next: Next) -> Response {
+        match request.headers().get("x-tenant-id") {
+            Some(value) if value == "acme" => next.run(request).await,
+            _ => StatusCode::FORBIDDEN.into_response(),
+        }
+    }
+    let router = Router::new()
+        .nest_service("/mcp", mcp_service())
+        .layer(middleware::from_fn(require_tenant));
+    let base = serve(router).await;
+    let mut config = http_connector(format!("{base}/mcp"), ConnectorAuth::None);
+    let session = McpConnector::new(connectors(config.clone()), vault().await)
+        .session(&tools())
+        .await;
+    assert!(session.is_err());
+    if let ConnectorTransport::Http { headers, .. } = &mut config.transport {
+        headers.insert("X-Tenant-Id".to_owned(), "acme".to_owned());
+    }
+    let session = McpConnector::new(connectors(config.clone()), vault().await)
+        .session(&tools())
+        .await
+        .unwrap();
+    assert_works(&session).await;
+    if let ConnectorTransport::Http { headers, .. } = &mut config.transport {
+        headers.insert("bad header".to_owned(), "x".to_owned());
+    }
+    assert!(
+        McpConnector::new(connectors(config), vault().await)
+            .session(&tools())
+            .await
+            .is_err()
+    );
 }

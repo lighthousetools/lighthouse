@@ -448,6 +448,10 @@ pub enum ConnectorTransport {
         /// Allow OAuth discovery on private addresses, for servers in your own network.
         #[serde(default)]
         allow_private_addresses: bool,
+        /// Extra request headers with values that are not secret, such as a tenant ID. Secrets belong in the vault:
+        /// a bearer token under `mcp:<connector>`, an OAuth client secret under `oauth-client:<connector>`.
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
     },
     /// A local child process speaking stdio.
     Stdio {

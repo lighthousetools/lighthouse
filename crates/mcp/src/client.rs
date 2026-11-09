@@ -7,7 +7,7 @@ use lighthouse_router::ToolSpec;
 use lighthouse_vault::Vault;
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::RunningService;
-use rmcp::transport::auth::{AuthClient, AuthorizationManager};
+use rmcp::transport::auth::{AuthClient, AuthorizationManager, OAuthClientConfig};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use rmcp::{RoleClient, ServiceExt};
@@ -92,6 +92,30 @@ async fn first_with(
     Ok(None)
 }
 
+/// Redirect URI given to the OAuth client when it only refreshes tokens.
+const REFRESH_REDIRECT: &str = "http://localhost/oauth/callback";
+
+/// Headers a connector sends with every request. Names and values must be valid HTTP.
+fn header_map(
+    connector: &str,
+    headers: &std::collections::BTreeMap<String, String>,
+) -> Result<
+    std::collections::HashMap<reqwest::header::HeaderName, reqwest::header::HeaderValue>,
+    McpError,
+> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            let header = reqwest::header::HeaderName::try_from(name.as_str())
+                .map_err(|_| connect_error(connector, format!("invalid header name `{name}`")))?;
+            let value = reqwest::header::HeaderValue::try_from(value.as_str()).map_err(|_| {
+                connect_error(connector, format!("invalid value for header `{name}`"))
+            })?;
+            Ok((header, value))
+        })
+        .collect()
+}
+
 fn http_client(guarded: bool) -> reqwest::Client {
     if guarded {
         lighthouse_router::net::guarded_client()
@@ -154,13 +178,16 @@ impl McpConnector {
                 url,
                 auth,
                 allow_private_addresses,
+                client_id,
+                headers,
                 ..
             } => {
                 if connection.guarded {
                     lighthouse_router::net::check_url(url)
                         .map_err(|error| connect_error(name, error))?;
                 }
-                let config = StreamableHttpClientTransportConfig::with_uri(url.as_str());
+                let config = StreamableHttpClientTransportConfig::with_uri(url.as_str())
+                    .custom_headers(header_map(name, headers)?);
                 let client = http_client(connection.guarded);
                 match auth {
                     ConnectorAuth::None => {
@@ -207,6 +234,20 @@ impl McpConnector {
                                 connector: name.to_owned(),
                                 detail: format!("run `lht connect {name}` first"),
                             });
+                        }
+                        let secret_entry = crate::oauth::client_secret_entry(name);
+                        if let (Some(client_id), Some((_, secret))) = (
+                            client_id,
+                            first_with(&connection.vaults, &secret_entry).await?,
+                        ) {
+                            // Refreshing needs the secret too. The redirect URI is only used
+                            // by the authorization step, which already happened.
+                            let client =
+                                OAuthClientConfig::new(client_id.clone(), REFRESH_REDIRECT)
+                                    .with_client_secret(secret.expose_secret().to_owned());
+                            manager
+                                .configure_client(client)
+                                .map_err(|error| connect_error(name, error))?;
                         }
                         let client = AuthClient::new(client, manager);
                         let transport = StreamableHttpClientTransport::with_client(client, config);

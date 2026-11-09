@@ -122,6 +122,7 @@ impl OAuthFlows {
             client_id,
             scopes,
             allow_private_addresses,
+            ..
         } = &config.transport
         else {
             return Err(McpError::OAuth(format!(
@@ -145,6 +146,9 @@ impl OAuthFlows {
         }
         if let Some(client_id) = client_id {
             request = request.with_preregistered_client(client_id.clone());
+            if let Some(secret) = vault.get(&client_secret_entry(connector)).await? {
+                request = request.with_client_secret(secret.expose_secret().to_owned());
+            }
         }
         state
             .start_authorization(request)
@@ -186,4 +190,10 @@ impl OAuthFlows {
         .map_err(oauth_error)?;
         Ok(connector)
     }
+}
+
+/// The vault entry of the OAuth client secret of a connector, for servers that only accept registered confidential
+/// clients, such as GitHub.
+pub fn client_secret_entry(connector: &str) -> String {
+    format!("oauth-client:{connector}")
 }

@@ -286,6 +286,7 @@ async fn connectors_are_http_unique_and_switchable() {
                 client_id: None,
                 scopes: Vec::new(),
                 allow_private_addresses: false,
+                headers: Default::default(),
             },
             read_tools: Vec::new(),
             draft_tools: Vec::new(),

@@ -217,6 +217,7 @@ pub(crate) fn connector_config(entry: &ConnectorEntry, allow_private: bool) -> C
             client_id: entry.client_id.clone(),
             scopes: entry.scopes.clone(),
             allow_private_addresses: allow_private,
+            headers: Default::default(),
         },
         read_tools: entry.read_tools.clone(),
         draft_tools: entry.draft_tools.clone(),
