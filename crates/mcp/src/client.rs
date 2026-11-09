@@ -14,15 +14,90 @@ use rmcp::{RoleClient, ServiceExt};
 use secrecy::ExposeSecret;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 use tokio::process::Command;
 
 type Client = RunningService<RoleClient, ()>;
 
-/// Connects to the configured MCP servers.
+/// A connector and the vaults its tokens come from.
 #[derive(Clone, Debug)]
+pub struct Connection {
+    /// Its settings.
+    pub config: ConnectorConfig,
+    /// Vaults to read tokens from, in order: the first that has one wins.
+    /// OAuth tokens refresh into the vault they came from.
+    pub vaults: Vec<Vault>,
+    /// Whether connections must go through the guarded HTTP client, because
+    /// a tenant or a person chose the URL.
+    pub guarded: bool,
+}
+
+/// The connectors that apply now.
+pub trait ConnectorSource: Send + Sync {
+    /// The connectors for the work the current task does. Implementations
+    /// may answer per user; each call returns a consistent set.
+    fn connections(&self) -> Arc<BTreeMap<String, Connection>>;
+}
+
+/// The same connectors every time.
+#[derive(Clone, Debug)]
+pub struct FixedConnectors(Arc<BTreeMap<String, Connection>>);
+
+impl FixedConnectors {
+    /// Connectors of the configuration, with tokens from one vault.
+    pub fn new(connectors: BTreeMap<String, ConnectorConfig>, vault: Option<Vault>) -> Self {
+        Self(Arc::new(
+            connectors
+                .into_iter()
+                .map(|(name, config)| {
+                    let connection = Connection {
+                        config,
+                        vaults: vault.iter().cloned().collect(),
+                        guarded: false,
+                    };
+                    (name, connection)
+                })
+                .collect(),
+        ))
+    }
+}
+
+impl ConnectorSource for FixedConnectors {
+    fn connections(&self) -> Arc<BTreeMap<String, Connection>> {
+        self.0.clone()
+    }
+}
+
+/// Connects to MCP servers.
+#[derive(Clone)]
 pub struct McpConnector {
-    connectors: BTreeMap<String, ConnectorConfig>,
-    vault: Vault,
+    source: Arc<dyn ConnectorSource>,
+}
+
+impl std::fmt::Debug for McpConnector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpConnector").finish_non_exhaustive()
+    }
+}
+
+async fn first_with(
+    vaults: &[Vault],
+    entry: &str,
+) -> Result<Option<(Vault, secrecy::SecretString)>, McpError> {
+    for vault in vaults {
+        if let Some(value) = vault.get(entry).await? {
+            return Ok(Some((vault.clone(), value)));
+        }
+    }
+    Ok(None)
+}
+
+fn http_client(guarded: bool) -> reqwest::Client {
+    if guarded {
+        lighthouse_router::net::guarded_client()
+    } else {
+        reqwest::Client::default()
+    }
 }
 
 fn connect_error(connector: &str, error: impl std::fmt::Display) -> McpError {
@@ -33,17 +108,29 @@ fn connect_error(connector: &str, error: impl std::fmt::Display) -> McpError {
 }
 
 impl McpConnector {
-    /// Creates a connector.
+    /// Creates a connector for configured servers with tokens from one vault.
     pub fn new(connectors: BTreeMap<String, ConnectorConfig>, vault: Vault) -> Self {
-        Self { connectors, vault }
+        Self::live(Arc::new(FixedConnectors::new(connectors, Some(vault))))
     }
 
-    async fn connect(&self, name: &str) -> Result<Client, McpError> {
-        let connector = self
-            .connectors
+    /// Creates a connector that asks a source for the connectors on every session.
+    pub fn live(source: Arc<dyn ConnectorSource>) -> Self {
+        Self { source }
+    }
+
+    async fn connect(
+        &self,
+        connections: &BTreeMap<String, Connection>,
+        name: &str,
+    ) -> Result<Client, McpError> {
+        let connection = connections
             .get(name)
             .ok_or_else(|| McpError::UnknownConnector(name.to_owned()))?;
-        match &connector.transport {
+        let missing = |entry: &str| McpError::NotAuthorized {
+            connector: name.to_owned(),
+            detail: format!("vault entry `{entry}` is missing"),
+        };
+        match &connection.config.transport {
             ConnectorTransport::Stdio {
                 command,
                 args,
@@ -52,14 +139,9 @@ impl McpConnector {
                 let mut process = Command::new(command);
                 process.args(args);
                 for (variable, entry) in secret_env {
-                    let value =
-                        self.vault
-                            .get(entry)
-                            .await?
-                            .ok_or_else(|| McpError::NotAuthorized {
-                                connector: name.to_owned(),
-                                detail: format!("vault entry `{entry}` is missing"),
-                            })?;
+                    let (_, value) = first_with(&connection.vaults, entry)
+                        .await?
+                        .ok_or_else(|| missing(entry))?;
                     process.env(variable, value.expose_secret());
                 }
                 let transport =
@@ -74,24 +156,26 @@ impl McpConnector {
                 allow_private_addresses,
                 ..
             } => {
+                if connection.guarded {
+                    lighthouse_router::net::check_url(url)
+                        .map_err(|error| connect_error(name, error))?;
+                }
                 let config = StreamableHttpClientTransportConfig::with_uri(url.as_str());
+                let client = http_client(connection.guarded);
                 match auth {
                     ConnectorAuth::None => {
-                        let transport = StreamableHttpClientTransport::from_config(config);
+                        let transport = StreamableHttpClientTransport::with_client(client, config);
                         ().serve(transport)
                             .await
                             .map_err(|error| connect_error(name, error))
                     }
                     ConnectorAuth::Bearer => {
                         let entry = format!("mcp:{name}");
-                        let token = self.vault.get(&entry).await?.ok_or_else(|| {
-                            McpError::NotAuthorized {
-                                connector: name.to_owned(),
-                                detail: format!("vault entry `{entry}` is missing"),
-                            }
-                        })?;
+                        let (_, token) = first_with(&connection.vaults, &entry)
+                            .await?
+                            .ok_or_else(|| missing(&entry))?;
                         let config = config.auth_header(token.expose_secret().to_owned());
-                        let transport = StreamableHttpClientTransport::from_config(config);
+                        let transport = StreamableHttpClientTransport::with_client(client, config);
                         ().serve(transport)
                             .await
                             .map_err(|error| connect_error(name, error))
@@ -103,10 +187,17 @@ impl McpConnector {
                             AuthorizationManager::new(url.as_str()).await
                         }
                         .map_err(|error| connect_error(name, error))?;
-                        manager.set_credential_store(VaultCredentialStore::new(
-                            self.vault.clone(),
-                            name,
-                        ));
+                        let entry = format!("oauth:{name}");
+                        let vault = match first_with(&connection.vaults, &entry).await? {
+                            Some((vault, _)) => vault,
+                            None => {
+                                return Err(McpError::NotAuthorized {
+                                    connector: name.to_owned(),
+                                    detail: format!("run `lht connect {name}` first"),
+                                });
+                            }
+                        };
+                        manager.set_credential_store(VaultCredentialStore::new(vault, name));
                         let stored = manager
                             .initialize_from_store()
                             .await
@@ -117,7 +208,7 @@ impl McpConnector {
                                 detail: format!("run `lht connect {name}` first"),
                             });
                         }
-                        let client = AuthClient::new(reqwest::Client::default(), manager);
+                        let client = AuthClient::new(client, manager);
                         let transport = StreamableHttpClientTransport::with_client(client, config);
                         ().serve(transport)
                             .await
@@ -134,9 +225,10 @@ impl McpConnector {
         for tool in tools {
             names.insert(split_tool(tool)?.0);
         }
+        let connections = self.source.connections();
         let mut clients = HashMap::new();
         for name in names {
-            clients.insert(name.to_owned(), self.connect(name).await?);
+            clients.insert(name.to_owned(), self.connect(&connections, name).await?);
         }
         Ok(McpSession { clients })
     }

@@ -1,6 +1,8 @@
+use crate::ConnectorSource;
 use lighthouse_config::ConnectorConfig;
 use lighthouse_core::agent::{AgentDefinition, ToolLevel};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 const BRAIN: &str = "brain";
 const BRAIN_READ_TOOLS: [&str; 2] = ["search", "get"];
@@ -16,9 +18,25 @@ const PROPOSAL_TOOLS: [(&str, &str); 3] = [
 /// Classifies tools by the connector allowlists.
 ///
 /// A tool is `read` or `draft` only if its connector lists it. Everything else
-/// counts as `write`, whatever the agent file says.
-#[derive(Clone, Debug, Default)]
+/// counts as `write`, whatever the agent file says. A live policy reads the
+/// connectors from a source on every question, so it follows changes and
+/// answers for the user the current task acts for.
+#[derive(Clone, Default)]
 pub struct ToolPolicy {
+    fixed: Arc<Lists>,
+    live: Option<Arc<dyn ConnectorSource>>,
+}
+
+impl std::fmt::Debug for ToolPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolPolicy")
+            .field("live", &self.live.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Default)]
+struct Lists {
     read_tools: BTreeMap<String, BTreeSet<String>>,
     draft_tools: BTreeMap<String, BTreeSet<String>>,
 }
@@ -35,12 +53,72 @@ pub struct BlockedTool {
 impl ToolPolicy {
     /// Builds the policy from the connector configuration and the built-in tools.
     pub fn new(connectors: &BTreeMap<String, ConnectorConfig>) -> Self {
-        let mut read_tools: BTreeMap<String, BTreeSet<String>> = connectors
+        Self {
+            fixed: Arc::new(Lists::new(connectors.iter())),
+            live: None,
+        }
+    }
+
+    /// A policy that reads the connectors from a source on every question.
+    pub fn live(source: Arc<dyn ConnectorSource>) -> Self {
+        Self {
+            fixed: Arc::default(),
+            live: Some(source),
+        }
+    }
+
+    fn lists(&self) -> Arc<Lists> {
+        match &self.live {
+            Some(source) => {
+                let connections = source.connections();
+                Arc::new(Lists::new(
+                    connections
+                        .iter()
+                        .map(|(name, connection)| (name, &connection.config)),
+                ))
+            }
+            None => self.fixed.clone(),
+        }
+    }
+
+    /// Returns the effective level of a qualified tool.
+    pub fn level(&self, qualified: &str) -> ToolLevel {
+        self.lists().level(qualified)
+    }
+
+    /// Returns every tool whose real level exceeds what the agent file declares.
+    ///
+    /// The file has to admit that an agent acts, so a tool it declares as `read`
+    /// cannot turn out to write.
+    pub fn blocked(&self, agent: &AgentDefinition) -> Vec<BlockedTool> {
+        let lists = self.lists();
+        agent
+            .tools
             .iter()
+            .filter_map(|grant| {
+                let level = lists.level(&grant.name);
+                (level > grant.level).then(|| BlockedTool {
+                    tool: grant.name.clone(),
+                    reason: if level == ToolLevel::Write {
+                        "the connector does not list it as read-only".to_owned()
+                    } else {
+                        "the agent file declares it below its level".to_owned()
+                    },
+                })
+            })
+            .collect()
+    }
+}
+
+impl Lists {
+    fn new<'a>(
+        connectors: impl Iterator<Item = (&'a String, &'a ConnectorConfig)> + Clone,
+    ) -> Self {
+        let mut read_tools: BTreeMap<String, BTreeSet<String>> = connectors
+            .clone()
             .map(|(name, connector)| (name.clone(), connector.read_tools.iter().cloned().collect()))
             .collect();
         let mut draft_tools: BTreeMap<String, BTreeSet<String>> = connectors
-            .iter()
             .map(|(name, connector)| {
                 (
                     name.clone(),
@@ -60,8 +138,7 @@ impl ToolPolicy {
         }
     }
 
-    /// Returns the effective level of a qualified tool.
-    pub fn level(&self, qualified: &str) -> ToolLevel {
+    fn level(&self, qualified: &str) -> ToolLevel {
         let Some((connector, tool)) = qualified.split_once('.') else {
             return ToolLevel::Write;
         };
@@ -75,28 +152,6 @@ impl ToolPolicy {
         } else {
             ToolLevel::Write
         }
-    }
-
-    /// Returns every tool whose real level exceeds what the agent file declares.
-    ///
-    /// The file has to admit that an agent acts, so a tool it declares as `read`
-    /// cannot turn out to write.
-    pub fn blocked(&self, agent: &AgentDefinition) -> Vec<BlockedTool> {
-        agent
-            .tools
-            .iter()
-            .filter_map(|grant| {
-                let level = self.level(&grant.name);
-                (level > grant.level).then(|| BlockedTool {
-                    tool: grant.name.clone(),
-                    reason: if level == ToolLevel::Write {
-                        "the connector does not list it as read-only".to_owned()
-                    } else {
-                        "the agent file declares it below its level".to_owned()
-                    },
-                })
-            })
-            .collect()
     }
 }
 
@@ -175,6 +230,47 @@ mod tests {
         assert!(blocked[0].reason.contains("below its level"));
         let blocked = policy.blocked(&agent("  - linear.delete_issue: draft"));
         assert!(blocked[0].reason.contains("does not list it"));
+    }
+
+    struct Switching(std::sync::Mutex<bool>);
+
+    impl ConnectorSource for Switching {
+        fn connections(&self) -> Arc<BTreeMap<String, crate::Connection>> {
+            let listed = *self.0.lock().unwrap();
+            let connector = ConnectorConfig {
+                transport: ConnectorTransport::Stdio {
+                    command: "x".to_owned(),
+                    args: Vec::new(),
+                    secret_env: BTreeMap::new(),
+                },
+                read_tools: if listed {
+                    vec!["list_threads".to_owned()]
+                } else {
+                    Vec::new()
+                },
+                draft_tools: Vec::new(),
+            };
+            Arc::new(BTreeMap::from([(
+                "mail".to_owned(),
+                crate::Connection {
+                    config: connector,
+                    vaults: Vec::new(),
+                    guarded: false,
+                },
+            )]))
+        }
+    }
+
+    #[test]
+    fn a_live_policy_follows_its_source() {
+        let source = Arc::new(Switching(std::sync::Mutex::new(true)));
+        let policy = ToolPolicy::live(source.clone());
+        assert_eq!(policy.level("mail.list_threads"), ToolLevel::Read);
+        assert_eq!(policy.level("brain.search"), ToolLevel::Read);
+        *source.0.lock().unwrap() = false;
+        assert_eq!(policy.level("mail.list_threads"), ToolLevel::Write);
+        assert!(format!("{policy:?}").contains("live: true"));
+        assert!(!policy.blocked(&agent("  - mail.list_threads")).is_empty());
     }
 
     #[test]

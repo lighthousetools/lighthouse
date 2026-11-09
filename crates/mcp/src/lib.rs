@@ -5,7 +5,7 @@ pub mod demo;
 pub mod oauth;
 mod policy;
 
-pub use client::{McpConnector, McpSession};
+pub use client::{Connection, ConnectorSource, FixedConnectors, McpConnector, McpSession};
 pub use oauth::OAuthFlows;
 pub use policy::{BlockedTool, ToolPolicy};
 

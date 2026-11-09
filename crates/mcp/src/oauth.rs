@@ -105,6 +105,17 @@ impl OAuthFlows {
             .connectors
             .get(connector)
             .ok_or_else(|| McpError::UnknownConnector(connector.to_owned()))?;
+        self.start_with(connector, config, vault).await
+    }
+
+    /// Starts a flow for a connector with the given settings, such as one a
+    /// tenant or a person added, and stores its tokens in `vault`.
+    pub async fn start_with(
+        &self,
+        connector: &str,
+        config: &ConnectorConfig,
+        vault: &Vault,
+    ) -> Result<String, McpError> {
         let ConnectorTransport::Http {
             url,
             auth: ConnectorAuth::Oauth,
