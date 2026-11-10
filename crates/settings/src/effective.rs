@@ -2,8 +2,8 @@
 
 use crate::{ConnectorEntry, FileKind, Layer, LayerData, SwitchKind};
 use lighthouse_config::{
-    Config, ConnectorConfig, ConnectorTransport, ModelConfig, ProviderConfig, ProviderKind,
-    RouteConfig, SourceConfig,
+    ApiKeyPlacement, Config, ConnectorConfig, ConnectorTransport, ModelConfig, ProviderConfig,
+    ProviderKind, RouteConfig, SourceConfig,
 };
 use lighthouse_router::{PlannedProvider, RouterPlan};
 use std::collections::BTreeMap;
@@ -211,8 +211,17 @@ pub struct Effective {
 
 /// A connector of the tenant or personal layer in the shape of the configuration.
 pub(crate) fn connector_config(entry: &ConnectorEntry, allow_private: bool) -> ConnectorConfig {
-    ConnectorConfig {
-        transport: ConnectorTransport::Http {
+    let transport = match &entry.api {
+        Some(api) => ConnectorTransport::OpenApi {
+            spec: entry.url.clone(),
+            base_url: api.base_url.clone(),
+            key: key_placement(&api.key),
+            key_name: api.key_name.clone(),
+            headers: Default::default(),
+            operations: api.operations.clone(),
+            reads_are_safe: true,
+        },
+        None => ConnectorTransport::Http {
             url: entry.url.clone(),
             auth: entry.auth,
             client_id: entry.client_id.clone(),
@@ -220,8 +229,21 @@ pub(crate) fn connector_config(entry: &ConnectorEntry, allow_private: bool) -> C
             allow_private_addresses: allow_private,
             headers: Default::default(),
         },
+    };
+    ConnectorConfig {
+        transport,
         read_tools: entry.read_tools.clone(),
         draft_tools: entry.draft_tools.clone(),
+    }
+}
+
+/// How a REST API connector sends its key. Unknown values send none.
+fn key_placement(key: &str) -> ApiKeyPlacement {
+    match key {
+        "bearer" => ApiKeyPlacement::Bearer,
+        "header" => ApiKeyPlacement::Header,
+        "query" => ApiKeyPlacement::Query,
+        _ => ApiKeyPlacement::None,
     }
 }
 
@@ -552,6 +574,7 @@ mod tests {
             read_tools: vec!["list_threads".to_owned()],
             draft_tools: Vec::new(),
             enabled: true,
+            api: None,
         }
     }
 

@@ -396,6 +396,7 @@ mod tests {
             read_tools: Vec::new(),
             draft_tools: Vec::new(),
             enabled: true,
+            api: None,
         };
         settings
             .set_connector(Some(user), Some(user), "mail", &connector)
@@ -503,6 +504,7 @@ mod tests {
             read_tools: vec!["list".to_owned()],
             draft_tools: Vec::new(),
             enabled: true,
+            api: None,
         };
         settings
             .set_connector(Some(sam), Some(sam), "mail", &connector)

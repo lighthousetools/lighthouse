@@ -101,7 +101,19 @@ operations = ["get_deals", "post_deals"]        # optional, else every operation
 
 The key is the vault entry `mcp:<connector>`. `GET` and `HEAD` operations count as read-only, so agents can use them
 without listing them in `read_tools`; set `reads_are_safe = false` to list them yourself. Every other operation writes
-and waits for approval, unless `draft_tools` names it. Only the instance configuration can add `openapi` connectors.
+and waits for approval, unless `draft_tools` names it.
+
+Tenants and people add REST APIs in the apps or with `PUT /settings/{layer}/connectors/{name}`: `url` is the
+description, `auth` is `bearer` when the API gets a key and `none` when not, and `api` holds the rest:
+
+```json
+{"url": "https://api.example.com/openapi.yaml", "auth": "bearer",
+ "api": {"key": "header", "key_name": "x-api-token", "base_url": null, "operations": []}}
+```
+
+The description and the base URL must then be public `https` URLs, and file paths are refused. Extra headers and
+`reads_are_safe = false` stay in `lighthouse.toml`. Some vendors in the catalog, such as Pipedrive, are REST APIs of
+this kind: their entry carries `api`, and the key is the API token from the vendor's settings.
 
 For OAuth connectors, `server.public_url` must be reachable from your browser. Run `lht connect <connector>` and open
 the printed URL. The redirect goes to `<public_url>/oauth/callback`. Tokens are stored in the vault and refreshed
@@ -202,8 +214,8 @@ Merge rules:
 - **Models** merge per provider and task. The highest layer with a model for a task wins.
 - **Routing** merges per task. A tenant route replaces the instance route of that task; a personal route replaces
   both for that person. A route needs a model for its task at the primary and the fallback provider.
-- **Connectors** merge by name. Tenants and people add connectors over streamable HTTP only: a connector that starts a
-  process on the server exists only in `lighthouse.toml`. A new connector cannot take a name a lower layer has. A
+- **Connectors** merge by name. Tenants and people add MCP servers over streamable HTTP and REST APIs with an OpenAPI
+  description: a connector that starts a process on the server exists only in `lighthouse.toml`. A new connector cannot take a name a lower layer has. A
   tenant can switch an instance connector off for itself, and a person can switch an instance or tenant connector off
   for themselves.
 

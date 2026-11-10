@@ -90,10 +90,12 @@ pub struct RouteView {
 pub struct ConnectorView {
     /// Name.
     pub name: String,
-    /// `http`, `openapi` or `stdio`. Only the instance has `stdio` and `openapi` connectors.
+    /// `http`, `openapi` or `stdio`. Only the instance has `stdio` connectors.
     pub transport: String,
     /// Server URL of an `http` connector, or the description of an `openapi` one.
     pub url: Option<String>,
+    /// The REST API settings of an `openapi` connector.
+    pub api: Option<lighthouse_settings::RestApi>,
     /// `none`, `bearer`, `oauth` or `process`.
     pub auth: String,
     /// Pre-registered OAuth client ID.
@@ -371,6 +373,27 @@ fn connector_view(
         ),
         ConnectorTransport::Stdio { .. } => ("stdio", None, "process", None, Vec::new()),
     };
+    let api = match &connector.config.transport {
+        ConnectorTransport::OpenApi {
+            base_url,
+            key,
+            key_name,
+            operations,
+            ..
+        } => Some(lighthouse_settings::RestApi {
+            base_url: base_url.clone(),
+            key: match key {
+                lighthouse_config::ApiKeyPlacement::None => "none",
+                lighthouse_config::ApiKeyPlacement::Bearer => "bearer",
+                lighthouse_config::ApiKeyPlacement::Header => "header",
+                lighthouse_config::ApiKeyPlacement::Query => "query",
+            }
+            .to_owned(),
+            key_name: key_name.clone(),
+            operations: operations.clone(),
+        }),
+        _ => None,
+    };
     let token = match auth {
         "bearer" => Some(format!("mcp:{name}")),
         "oauth" => Some(format!("oauth:{name}")),
@@ -385,6 +408,7 @@ fn connector_view(
         name: name.to_owned(),
         transport: transport.to_owned(),
         url,
+        api,
         auth: auth.to_owned(),
         client_id,
         scopes,

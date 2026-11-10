@@ -22,7 +22,6 @@ use lighthouse_sessions::claude::{
     item, parse_memory, project_body, project_name, redact, section_of, statement,
 };
 
-
 /// What an import would create.
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Plan {

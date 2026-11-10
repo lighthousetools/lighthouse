@@ -88,6 +88,7 @@ fn connector(url: &str) -> ConnectorInput {
         read_tools: vec!["list_threads".to_owned()],
         draft_tools: Vec::new(),
         enabled: true,
+        api: None,
     }
 }
 
@@ -767,4 +768,118 @@ async fn the_models_of_a_mock_provider_of_the_instance_can_change() {
     let effective = settings.effective(Some(sam));
     assert_eq!(effective.model("anthropic", "text").unwrap().model, "mine");
     assert_eq!(effective.providers["anthropic"].kind, ProviderKind::Mock);
+}
+
+#[tokio::test]
+async fn rest_apis_become_openapi_connectors() {
+    let store = fresh_store().await;
+    let tenant = settings(&store, TenantId::DEFAULT, options()).await;
+    let mut crm = connector("http://10.0.0.7/openapi.yaml");
+    crm.api = Some(crate::RestApi {
+        base_url: Some("http://10.0.0.7/api/v2".to_owned()),
+        key: "header".to_owned(),
+        key_name: Some(" x-api-token ".to_owned()),
+        operations: vec!["get_deals".to_owned()],
+    });
+    tenant.set_connector(None, None, "crm", &crm).await.unwrap();
+    // It survives a reload from the database.
+    let reopened = settings(&store, TenantId::DEFAULT, options()).await;
+    let effective = reopened.effective(None);
+    let lighthouse_config::ConnectorTransport::OpenApi {
+        spec,
+        base_url,
+        key,
+        key_name,
+        operations,
+        reads_are_safe,
+        ..
+    } = &effective.connectors["crm"].config.transport
+    else {
+        panic!("not an OpenAPI connector");
+    };
+    assert_eq!(spec, "http://10.0.0.7/openapi.yaml");
+    assert_eq!(base_url.as_deref(), Some("http://10.0.0.7/api/v2"));
+    assert_eq!(*key, lighthouse_config::ApiKeyPlacement::Header);
+    assert_eq!(key_name.as_deref(), Some("x-api-token"));
+    assert_eq!(operations, &["get_deals".to_owned()]);
+    assert!(reads_are_safe);
+    assert!(effective.connectors["crm"].guarded());
+
+    // An MCP connector of the same name replaces it.
+    tenant
+        .set_connector(None, None, "crm", &connector("http://10.0.0.7/mcp"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        tenant.effective(None).connectors["crm"].config.transport,
+        lighthouse_config::ConnectorTransport::Http { .. }
+    ));
+}
+
+#[tokio::test]
+async fn rest_api_settings_are_checked() {
+    let store = fresh_store().await;
+    let settings = settings(&store, TenantId::DEFAULT, options()).await;
+    let api = |key: &str, key_name: Option<&str>| crate::RestApi {
+        key: key.to_owned(),
+        key_name: key_name.map(str::to_owned),
+        ..Default::default()
+    };
+    let cases = [
+        ("bearer", api("cookie", None)),
+        ("bearer", api("header", None)),
+        ("bearer", api("query", Some("api token"))),
+        ("none", api("bearer", None)),
+        ("bearer", api("none", None)),
+        ("oauth", api("bearer", None)),
+    ];
+    for (auth, rest) in cases {
+        let mut input = connector("http://10.0.0.8/openapi.json");
+        input.auth = auth.to_owned();
+        input.api = Some(rest.clone());
+        let error = settings
+            .set_connector(None, None, "api", &input)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, SettingsError::Invalid(_)),
+            "{auth} {rest:?}: {error}"
+        );
+    }
+    let mut open = connector("http://10.0.0.8/openapi.json");
+    open.auth = "none".to_owned();
+    open.api = Some(api("none", Some("ignored")));
+    settings
+        .set_connector(None, None, "open", &open)
+        .await
+        .unwrap();
+    let effective = settings.effective(None);
+    let lighthouse_config::ConnectorTransport::OpenApi { key, key_name, .. } =
+        &effective.connectors["open"].config.transport
+    else {
+        panic!("not an OpenAPI connector");
+    };
+    assert_eq!(*key, lighthouse_config::ApiKeyPlacement::None);
+    assert!(key_name.is_none());
+}
+
+#[tokio::test]
+async fn rest_apis_need_public_addresses_unless_allowed() {
+    let store = fresh_store().await;
+    let strict = Options {
+        allow_private_endpoints: false,
+        ..options()
+    };
+    let settings = settings(&store, TenantId::DEFAULT, strict).await;
+    let mut input = connector("https://127.0.0.1/openapi.json");
+    input.api = Some(crate::RestApi {
+        key: "bearer".to_owned(),
+        ..Default::default()
+    });
+    assert!(
+        settings
+            .set_connector(None, None, "api", &input)
+            .await
+            .is_err()
+    );
 }

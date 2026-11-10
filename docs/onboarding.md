@@ -37,7 +37,8 @@ Automation platforms in the catalog reach thousands of further apps through one 
 | OAuth that only accepts registered clients, such as GitHub | Register an OAuth app with the redirect `<public_url>/oauth/callback`, set its `client_id` and store its secret as `oauth-client:<connector>` |
 | Static token | `auth = "bearer"` and the token as `mcp:<connector>` |
 | Needs a header such as a tenant ID | `headers` in the connector settings |
-| A REST API without an MCP server | An `openapi` connector turns its OpenAPI description into tools, see [configuration.md](configuration.md#apis-without-an-mcp-server) |
+| A REST API without an MCP server | Add it as a REST API in the apps: the URL of its OpenAPI description and the key. Its operations become tools, see [configuration.md](configuration.md#apis-without-an-mcp-server) |
+| An MCP server that only lets in apps its vendor approved | Use the vendor's REST API instead, if it publishes an OpenAPI description. Pipedrive's catalog entry does this |
 | Only runs on your machine (stdio, local apps) | Keep it in Claude Code on that machine and let Lighthouse start sessions there, see step 6 |
 
 Some hosted connectors of other products accept only clients on their own allowlist, and some exist only inside

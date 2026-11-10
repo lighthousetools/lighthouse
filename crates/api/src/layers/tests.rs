@@ -750,3 +750,41 @@ async fn the_talk_agent_is_each_persons_choice() {
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
 }
+
+#[tokio::test]
+async fn rest_api_connectors_round_trip() {
+    let harness = harness(true, false).await;
+    let app = &harness.app;
+    let owner = signed_in(app).await;
+    let (status, body) = put(
+        app,
+        &owner,
+        "/settings/tenant/connectors/crm",
+        json!({
+            "url": "http://10.0.0.9/openapi.yaml",
+            "auth": "bearer",
+            "api": {"key": "header", "key_name": "x-api-token"},
+            "read_tools": ["get_deals"]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let view = get(app, &owner, "/settings/effective").await;
+    let crm = find(&view["connectors"], "name", "crm");
+    assert_eq!(crm["transport"], "openapi");
+    assert_eq!(crm["url"], "http://10.0.0.9/openapi.yaml");
+    assert_eq!(crm["auth"], "bearer");
+    assert_eq!(crm["token_name"], "mcp:crm");
+    assert_eq!(
+        crm["api"],
+        json!({"key": "header", "key_name": "x-api-token"})
+    );
+    let (status, _) = put(
+        app,
+        &owner,
+        "/settings/tenant/connectors/crm",
+        json!({"url": "http://10.0.0.9/openapi.yaml", "auth": "oauth", "api": {"key": "bearer"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}

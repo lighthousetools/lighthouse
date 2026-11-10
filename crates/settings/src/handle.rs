@@ -570,8 +570,12 @@ impl TenantSettings {
                 "a tool is either in `read_tools` or in `draft_tools`".to_owned(),
             ));
         }
-        let url =
-            validate::endpoint(&input.url, self.inner.options.allow_private_endpoints).await?;
+        let allow_private = self.inner.options.allow_private_endpoints;
+        let url = validate::endpoint(&input.url, allow_private).await?;
+        let api = match &input.api {
+            Some(api) => Some(validate::rest_api(api, auth, allow_private).await?),
+            None => None,
+        };
         let entry = ConnectorEntry {
             url,
             auth,
@@ -580,6 +584,7 @@ impl TenantSettings {
             read_tools: input.read_tools.clone(),
             draft_tools: input.draft_tools.clone(),
             enabled: input.enabled,
+            api,
         };
         self.change(
             owner,

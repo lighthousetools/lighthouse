@@ -140,6 +140,66 @@ pub(crate) fn client_id(text: Option<&str>) -> Result<(), SettingsError> {
     }
 }
 
+/// Checks the REST API settings of a connector and returns them normalized.
+pub(crate) async fn rest_api(
+    api: &crate::RestApi,
+    auth: crate::ConnectorAuth,
+    allow_private: bool,
+) -> Result<crate::RestApi, SettingsError> {
+    let keyed = match api.key.as_str() {
+        "none" => false,
+        "bearer" | "header" | "query" => true,
+        _ => {
+            return Err(invalid(
+                "`api.key` must be `none`, `bearer`, `header` or `query`",
+            ));
+        }
+    };
+    match (auth, keyed) {
+        (crate::ConnectorAuth::None, false) | (crate::ConnectorAuth::Bearer, true) => {}
+        (crate::ConnectorAuth::Oauth, _) => {
+            return Err(invalid("a REST API connector uses a key, not OAuth"));
+        }
+        _ => {
+            return Err(invalid(
+                "`auth` is `bearer` when the API gets a key and `none` when it does not",
+            ));
+        }
+    }
+    let key_name = match (api.key.as_str(), api.key_name.as_deref().map(str::trim)) {
+        ("header" | "query", Some(name)) => {
+            let valid = !name.is_empty()
+                && name.len() <= MAX_TEXT
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+            if !valid {
+                return Err(invalid(
+                    "`api.key_name` must be a header or parameter name of letters, digits, `_`, `-` or `.`",
+                ));
+            }
+            Some(name.to_owned())
+        }
+        ("header" | "query", None) => {
+            return Err(invalid(
+                "`api.key_name` names the header or parameter of the key",
+            ));
+        }
+        _ => None,
+    };
+    tools("api.operations", &api.operations)?;
+    let base_url = match api.base_url.as_deref().map(str::trim) {
+        Some("") | None => None,
+        Some(base) => Some(endpoint(base, allow_private).await?),
+    };
+    Ok(crate::RestApi {
+        base_url,
+        key: api.key.clone(),
+        key_name,
+        operations: api.operations.clone(),
+    })
+}
+
 /// Checks an endpoint a tenant or person chose and returns it normalized.
 ///
 /// Without `allow_private`, it must be a public `https` URL whose host

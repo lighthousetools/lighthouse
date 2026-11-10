@@ -324,7 +324,7 @@ personal layer, and the admin token has none.
 | `DELETE /settings/{layer}/providers/{name}/models/{task}` | Deletes a model of the layer |
 | `PUT /settings/{layer}/routing/{task}` | Sets `{"provider", "fallback"}`. Both need a model for the task |
 | `DELETE /settings/{layer}/routing/{task}` | Deletes the layer's route, so the lower one applies again |
-| `PUT /settings/{layer}/connectors/{name}` | Adds or replaces a connector over streamable HTTP: `{"url", "auth": "none", "bearer" or "oauth", "client_id", "scopes", "read_tools", "draft_tools", "enabled"}` |
+| `PUT /settings/{layer}/connectors/{name}` | Adds or replaces a connector over streamable HTTP: `{"url", "auth": "none", "bearer" or "oauth", "client_id", "scopes", "read_tools", "draft_tools", "enabled"}`. With `"api": {"key", "key_name", "base_url", "operations"}` it is a REST API whose OpenAPI description is at `url`, see [configuration.md](configuration.md#apis-without-an-mcp-server) |
 | `DELETE /settings/{layer}/connectors/{name}` | Deletes a connector of the layer |
 | `PUT /settings/{layer}/connectors/{name}/enabled` | `{"enabled"}`: switches a connector of the layer, or one of a lower layer for this layer only |
 | `GET /settings/values` | The single settings that apply to the caller, each with `key`, `value` and `source` |

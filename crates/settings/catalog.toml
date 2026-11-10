@@ -1239,10 +1239,39 @@ id = "pipedrive"
 label = "Pipedrive"
 vendor = "Pipedrive"
 category = "crm"
-url = "https://mcp.pipedrive.ai/mcp"
-auth = "oauth"
-registration = "dynamic"
-docs = "https://developers.pipedrive.com/"
+url = "https://developers.pipedrive.com/docs/api/v1/openapi-v2.yaml"
+auth = "bearer"
+key_url = "https://app.pipedrive.com/settings/api"
+docs = "https://developers.pipedrive.com/docs/api/v1"
+note = "Connects the REST API with your personal API token. Offers deals, people, organizations, activities, pipelines and search; edit the connection for more."
+api = { key = "header", key_name = "x-api-token", operations = [
+  "get_deals",
+  "get_deals_id",
+  "post_deals",
+  "patch_deals_id",
+  "get_deals_search",
+  "get_persons",
+  "get_persons_id",
+  "post_persons",
+  "patch_persons_id",
+  "get_persons_search",
+  "get_organizations",
+  "get_organizations_id",
+  "post_organizations",
+  "patch_organizations_id",
+  "get_organizations_search",
+  "get_activities",
+  "get_activities_id",
+  "post_activities",
+  "patch_activities_id",
+  "get_pipelines",
+  "get_stages",
+  "get_itemsearch",
+  "get_leads_search",
+  "get_dealfields",
+  "get_personfields",
+  "get_organizationfields",
+] }
 
 [[connectors]]
 id = "rocketreach"

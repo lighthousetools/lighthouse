@@ -14,10 +14,39 @@ const CATALOG: &str = include_str!("../catalog.toml");
 /// Groups of the catalog, checked by the tests.
 #[cfg(test)]
 const CATEGORIES: [&str; 33] = [
-    "accounting", "advertising", "ai", "analytics", "automation", "ci", "cloud", "code", "commerce",
-    "communication", "crm", "database", "design", "docs", "documents", "finance", "health", "hr",
-    "knowledge", "maps", "marketing", "media", "meetings", "observability", "payments", "productivity",
-    "project-management", "search", "security", "social", "storage", "support", "travel",
+    "accounting",
+    "advertising",
+    "ai",
+    "analytics",
+    "automation",
+    "ci",
+    "cloud",
+    "code",
+    "commerce",
+    "communication",
+    "crm",
+    "database",
+    "design",
+    "docs",
+    "documents",
+    "finance",
+    "health",
+    "hr",
+    "knowledge",
+    "maps",
+    "marketing",
+    "media",
+    "meetings",
+    "observability",
+    "payments",
+    "productivity",
+    "project-management",
+    "search",
+    "security",
+    "social",
+    "storage",
+    "support",
+    "travel",
 ];
 
 #[derive(Deserialize)]
@@ -99,6 +128,9 @@ pub struct PresetConnector {
     /// Something to know before connecting, such as a region or an admin setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// For a REST API: `url` is its OpenAPI description, and this says how the key is sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<crate::RestApi>,
 }
 
 /// A suggested connected source.
@@ -134,7 +166,11 @@ pub fn presets() -> &'static Presets {
         let mut presets: Presets = toml::from_str(PRESETS).expect("presets.toml is valid");
         let catalog: Catalog = toml::from_str(CATALOG).expect("catalog.toml is valid");
         for connector in catalog.connectors {
-            if presets.connectors.iter().all(|known| known.id != connector.id) {
+            if presets
+                .connectors
+                .iter()
+                .all(|known| known.id != connector.id)
+            {
                 presets.connectors.push(connector);
             }
         }
@@ -147,8 +183,8 @@ mod tests {
     use super::*;
     use crate::validate;
 
-    #[test]
-    fn presets_pass_the_checks_of_entries() {
+    #[tokio::test]
+    async fn presets_pass_the_checks_of_entries() {
         let presets = presets();
         assert!(presets.providers.len() >= 2);
         for provider in &presets.providers {
@@ -166,7 +202,11 @@ mod tests {
         let mut urls = std::collections::BTreeSet::new();
         for connector in &presets.connectors {
             assert!(ids.insert(connector.id.clone()), "{} twice", connector.id);
-            assert!(urls.insert(connector.url.trim_end_matches('/').to_owned()), "{} twice", connector.url);
+            assert!(
+                urls.insert(connector.url.trim_end_matches('/').to_owned()),
+                "{} twice",
+                connector.url
+            );
             validate::name("connector", &connector.id).unwrap();
             let url = connector.url.replace(['{', '}'], "");
             assert!(url.starts_with("https://"), "{}", connector.url);
@@ -175,12 +215,29 @@ mod tests {
                 assert!(CATEGORIES.contains(&category.as_str()), "{category}");
             }
             if let Some(registration) = &connector.registration {
-                assert!(["dynamic", "preregistered"].contains(&registration.as_str()), "{registration}");
+                assert!(
+                    ["dynamic", "preregistered"].contains(&registration.as_str()),
+                    "{registration}"
+                );
             }
-            assert!(crate::store::parse_auth(&connector.auth).is_some());
+            let auth = crate::store::parse_auth(&connector.auth).unwrap();
             validate::tools("read_tools", &connector.read_tools).unwrap();
+            if let Some(api) = &connector.api {
+                let checked = validate::rest_api(api, auth, true).await.unwrap();
+                assert_eq!(&checked, api, "{}", connector.id);
+            }
         }
-        assert!(presets.connectors.len() >= 400, "{}", presets.connectors.len());
+        assert!(
+            presets
+                .connectors
+                .iter()
+                .any(|connector| connector.api.is_some())
+        );
+        assert!(
+            presets.connectors.len() >= 400,
+            "{}",
+            presets.connectors.len()
+        );
         assert!(presets.sources.len() >= 4);
         for source in &presets.sources {
             validate::name("source", &source.id).unwrap();

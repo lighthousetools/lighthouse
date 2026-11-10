@@ -152,10 +152,11 @@ pub struct ProviderEntry {
     pub models: BTreeMap<String, ModelConfig>,
 }
 
-/// An MCP connector of the tenant or personal layer. Always streamable HTTP.
+/// A connector of the tenant or personal layer: an MCP server over streamable
+/// HTTP, or a REST API with an OpenAPI description when `api` is set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectorEntry {
-    /// Server URL.
+    /// Server URL, or the URL of the OpenAPI description.
     pub url: String,
     /// Authentication.
     pub auth: ConnectorAuth,
@@ -169,6 +170,33 @@ pub struct ConnectorEntry {
     pub draft_tools: Vec<String>,
     /// Whether it is in use.
     pub enabled: bool,
+    /// The REST API settings, for a connector that is not an MCP server.
+    pub api: Option<RestApi>,
+}
+
+/// A REST API with an OpenAPI 3 description, used like an MCP server: every
+/// operation becomes a tool named after its method and path, such as
+/// `get_deals_id` for `GET /deals/{id}`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RestApi {
+    /// Base URL of the API, if not the first server of the description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// How the key from the vault entry `mcp:<name>` is sent: `none`, `bearer`,
+    /// `header` or `query`.
+    #[serde(default = "no_key")]
+    pub key: String,
+    /// The header or query parameter for `header` and `query`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_name: Option<String>,
+    /// Only these operations, such as `get_deals`. Empty means every operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<String>,
+}
+
+fn no_key() -> String {
+    "none".to_owned()
 }
 
 /// The stored entries of one layer.
@@ -355,12 +383,13 @@ pub struct RouteInput {
     pub fallback: Option<String>,
 }
 
-/// An MCP connector over streamable HTTP. Connectors that start a process on
-/// the server exist only in `lighthouse.toml`.
+/// An MCP connector over streamable HTTP, or a REST API with an OpenAPI
+/// description when `api` is set. Connectors that start a process on the
+/// server exist only in `lighthouse.toml`.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct ConnectorInput {
-    /// Server URL. Must be a public `https` URL unless the instance allows
-    /// private endpoints.
+    /// Server URL, or the URL of the OpenAPI description when `api` is set.
+    /// Must be a public `https` URL unless the instance allows private endpoints.
     pub url: String,
     /// `none`, `bearer` (token in the vault as `mcp:<name>`) or `oauth`.
     #[serde(default = "default_auth")]
@@ -380,6 +409,10 @@ pub struct ConnectorInput {
     /// Whether it is in use. Defaults to on.
     #[serde(default = "enabled")]
     pub enabled: bool,
+    /// Makes it a REST API connector. `auth` is then `none`, or `bearer` for a
+    /// key in the vault as `mcp:<name>`.
+    #[serde(default)]
+    pub api: Option<RestApi>,
 }
 
 fn default_auth() -> String {

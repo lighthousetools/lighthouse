@@ -1,8 +1,8 @@
 //! Storage of the tenant and personal layers.
 
 use crate::{
-    ConnectorEntry, FileEntry, FileKind, LayerData, Member, Owner, ProviderEntry, SettingsError,
-    Snapshot, SourceEntry, SwitchKind, layer_of,
+    ConnectorEntry, FileEntry, FileKind, LayerData, Member, Owner, ProviderEntry, RestApi,
+    SettingsError, Snapshot, SourceEntry, SwitchKind, layer_of,
 };
 use chrono::{DateTime, Utc};
 use lighthouse_config::{ConnectorAuth, ModelConfig, ProviderKind, RouteConfig};
@@ -94,6 +94,7 @@ type ConnectorRow = (
     Vec<String>,
     Vec<String>,
     bool,
+    Option<sqlx::types::Json<RestApi>>,
 );
 type SwitchRow = (Option<Uuid>, String, String, bool);
 type ChangeRow = (DateTime<Utc>, Option<Uuid>, String, String, String);
@@ -220,13 +221,13 @@ impl SettingsStore {
                 .insert(task, RouteConfig { provider, fallback });
         }
         let connectors: Vec<ConnectorRow> = sqlx::query_as(
-            "SELECT user_id, name, url, auth, client_id, scopes, read_tools, draft_tools, enabled \
-             FROM settings_connectors WHERE tenant_id = $1",
+            "SELECT user_id, name, url, auth, client_id, scopes, read_tools, draft_tools, enabled, \
+             api FROM settings_connectors WHERE tenant_id = $1",
         )
         .bind(self.id())
         .fetch_all(self.pool())
         .await?;
-        for (user, name, url, auth, client_id, scopes, read_tools, draft_tools, enabled) in
+        for (user, name, url, auth, client_id, scopes, read_tools, draft_tools, enabled, api) in
             connectors
         {
             layer(&mut snapshot, user).connectors.insert(
@@ -239,6 +240,7 @@ impl SettingsStore {
                     read_tools,
                     draft_tools,
                     enabled,
+                    api: api.map(|api| api.0),
                 },
             );
         }
@@ -445,10 +447,10 @@ impl SettingsStore {
     ) -> Result<(), SettingsError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO settings_connectors (id, tenant_id, user_id, name, url, auth, client_id, \
-             scopes, read_tools, draft_tools, enabled) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT {} \
+             scopes, read_tools, draft_tools, enabled, api) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT {} \
              DO UPDATE SET url = $5, auth = $6, client_id = $7, scopes = $8, read_tools = $9, \
-             draft_tools = $10, enabled = $11, updated_at = now()",
+             draft_tools = $10, enabled = $11, api = $12, updated_at = now()",
             target("name")
         )))
         .bind(Uuid::now_v7())
@@ -462,6 +464,7 @@ impl SettingsStore {
         .bind(&connector.read_tools)
         .bind(&connector.draft_tools)
         .bind(connector.enabled)
+        .bind(connector.api.as_ref().map(sqlx::types::Json))
         .execute(&mut *conn)
         .await?;
         Ok(())
