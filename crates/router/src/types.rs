@@ -90,7 +90,7 @@ impl Default for ChatRequest {
             system: String::new(),
             messages: Vec::new(),
             tools: Vec::new(),
-            max_tokens: 4096,
+            max_tokens: 16_384,
         }
     }
 }
