@@ -3340,6 +3340,27 @@ docs = "https://docs.mem.ai"
 note = "AI notes; DCR."
 
 [[connectors]]
+id = "microsoft-calendar"
+label = "Microsoft 365 Calendar"
+vendor = "Microsoft"
+category = "productivity"
+url = "lighthouse:microsoft-graph-calendar"
+auth = "oauth"
+registration = "preregistered"
+docs = "https://learn.microsoft.com/en-us/graph/api/resources/calendar-overview"
+note = "Microsoft Graph with your own Entra app registration: add the redirect URI of your server, the delegated permissions Calendars.ReadWrite and offline_access, and a client secret."
+scopes = ["offline_access", "User.Read", "Calendars.ReadWrite"]
+api = { authorize_url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize", token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token", operations = [
+  "get_me_calendars",
+  "get_me_calendarview",
+  "get_me_events_id",
+  "post_me_events",
+  "patch_me_events_id",
+  "post_me_events_id_accept",
+  "post_me_events_id_decline",
+] }
+
+[[connectors]]
 id = "microsoft-work-iq"
 label = "Microsoft 365 Work IQ"
 vendor = "Microsoft"

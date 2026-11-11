@@ -614,7 +614,12 @@ async fn connect(
         state.vault.clone()
     };
     let started = match connector {
-        Some(connector) => state.oauth.start_with(&id, &connector.config, &vault).await,
+        Some(connector) => {
+            state
+                .oauth
+                .start_guarded(&id, &connector.config, &vault, connector.guarded())
+                .await
+        }
         None => state.oauth.start(&id, &vault).await,
     };
     let authorize_url = started.map_err(|error| match error {

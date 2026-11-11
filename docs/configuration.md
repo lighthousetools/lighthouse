@@ -115,6 +115,28 @@ The description and the base URL must then be public `https` URLs, and file path
 `reads_are_safe = false` stay in `lighthouse.toml`. Some vendors in the catalog, such as Pipedrive, are REST APIs of
 this kind: their entry carries `api`, and the key is the API token from the vendor's settings.
 
+A REST API can also sign in with OAuth instead of a key. Its authorization server is named directly, because REST APIs
+offer no discovery. The flow is the authorization code flow with PKCE, the access token is sent as a bearer token, and
+it refreshes before it expires:
+
+```toml
+[connectors.calendar]
+transport = "openapi"
+spec = "lighthouse:microsoft-graph-calendar"
+oauth = { authorize_url = "https://login.example.com/oauth2/authorize", token_url = "https://login.example.com/oauth2/token", client_id = "your-app-id", scopes = ["offline_access", "Calendars.ReadWrite"] }
+```
+
+In the apps this is `"auth": "oauth"` with `client_id`, `scopes` and `api.authorize_url` and `api.token_url`, and
+`api.key` stays `none`. A client secret, if the server needs one, is the vault entry `oauth-client:<connector>`, which
+the apps store with the button **Client secret**. Connect as for any OAuth connector. The tokens are the vault entry
+`oauth:<connector>`.
+
+`spec = "lighthouse:<name>"` takes a description that ships with Lighthouse, for APIs whose own description is too
+large to load. `lighthouse:microsoft-graph-calendar` covers the calendar of Microsoft Graph: list, create, move, accept
+and decline events. The catalog entry **Microsoft 365 Calendar** uses it. Register an app in Microsoft Entra with the
+redirect URI `<public_url>/oauth/callback`, the delegated permissions `Calendars.ReadWrite` and `offline_access`, and a
+client secret. Then enter its client ID in the connection and store the secret.
+
 For OAuth connectors, `server.public_url` must be reachable from your browser. Run `lht connect <connector>` and open
 the printed URL. The redirect goes to `<public_url>/oauth/callback`. Tokens are stored in the vault and refreshed
 automatically. A pending authorization lives in the server's memory, so finish it before the server restarts.

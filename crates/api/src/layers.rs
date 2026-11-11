@@ -360,16 +360,23 @@ fn connector_view(
             client_id.clone(),
             scopes.clone(),
         ),
-        ConnectorTransport::OpenApi { spec, key, .. } => (
+        ConnectorTransport::OpenApi {
+            spec, key, oauth, ..
+        } => (
             "openapi",
             Some(spec.clone()),
-            if *key == lighthouse_config::ApiKeyPlacement::None {
+            if oauth.is_some() {
+                "oauth"
+            } else if *key == lighthouse_config::ApiKeyPlacement::None {
                 "none"
             } else {
                 "bearer"
             },
-            None,
-            Vec::new(),
+            oauth.as_ref().map(|oauth| oauth.client_id.clone()),
+            oauth
+                .as_ref()
+                .map(|oauth| oauth.scopes.clone())
+                .unwrap_or_default(),
         ),
         ConnectorTransport::Stdio { .. } => ("stdio", None, "process", None, Vec::new()),
     };
@@ -379,6 +386,7 @@ fn connector_view(
             key,
             key_name,
             operations,
+            oauth,
             ..
         } => Some(lighthouse_settings::RestApi {
             base_url: base_url.clone(),
@@ -391,6 +399,8 @@ fn connector_view(
             .to_owned(),
             key_name: key_name.clone(),
             operations: operations.clone(),
+            authorize_url: oauth.as_ref().map(|oauth| oauth.authorize_url.clone()),
+            token_url: oauth.as_ref().map(|oauth| oauth.token_url.clone()),
         }),
         _ => None,
     };

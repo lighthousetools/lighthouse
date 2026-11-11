@@ -443,6 +443,21 @@ pub enum ApiKeyPlacement {
     Query,
 }
 
+/// The OAuth authorization code flow of a REST API, with fixed endpoints instead of discovery.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OpenApiOAuth {
+    /// Authorization endpoint, such as `https://login.example.com/oauth2/authorize`.
+    pub authorize_url: String,
+    /// Token endpoint.
+    pub token_url: String,
+    /// Registered client ID. A client secret, if the server needs one, is the vault entry `oauth-client:<connector>`.
+    pub client_id: String,
+    /// Scopes to request. Ask for a refresh token where the server needs a scope for it, such as `offline_access`.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
 fn reads_are_safe() -> bool {
     true
 }
@@ -495,6 +510,9 @@ pub enum ConnectorTransport {
         /// Whether `GET` and `HEAD` operations count as read-only without listing them.
         #[serde(default = "reads_are_safe")]
         reads_are_safe: bool,
+        /// Signs in with OAuth instead of a key. The access token is sent as a bearer token.
+        #[serde(default)]
+        oauth: Option<OpenApiOAuth>,
     },
     /// A local child process speaking stdio.
     Stdio {

@@ -511,6 +511,7 @@ async fn an_openapi_description_becomes_tools_that_call_the_api() {
             headers: Default::default(),
             operations: Vec::new(),
             reads_are_safe: true,
+            oauth: None,
         },
         read_tools: Vec::new(),
         draft_tools: Vec::new(),
@@ -609,4 +610,138 @@ async fn offered_tools_carry_what_their_server_says_about_them() {
     assert_eq!(find("send_reply").read_only, Some(false));
     assert_eq!(find("delete_issue").destructive, Some(true));
     assert!(!find("list_issues").description.is_empty());
+}
+
+#[tokio::test]
+async fn a_rest_api_signs_in_with_oauth_and_refreshes_its_token() {
+    async fn token(Form(form): Form<HashMap<String, String>>) -> Response {
+        if form.get("client_id").map(String::as_str) != Some("app")
+            || form.get("client_secret").map(String::as_str) != Some("s3")
+        {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        match form.get("grant_type").map(String::as_str) {
+            Some("authorization_code")
+                if form.get("code").map(String::as_str) == Some("c1")
+                    && form.contains_key("code_verifier") =>
+            {
+                Json(json!({"access_token": "stale", "refresh_token": "r1", "expires_in": 0}))
+                    .into_response()
+            }
+            Some("refresh_token")
+                if form.get("refresh_token").map(String::as_str) == Some("r1") =>
+            {
+                Json(json!({"access_token": "fresh", "expires_in": 3600})).into_response()
+            }
+            _ => StatusCode::BAD_REQUEST.into_response(),
+        }
+    }
+    async fn events(request: Request) -> Response {
+        let bearer = request
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok());
+        if bearer != Some("Bearer fresh") {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        Json(json!({"value": [{"id": "e1", "subject": "Review"}]})).into_response()
+    }
+    let router = Router::new()
+        .route("/token", post(token))
+        .route("/v1/events", get(events));
+    let base = serve(router).await;
+    let dir = tempfile::tempdir().unwrap();
+    let spec = dir.path().join("spec.yaml");
+    std::fs::write(
+        &spec,
+        format!("openapi: 3.0.0\nservers:\n  - url: {base}/v1\npaths:\n  /events:\n    get:\n      summary: List events\n"),
+    )
+    .unwrap();
+    let config = ConnectorConfig {
+        transport: ConnectorTransport::OpenApi {
+            spec: spec.to_string_lossy().into_owned(),
+            base_url: None,
+            key: lighthouse_config::ApiKeyPlacement::None,
+            key_name: None,
+            headers: Default::default(),
+            operations: Vec::new(),
+            reads_are_safe: true,
+            oauth: Some(lighthouse_config::OpenApiOAuth {
+                authorize_url: format!("{base}/authorize"),
+                token_url: format!("{base}/token"),
+                client_id: "app".to_owned(),
+                scopes: vec!["offline_access".to_owned(), "Calendars.Read".to_owned()],
+            }),
+        },
+        read_tools: Vec::new(),
+        draft_tools: Vec::new(),
+    };
+    let vault = vault().await;
+    vault
+        .put("oauth-client:cal", &SecretString::from("s3"))
+        .await
+        .unwrap();
+    let connectors = BTreeMap::from([("cal".to_owned(), config.clone())]);
+    let connector = McpConnector::new(connectors.clone(), vault.clone());
+    let tools = vec!["cal.get_events".to_owned()];
+    assert!(matches!(
+        connector.session(&tools).await,
+        Err(McpError::NotAuthorized { .. })
+    ));
+    let flows = OAuthFlows::new(connectors, "http://localhost:8080");
+    let authorize = flows.start("cal", &vault).await.unwrap();
+    let query: HashMap<_, _> = url::Url::parse(&authorize)
+        .unwrap()
+        .query_pairs()
+        .into_owned()
+        .collect();
+    assert!(authorize.starts_with(&format!("{base}/authorize?")));
+    assert_eq!(query["client_id"], "app");
+    assert_eq!(
+        query["redirect_uri"],
+        "http://localhost:8080/oauth/callback"
+    );
+    assert_eq!(query["scope"], "offline_access Calendars.Read");
+    assert_eq!(query["code_challenge_method"], "S256");
+    assert!(flows.finish("c1", "wrong", None).await.is_err());
+    assert_eq!(
+        flows.finish("c1", &query["state"], None).await.unwrap(),
+        "cal"
+    );
+    // The first token is already expired, so the session refreshes it.
+    let session = connector.session(&tools).await.unwrap();
+    let output = session
+        .call_tool("cal.get_events", json!({}))
+        .await
+        .unwrap();
+    assert!(!output.is_error, "{}", output.text);
+    assert!(output.text.contains("Review"), "{}", output.text);
+    let stored = vault.get("oauth:cal").await.unwrap().unwrap();
+    let stored: Value = serde_json::from_str(stored.expose_secret()).unwrap();
+    assert_eq!(stored["access_token"], "fresh");
+    assert_eq!(stored["refresh_token"], "r1", "the refresh token is kept");
+}
+
+#[test]
+fn the_graph_calendar_description_ships_with_lighthouse() {
+    let text = lighthouse_mcp::openapi::bundled("lighthouse:microsoft-graph-calendar").unwrap();
+    let document = lighthouse_mcp::openapi::parse_spec(text).unwrap();
+    let names: Vec<String> = lighthouse_mcp::openapi::operations(&document, &[])
+        .unwrap()
+        .iter()
+        .map(|operation| operation.name.clone())
+        .collect();
+    for name in [
+        "get_me_calendarview",
+        "post_me_events",
+        "patch_me_events_id",
+        "post_me_events_id_accept",
+    ] {
+        assert!(
+            names.iter().any(|known| known == name),
+            "{name} in {names:?}"
+        );
+    }
+    assert!(lighthouse_mcp::openapi::bundled("lighthouse:nothing").is_none());
+    assert!(lighthouse_mcp::openapi::bundled("https://example.com/spec.yaml").is_none());
 }

@@ -144,8 +144,52 @@ pub(crate) fn client_id(text: Option<&str>) -> Result<(), SettingsError> {
 pub(crate) async fn rest_api(
     api: &crate::RestApi,
     auth: crate::ConnectorAuth,
+    client_id: Option<&str>,
     allow_private: bool,
 ) -> Result<crate::RestApi, SettingsError> {
+    let filled = |url: &Option<String>| {
+        url.as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(str::to_owned)
+    };
+    let (authorize_url, token_url) = (filled(&api.authorize_url), filled(&api.token_url));
+    if auth == crate::ConnectorAuth::Oauth {
+        let (Some(authorize), Some(token)) = (authorize_url, token_url) else {
+            return Err(invalid(
+                "a REST API with OAuth needs `api.authorize_url` and `api.token_url`",
+            ));
+        };
+        if api.key != "none" {
+            return Err(invalid(
+                "a REST API with OAuth sends its token, so `api.key` is `none`",
+            ));
+        }
+        if client_id.is_none_or(|id| id.trim().is_empty()) {
+            return Err(invalid(
+                "a REST API with OAuth needs a registered `client_id`",
+            ));
+        }
+        let mut checked = Box::pin(rest_api(
+            &crate::RestApi {
+                authorize_url: None,
+                token_url: None,
+                ..api.clone()
+            },
+            crate::ConnectorAuth::None,
+            None,
+            allow_private,
+        ))
+        .await?;
+        checked.authorize_url = Some(endpoint(&authorize, allow_private).await?);
+        checked.token_url = Some(endpoint(&token, allow_private).await?);
+        return Ok(checked);
+    }
+    if authorize_url.is_some() || token_url.is_some() {
+        return Err(invalid(
+            "`api.authorize_url` and `api.token_url` need `auth = \"oauth\"`",
+        ));
+    }
     let keyed = match api.key.as_str() {
         "none" => false,
         "bearer" | "header" | "query" => true,
@@ -157,9 +201,6 @@ pub(crate) async fn rest_api(
     };
     match (auth, keyed) {
         (crate::ConnectorAuth::None, false) | (crate::ConnectorAuth::Bearer, true) => {}
-        (crate::ConnectorAuth::Oauth, _) => {
-            return Err(invalid("a REST API connector uses a key, not OAuth"));
-        }
         _ => {
             return Err(invalid(
                 "`auth` is `bearer` when the API gets a key and `none` when it does not",
@@ -197,6 +238,8 @@ pub(crate) async fn rest_api(
         key: api.key.clone(),
         key_name,
         operations: api.operations.clone(),
+        authorize_url: None,
+        token_url: None,
     })
 }
 

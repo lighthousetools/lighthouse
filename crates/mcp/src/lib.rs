@@ -5,6 +5,7 @@ pub mod demo;
 pub mod oauth;
 pub mod openapi;
 mod policy;
+pub mod rest_oauth;
 
 pub use client::{Connection, ConnectorSource, FixedConnectors, McpConnector, McpSession};
 pub use oauth::OAuthFlows;

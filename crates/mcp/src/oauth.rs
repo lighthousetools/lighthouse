@@ -74,7 +74,21 @@ pub struct OAuthFlows {
     connectors: BTreeMap<String, ConnectorConfig>,
     redirect_uri: String,
     public_url: String,
-    pending: Mutex<HashMap<String, (String, OAuthState)>>,
+    pending: Mutex<HashMap<String, (String, Pending)>>,
+}
+
+/// A flow waiting for its callback.
+#[allow(clippy::large_enum_variant)]
+enum Pending {
+    /// An MCP server, through the SDK.
+    Mcp(Box<OAuthState>),
+    /// A REST API with fixed endpoints.
+    Rest {
+        oauth: lighthouse_config::OpenApiOAuth,
+        vault: Vault,
+        verifier: String,
+        guarded: bool,
+    },
 }
 
 impl std::fmt::Debug for OAuthFlows {
@@ -132,7 +146,7 @@ impl OAuthFlows {
             .connectors
             .get(connector)
             .ok_or_else(|| McpError::UnknownConnector(connector.to_owned()))?;
-        self.start_with(connector, config, vault).await
+        self.start_guarded(connector, config, vault, false).await
     }
 
     /// Starts a flow for a connector with the given settings, such as one a
@@ -143,6 +157,36 @@ impl OAuthFlows {
         config: &ConnectorConfig,
         vault: &Vault,
     ) -> Result<String, McpError> {
+        self.start_guarded(connector, config, vault, true).await
+    }
+
+    /// Like [`Self::start_with`]. `guarded` decides whether token requests of a REST API may reach private addresses.
+    pub async fn start_guarded(
+        &self,
+        connector: &str,
+        config: &ConnectorConfig,
+        vault: &Vault,
+        guarded: bool,
+    ) -> Result<String, McpError> {
+        if let ConnectorTransport::OpenApi {
+            oauth: Some(oauth), ..
+        } = &config.transport
+        {
+            let started = crate::rest_oauth::start(oauth, &self.redirect_uri)?;
+            self.pending.lock().await.insert(
+                started.csrf,
+                (
+                    connector.to_owned(),
+                    Pending::Rest {
+                        oauth: oauth.clone(),
+                        vault: vault.clone(),
+                        verifier: started.verifier,
+                        guarded,
+                    },
+                ),
+            );
+            return Ok(started.url);
+        }
         let ConnectorTransport::Http {
             url,
             auth: ConnectorAuth::Oauth,
@@ -195,7 +239,7 @@ impl OAuthFlows {
         self.pending
             .lock()
             .await
-            .insert(csrf, (connector.to_owned(), state));
+            .insert(csrf, (connector.to_owned(), Pending::Mcp(Box::new(state))));
         Ok(authorize_url)
     }
 
@@ -206,10 +250,38 @@ impl OAuthFlows {
         csrf: &str,
         issuer: Option<&str>,
     ) -> Result<String, McpError> {
-        let (connector, mut state) =
+        let (connector, pending) =
             self.pending.lock().await.remove(csrf).ok_or_else(|| {
                 McpError::OAuth("unknown or expired authorization state".to_owned())
             })?;
+        let mut state = match pending {
+            Pending::Mcp(state) => state,
+            Pending::Rest {
+                oauth,
+                vault,
+                verifier,
+                guarded,
+            } => {
+                let http = if guarded {
+                    lighthouse_router::net::guarded_client()
+                } else {
+                    reqwest::Client::default()
+                };
+                let now = chrono::Utc::now().timestamp();
+                crate::rest_oauth::finish(
+                    &http,
+                    &oauth,
+                    &connector,
+                    &vault,
+                    code,
+                    &verifier,
+                    &self.redirect_uri,
+                    now,
+                )
+                .await?;
+                return Ok(connector);
+            }
+        };
         match issuer {
             Some(issuer) => {
                 state

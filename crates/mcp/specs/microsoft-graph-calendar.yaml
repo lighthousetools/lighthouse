@@ -1,0 +1,159 @@
+openapi: 3.0.1
+info:
+  title: Microsoft Graph calendar (subset)
+  description: >-
+    The calendar operations of Microsoft Graph v1.0 that the `microsoft-calendar` preset uses. The full description of
+    Microsoft Graph is too large to load for every connection.
+  version: "1.0"
+servers:
+  - url: https://graph.microsoft.com/v1.0
+paths:
+  /me/calendars:
+    get:
+      summary: List the calendars of the signed-in user
+      responses:
+        "200":
+          description: Calendars in `value`
+  /me/calendarView:
+    get:
+      summary: List the events between two times, with recurring events expanded
+      parameters:
+        - name: startDateTime
+          in: query
+          required: true
+          description: Start of the window, ISO 8601
+          schema: { type: string }
+        - name: endDateTime
+          in: query
+          required: true
+          description: End of the window, ISO 8601
+          schema: { type: string }
+        - name: $top
+          in: query
+          description: Most events per page
+          schema: { type: integer }
+        - name: $select
+          in: query
+          description: Comma-separated properties to return
+          schema: { type: string }
+        - name: $orderby
+          in: query
+          schema: { type: string }
+        - name: Prefer
+          in: header
+          description: Such as `outlook.timezone="UTC"`
+          schema: { type: string }
+      responses:
+        "200":
+          description: Events in `value`
+  /me/events:
+    post:
+      summary: Create an event in the default calendar
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                subject: { type: string }
+                body:
+                  type: object
+                  properties:
+                    contentType: { type: string }
+                    content: { type: string }
+                start:
+                  type: object
+                  properties:
+                    dateTime: { type: string }
+                    timeZone: { type: string }
+                end:
+                  type: object
+                  properties:
+                    dateTime: { type: string }
+                    timeZone: { type: string }
+                showAs: { type: string }
+                attendees: { type: array, items: { type: object } }
+      responses:
+        "201":
+          description: The created event
+  /me/events/{id}:
+    get:
+      summary: Get an event
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The event
+    patch:
+      summary: Change an event, such as its time or subject
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                subject: { type: string }
+                start:
+                  type: object
+                  properties:
+                    dateTime: { type: string }
+                    timeZone: { type: string }
+                end:
+                  type: object
+                  properties:
+                    dateTime: { type: string }
+                    timeZone: { type: string }
+                showAs: { type: string }
+      responses:
+        "200":
+          description: The changed event
+  /me/events/{id}/accept:
+    post:
+      summary: Accept an invitation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment: { type: string }
+                sendResponse: { type: boolean }
+      responses:
+        "202":
+          description: Accepted
+  /me/events/{id}/decline:
+    post:
+      summary: Decline an invitation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment: { type: string }
+                sendResponse: { type: boolean }
+      responses:
+        "202":
+          description: Declined

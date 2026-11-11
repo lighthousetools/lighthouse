@@ -103,6 +103,11 @@ label = "Superhuman Mail"
 definition = { connector = "superhuman-mail", preset = "superhuman-mail" }
 
 [[sources]]
+id = "microsoft-calendar"
+label = "Microsoft 365 Calendar"
+definition = { connector = "microsoft-calendar", preset = "microsoft-calendar" }
+
+[[sources]]
 id = "pipedrive"
 label = "Pipedrive"
 definition = { connector = "pipedrive", preset = "pipedrive" }

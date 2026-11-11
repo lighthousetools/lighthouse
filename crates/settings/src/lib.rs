@@ -193,6 +193,12 @@ pub struct RestApi {
     /// Only these operations, such as `get_deals`. Empty means every operation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub operations: Vec<String>,
+    /// Authorization endpoint for `auth = "oauth"`. The connector's `client_id` and `scopes` go with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorize_url: Option<String>,
+    /// Token endpoint for `auth = "oauth"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url: Option<String>,
 }
 
 fn no_key() -> String {

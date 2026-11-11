@@ -16,16 +16,19 @@ path = "src/bin/demo.rs"
 
 [dependencies]
 async-trait.workspace = true
+base64.workspace = true
 chrono.workspace = true
 lighthouse-config.workspace = true
 lighthouse-core.workspace = true
 lighthouse-router.workspace = true
 lighthouse-vault.workspace = true
+rand.workspace = true
 reqwest.workspace = true
 rmcp.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -34,6 +37,5 @@ serde_norway.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
-base64.workspace = true
 tempfile.workspace = true
 lighthouse-store = { workspace = true, features = ["testing"] }

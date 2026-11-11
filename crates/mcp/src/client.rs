@@ -104,10 +104,12 @@ async fn openapi_server(
     key_name: Option<&str>,
     headers: &std::collections::BTreeMap<String, String>,
     operations: &[String],
+    oauth: Option<&lighthouse_config::OpenApiOAuth>,
 ) -> Result<OpenApiServer, McpError> {
     let remote = spec.starts_with("https://") || spec.starts_with("http://");
+    let bundled = openapi::bundled(spec);
     if connection.guarded {
-        if !remote {
+        if !remote && bundled.is_none() {
             return Err(connect_error(
                 name,
                 "a description chosen in the apps must be a URL",
@@ -119,7 +121,9 @@ async fn openapi_server(
         }
     }
     let http = http_client(connection.guarded);
-    let text = if remote {
+    let text = if let Some(text) = bundled {
+        text.to_owned()
+    } else if remote {
         http.get(spec)
             .send()
             .await
@@ -141,7 +145,12 @@ async fn openapi_server(
     if connection.guarded {
         lighthouse_router::net::check_url(&base).map_err(|error| connect_error(name, error))?;
     }
-    let api_key = if key == ApiKeyPlacement::None {
+    let api_key = if let Some(oauth) = oauth {
+        let now = chrono::Utc::now().timestamp();
+        ApiKey::Bearer(
+            crate::rest_oauth::access_token(&http, oauth, name, &connection.vaults, now).await?,
+        )
+    } else if key == ApiKeyPlacement::None {
         ApiKey::None
     } else {
         let entry = format!("mcp:{name}");
@@ -256,6 +265,7 @@ impl McpConnector {
                 key_name,
                 headers,
                 operations,
+                oauth,
                 ..
             } => {
                 let server = openapi_server(
@@ -267,6 +277,7 @@ impl McpConnector {
                     key_name.as_deref(),
                     headers,
                     operations,
+                    oauth.as_ref(),
                 )
                 .await?;
                 let (client_side, server_side) = tokio::io::duplex(1 << 20);

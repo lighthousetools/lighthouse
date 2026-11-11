@@ -780,6 +780,7 @@ async fn rest_apis_become_openapi_connectors() {
         key: "header".to_owned(),
         key_name: Some(" x-api-token ".to_owned()),
         operations: vec!["get_deals".to_owned()],
+        ..Default::default()
     });
     tenant.set_connector(None, None, "crm", &crm).await.unwrap();
     // It survives a reload from the database.
@@ -861,6 +862,69 @@ async fn rest_api_settings_are_checked() {
     };
     assert_eq!(*key, lighthouse_config::ApiKeyPlacement::None);
     assert!(key_name.is_none());
+}
+
+#[tokio::test]
+async fn rest_apis_sign_in_with_oauth() {
+    let store = fresh_store().await;
+    let settings = settings(&store, TenantId::DEFAULT, options()).await;
+    let oauth = crate::RestApi {
+        key: "none".to_owned(),
+        authorize_url: Some("http://10.0.0.9/authorize".to_owned()),
+        token_url: Some("http://10.0.0.9/token".to_owned()),
+        ..Default::default()
+    };
+    let mut input = connector("lighthouse:microsoft-graph-calendar");
+    input.auth = "oauth".to_owned();
+    input.client_id = Some("app".to_owned());
+    input.scopes = vec![
+        "offline_access".to_owned(),
+        "Calendars.ReadWrite".to_owned(),
+    ];
+    input.api = Some(oauth.clone());
+    settings
+        .set_connector(None, None, "calendar", &input)
+        .await
+        .unwrap();
+    let effective = settings.effective(None);
+    let lighthouse_config::ConnectorTransport::OpenApi {
+        spec,
+        oauth: Some(flow),
+        ..
+    } = &effective.connectors["calendar"].config.transport
+    else {
+        panic!("not an OpenAPI connector with OAuth");
+    };
+    assert_eq!(spec, "lighthouse:microsoft-graph-calendar");
+    assert_eq!(flow.client_id, "app");
+    assert_eq!(flow.token_url, "http://10.0.0.9/token");
+    assert_eq!(flow.scopes.len(), 2);
+    // OAuth needs both endpoints and a client, and endpoints need OAuth.
+    let mut broken = input.clone();
+    broken.client_id = None;
+    let mut keyed = input.clone();
+    keyed.api = Some(crate::RestApi {
+        key: "bearer".to_owned(),
+        ..oauth.clone()
+    });
+    let mut half = input.clone();
+    half.api = Some(crate::RestApi {
+        token_url: None,
+        ..oauth.clone()
+    });
+    let mut stray = input.clone();
+    stray.auth = "none".to_owned();
+    let mut unknown = input.clone();
+    unknown.url = "lighthouse:nothing".to_owned();
+    for case in [broken, keyed, half, stray, unknown] {
+        assert!(
+            settings
+                .set_connector(None, None, "calendar", &case)
+                .await
+                .is_err(),
+            "{case:?}"
+        );
+    }
 }
 
 #[tokio::test]

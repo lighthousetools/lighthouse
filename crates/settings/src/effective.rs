@@ -220,6 +220,19 @@ pub(crate) fn connector_config(entry: &ConnectorEntry, allow_private: bool) -> C
             headers: Default::default(),
             operations: api.operations.clone(),
             reads_are_safe: true,
+            oauth: match (&api.authorize_url, &api.token_url, &entry.client_id) {
+                (Some(authorize_url), Some(token_url), Some(client_id))
+                    if entry.auth == lighthouse_config::ConnectorAuth::Oauth =>
+                {
+                    Some(lighthouse_config::OpenApiOAuth {
+                        authorize_url: authorize_url.clone(),
+                        token_url: token_url.clone(),
+                        client_id: client_id.clone(),
+                        scopes: entry.scopes.clone(),
+                    })
+                }
+                _ => None,
+            },
         },
         None => ConnectorTransport::Http {
             url: entry.url.clone(),

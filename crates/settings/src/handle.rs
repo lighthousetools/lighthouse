@@ -571,9 +571,17 @@ impl TenantSettings {
             ));
         }
         let allow_private = self.inner.options.allow_private_endpoints;
-        let url = validate::endpoint(&input.url, allow_private).await?;
+        let bundled =
+            input.api.is_some() && lighthouse_mcp::openapi::bundled(input.url.trim()).is_some();
+        let url = if bundled {
+            input.url.trim().to_owned()
+        } else {
+            validate::endpoint(&input.url, allow_private).await?
+        };
         let api = match &input.api {
-            Some(api) => Some(validate::rest_api(api, auth, allow_private).await?),
+            Some(api) => Some(
+                validate::rest_api(api, auth, input.client_id.as_deref(), allow_private).await?,
+            ),
             None => None,
         };
         let entry = ConnectorEntry {

@@ -127,6 +127,22 @@ fn resolve(value: &Value, spec: &Value, depth: usize) -> Value {
     }
 }
 
+/// Descriptions that ship with Lighthouse, named `lighthouse:<name>` in place of a URL. They cover the parts of
+/// large APIs that the bundled presets use.
+const BUNDLED: [(&str, &str); 1] = [(
+    "microsoft-graph-calendar",
+    include_str!("../specs/microsoft-graph-calendar.yaml"),
+)];
+
+/// The text of a bundled description, for a spec such as `lighthouse:microsoft-graph-calendar`.
+pub fn bundled(spec: &str) -> Option<&'static str> {
+    let name = spec.strip_prefix("lighthouse:")?;
+    BUNDLED
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map(|(_, text)| *text)
+}
+
 /// `GET /v1/deals/{id}` becomes `get_v1_deals_id`.
 fn tool_name(method: &str, path: &str) -> String {
     let mut name = method.to_owned();

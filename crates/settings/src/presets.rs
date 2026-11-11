@@ -131,6 +131,9 @@ pub struct PresetConnector {
     /// For a REST API: `url` is its OpenAPI description, and this says how the key is sent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api: Option<crate::RestApi>,
+    /// OAuth scopes to request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
 }
 
 /// A suggested connected source.
@@ -209,8 +212,10 @@ mod tests {
             );
             validate::name("connector", &connector.id).unwrap();
             let url = connector.url.replace(['{', '}'], "");
-            assert!(url.starts_with("https://"), "{}", connector.url);
-            lighthouse_router::net::check_url(&url).unwrap();
+            if lighthouse_mcp::openapi::bundled(&url).is_none() {
+                assert!(url.starts_with("https://"), "{}", connector.url);
+                lighthouse_router::net::check_url(&url).unwrap();
+            }
             if let Some(category) = &connector.category {
                 assert!(CATEGORIES.contains(&category.as_str()), "{category}");
             }
@@ -223,7 +228,9 @@ mod tests {
             let auth = crate::store::parse_auth(&connector.auth).unwrap();
             validate::tools("read_tools", &connector.read_tools).unwrap();
             if let Some(api) = &connector.api {
-                let checked = validate::rest_api(api, auth, true).await.unwrap();
+                let checked = validate::rest_api(api, auth, Some("client"), true)
+                    .await
+                    .unwrap();
                 assert_eq!(&checked, api, "{}", connector.id);
             }
         }
