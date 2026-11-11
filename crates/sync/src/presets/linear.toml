@@ -7,7 +7,7 @@ domain = "issues"
 [collections.assigned]
 tool = "list_issues"
 input = { assignee = "me", limit = 50 }
-items = ""
+items = "issues"
 kind = "issue"
 flags = ["assigned"]
 
@@ -25,7 +25,7 @@ occurred_at = "updatedAt"
 
 [collections.projects]
 tool = "list_projects"
-items = ""
+items = "projects"
 kind = "project"
 
 [collections.projects.fields]
@@ -43,13 +43,13 @@ tool = "list_comments"
 parent = "issue"
 parents_limit = 10
 input = { issueId = "{{parent.external_id}}" }
-items = ""
+items = "comments"
 kind = "comment"
 
 [collections.comments.fields]
 external_id = "id"
 summary = "body"
-author = "user"
+author = "author.name"
 occurred_at = "createdAt"
 
 [actions.create]

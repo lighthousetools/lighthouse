@@ -250,6 +250,21 @@ mod tests {
     }
 
     #[test]
+    fn linear_lists_are_read_from_their_wrappers() {
+        let resolved = resolve("linear", &source(Some("linear")), Vec::new()).unwrap();
+        let wrapped = [
+            ("assigned", r#"{"issues":[{"id":"ENG-1"}],"hasNextPage":false}"#),
+            ("projects", r#"{"projects":[{"id":"P-1"}],"hasNextPage":false}"#),
+            ("comments", r#"{"comments":[{"id":"c1","author":{"name":"sam"}}]}"#),
+        ];
+        for (name, text) in wrapped {
+            let (_, collection) = resolved.collections.iter().find(|(n, _)| n == name).unwrap();
+            let items = crate::mapping::items_of(name, text, &collection.items).unwrap();
+            assert_eq!(items.len(), 1, "{name}");
+        }
+    }
+
+    #[test]
     fn broken_sources_are_refused() {
         assert!(matches!(
             resolve("x", &source(Some("nope")), Vec::new()),
