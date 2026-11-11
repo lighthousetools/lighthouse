@@ -35,16 +35,8 @@ state = "status"
 url = "url"
 occurred_at = "updatedAt"
 
-[collections.cycles]
-tool = "list_cycles"
-items = ""
-kind = "cycle"
-
-[collections.cycles.fields]
-external_id = "id"
-title = "name"
-starts_at = "startsAt"
-ends_at = "endsAt"
+# Cycles are left out: `list_cycles` needs a team ID, which differs per workspace.
+# Add `[collections.cycles]` with `input = { teamId = "..." }` to sync them.
 
 [collections.comments]
 tool = "list_comments"

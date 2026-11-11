@@ -148,7 +148,7 @@ that only incremental collections returned stay.
 | Preset | Domain | Collections | Actions |
 |---|---|---|---|
 | `github` | `code` | `review_requests` and `mine` (open pull requests), `checks` (with deployments) and `files` of each | `approve`, `comment`, `create_issue` |
-| `linear` | `issues` | `assigned` issues, `projects`, `cycles`, `comments` of each issue | `create`, `update`, `comment` |
+| `linear` | `issues` | `assigned` issues, `projects`, `comments` of each issue. Cycles need a team ID, so add them yourself | `create`, `update`, `comment` |
 
 Presets follow the public MCP servers of these services. Tool names and result shapes change between server versions,
 so check them with `lht connectors tools <connector>` and `lht sources check`, which resolves every source and shows
