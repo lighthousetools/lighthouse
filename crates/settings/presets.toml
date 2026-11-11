@@ -97,6 +97,16 @@ id = "linear"
 label = "Linear"
 definition = { connector = "linear", preset = "linear" }
 
+[[sources]]
+id = "superhuman-mail"
+label = "Superhuman Mail"
+definition = { connector = "superhuman-mail", preset = "superhuman-mail" }
+
+[[sources]]
+id = "pipedrive"
+label = "Pipedrive"
+definition = { connector = "pipedrive", preset = "pipedrive" }
+
 # A mailbox: replace the tool and the paths with what your mail server returns.
 [[sources]]
 id = "mail"

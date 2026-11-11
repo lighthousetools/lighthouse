@@ -87,6 +87,7 @@ A field maps to a dotted path in the item, such as `user.login` or `labels.0.nam
 | `{ path = "...", equals = "x" }` | `true` if the value is `x`, ignoring case |
 | `{ path = "...", after = "/repos/", before = "/" }` | Part of a text: after the first marker, then before the next one |
 | `{ path = "...", after_last = "/" }` | The text after the last marker |
+| `{ path = "...", lookup = "stages" }` | The title of the item with this ID from the top-level collection `stages` of the same source, such as a stage name for a stage ID. Unknown IDs stay as they are |
 
 These fields have a meaning. Every other field lands in the item's `data`, where templates and the apps can read it.
 
@@ -149,17 +150,19 @@ that only incremental collections returned stay.
 |---|---|---|---|
 | `github` | `code` | `review_requests` and `mine` (open pull requests), `checks` (with deployments) and `files` of each | `approve`, `comment`, `create_issue` |
 | `linear` | `issues` | `assigned` issues, `projects`, `comments` of each issue. Cycles need a team ID, so add them yourself | `create`, `update`, `comment` |
+| `superhuman-mail` | `mail` | `inbox` threads, `messages` of each | `draft` (a reply saved as a draft), `archive` |
+| `pipedrive` | `deals` | `stages`, `open` deals with their stage name, `won` deals, open `activities`. Connect Pipedrive as a REST API from the catalog | `create` |
 
 Presets follow the public MCP servers of these services. Tool names and result shapes change between server versions,
 so check them with `lht connectors tools <connector>` and `lht sources check`, which resolves every source and shows
 whether its collections only read and which actions ask for approval. Override what differs: a collection or action of the same name
-in your source replaces the preset's. There are no presets for mail and calendar, because there is no common public MCP
-server for them. Map your server with collections like the example above.
+in your source replaces the preset's. Other mail servers and calendars have no preset. Map your server with collections
+like the example above.
 
 ## Business sources
 
-There are no presets for CRMs, banks, accounting, contract or deal room services, because their MCP servers and APIs
-differ too much. Map them like this, with the tool names your server offers:
+Apart from `pipedrive`, there are no presets for CRMs, banks, accounting, contract or deal room services, because their
+MCP servers and APIs differ too much. Map them like this, with the tool names your server offers:
 
 ```toml
 [sources.crm]

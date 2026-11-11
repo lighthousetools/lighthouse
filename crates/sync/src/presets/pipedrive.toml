@@ -1,0 +1,73 @@
+# Preset for the Pipedrive REST API (v2), connected as a REST API connector with the
+# operations of the catalog entry. Check the tools with `lht connectors tools <connector>`
+# and override what differs in lighthouse.toml.
+connector = ""
+domain = "deals"
+
+[collections.stages]
+tool = "get_stages"
+input = { limit = 500 }
+items = "data"
+kind = "stage"
+
+[collections.stages.fields]
+external_id = "id"
+title = "name"
+probability = "deal_probability"
+pipeline = "pipeline_id"
+order = "order_nr"
+
+# Open deals, as a full list: deals that are won or lost leave it.
+[collections.open]
+tool = "get_deals"
+input = { status = "open", limit = 500 }
+items = "data"
+kind = "deal"
+
+[collections.open.fields]
+external_id = "id"
+title = "title"
+state = { path = "stage_id", lookup = "stages" }
+stage_id = "stage_id"
+amount = "value"
+currency = "currency"
+probability = "probability"
+pipeline = "pipeline_id"
+ends_at = "expected_close_date"
+occurred_at = "update_time"
+last_activity_at = "update_time"
+
+# Won deals since the last refresh, for the suggested values.
+[collections.won]
+tool = "get_deals"
+input = { status = "won", updated_since = "{{since}}", limit = 500 }
+items = "data"
+kind = "deal"
+
+[collections.won.fields]
+external_id = "id"
+title = "title"
+state = "status"
+amount = "value"
+currency = "currency"
+pipeline = "pipeline_id"
+occurred_at = "won_time"
+
+[collections.activities]
+tool = "get_activities"
+input = { done = false, limit = 500 }
+items = "data"
+kind = "activity"
+
+[collections.activities.fields]
+external_id = "id"
+title = "subject"
+summary = "note"
+deal = "deal_id"
+type = "type"
+starts_at = "due_date"
+occurred_at = "update_time"
+
+[actions.create]
+tool = "post_deals"
+input = { body = { title = "{{input.title}}", value = "{{input.amount}}" } }

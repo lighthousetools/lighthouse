@@ -1,13 +1,15 @@
 //! Resolves configured sources and bundled presets.
 
-use lighthouse_config::{ActionConfig, CollectionConfig, SourceConfig};
+use lighthouse_config::{ActionConfig, CollectionConfig, FieldMap, SourceConfig};
 use lighthouse_core::agent::parse_duration;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const GITHUB: &str = include_str!("presets/github.toml");
 const LINEAR: &str = include_str!("presets/linear.toml");
+const PIPEDRIVE: &str = include_str!("presets/pipedrive.toml");
+const SUPERHUMAN_MAIL: &str = include_str!("presets/superhuman-mail.toml");
 
 /// The domains and the item kinds each one knows.
 pub const DOMAINS: [(&str, &[&str]); 10] = [
@@ -99,6 +101,8 @@ pub fn preset(name: &str) -> Option<SourceConfig> {
     let text = match name {
         "github" => GITHUB,
         "linear" => LINEAR,
+        "pipedrive" => PIPEDRIVE,
+        "superhuman-mail" => SUPERHUMAN_MAIL,
         _ => return None,
     };
     let mut config: SourceConfig = toml::from_str(text).ok()?;
@@ -107,11 +111,19 @@ pub fn preset(name: &str) -> Option<SourceConfig> {
 }
 
 /// Names of the bundled presets.
-pub const PRESETS: [&str; 2] = ["github", "linear"];
+pub const PRESETS: [&str; 4] = ["github", "linear", "pipedrive", "superhuman-mail"];
 
 /// Applies the preset of a configured source and checks the result.
 ///
 /// `accounts` are the owner's names to try, such as the configured account,
+/// The collections whose titles the fields of a collection look up.
+fn lookups(collection: &CollectionConfig) -> impl Iterator<Item = &str> {
+    collection.fields.values().filter_map(|map| match map {
+        FieldMap::Rule(rule) => rule.lookup.as_deref(),
+        FieldMap::Path(_) => None,
+    })
+}
+
 /// `owner.accounts.<connector>` and the owner's email address.
 pub fn resolve(
     name: &str,
@@ -155,6 +167,16 @@ pub fn resolve(
                 "collection `{collection_name}` maps no `external_id`"
             )));
         }
+        for target in lookups(collection) {
+            let usable = collections
+                .get(target)
+                .is_some_and(|other| other.parent.is_none() && lookups(other).next().is_none());
+            if !usable {
+                return Err(invalid(format!(
+                    "collection `{collection_name}` looks up `{target}`, which must be a top-level collection without lookups"
+                )));
+            }
+        }
     }
     if READ_ONLY_DOMAINS.contains(&domain.as_str()) && !actions.is_empty() {
         return Err(invalid(format!(
@@ -172,7 +194,13 @@ pub fn resolve(
     accounts.retain(|account| !account.is_empty());
     accounts.dedup();
     let mut ordered: Vec<(String, CollectionConfig)> = collections.into_iter().collect();
-    ordered.sort_by_key(|(_, collection)| collection.parent.is_some());
+    // Children come last, and collections that others look up come first.
+    let looked_up: BTreeSet<String> = ordered
+        .iter()
+        .flat_map(|(_, collection)| lookups(collection).map(str::to_owned))
+        .collect();
+    ordered
+        .sort_by_key(|(name, collection)| (collection.parent.is_some(), !looked_up.contains(name)));
     let service = config
         .service
         .clone()
@@ -253,15 +281,81 @@ mod tests {
     fn linear_lists_are_read_from_their_wrappers() {
         let resolved = resolve("linear", &source(Some("linear")), Vec::new()).unwrap();
         let wrapped = [
-            ("assigned", r#"{"issues":[{"id":"ENG-1"}],"hasNextPage":false}"#),
-            ("projects", r#"{"projects":[{"id":"P-1"}],"hasNextPage":false}"#),
-            ("comments", r#"{"comments":[{"id":"c1","author":{"name":"sam"}}]}"#),
+            (
+                "assigned",
+                r#"{"issues":[{"id":"ENG-1"}],"hasNextPage":false}"#,
+            ),
+            (
+                "projects",
+                r#"{"projects":[{"id":"P-1"}],"hasNextPage":false}"#,
+            ),
+            (
+                "comments",
+                r#"{"comments":[{"id":"c1","author":{"name":"sam"}}]}"#,
+            ),
         ];
         for (name, text) in wrapped {
-            let (_, collection) = resolved.collections.iter().find(|(n, _)| n == name).unwrap();
+            let (_, collection) = resolved
+                .collections
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap();
             let items = crate::mapping::items_of(name, text, &collection.items).unwrap();
             assert_eq!(items.len(), 1, "{name}");
         }
+    }
+
+    #[test]
+    fn looked_up_collections_come_first() {
+        let resolved = resolve("crm", &source(Some("pipedrive")), Vec::new()).unwrap();
+        let names: Vec<&str> = resolved
+            .collections
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(names.first(), Some(&"stages"));
+        let mut config = source(Some("pipedrive"));
+        let mut open = resolved
+            .collections
+            .iter()
+            .find(|(name, _)| name == "open")
+            .unwrap()
+            .1
+            .clone();
+        open.fields.insert(
+            "assignee".to_owned(),
+            FieldMap::Rule(lighthouse_config::FieldRule {
+                path: "owner_id".to_owned(),
+                lookup: Some("missing".to_owned()),
+                ..lighthouse_config::FieldRule::default()
+            }),
+        );
+        config.collections.insert("open".to_owned(), open);
+        assert!(
+            resolve("crm", &config, Vec::new()).is_err(),
+            "unknown lookup"
+        );
+    }
+
+    #[test]
+    fn mail_threads_and_messages_are_read_from_superhuman() {
+        let resolved = resolve("mail", &source(Some("superhuman-mail")), Vec::new()).unwrap();
+        assert_eq!(resolved.domain, "mail");
+        let (_, inbox) = resolved
+            .collections
+            .iter()
+            .find(|(name, _)| name == "inbox")
+            .unwrap();
+        let text = r#"{"threads":[{"thread_id":"t1","subject":"Hi","splits":["Important"],"messages":[{"from":"sam@example.com"}]}]}"#;
+        let items = crate::mapping::items_of("list_threads", text, &inbox.items).unwrap();
+        let owner = crate::mapping::Owner {
+            accounts: Vec::new(),
+        };
+        let thread =
+            crate::mapping::map_item(inbox, &items[0], &owner, chrono::Utc::now()).unwrap();
+        assert_eq!(thread.author.as_deref(), Some("sam@example.com"));
+        assert!(thread.flags.iter().any(|flag| flag == "important"));
+        assert!(resolved.actions.contains_key("draft") && resolved.actions.contains_key("archive"));
     }
 
     #[test]

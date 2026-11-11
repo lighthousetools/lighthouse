@@ -96,6 +96,9 @@ pub struct FieldRule {
     /// Keeps the text before the first occurrence of this marker, after `after`.
     #[serde(default)]
     pub before: Option<String>,
+    /// Replaces an ID with the title of the item of this top-level collection, of the same source, with that ID.
+    #[serde(default)]
+    pub lookup: Option<String>,
 }
 
 /// A tool call the owner can ask for. Calls of `write` tools wait for approval.

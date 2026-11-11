@@ -1,0 +1,53 @@
+# Preset for the Superhuman Mail MCP server. Tool names and result shapes change between
+# versions of the server, so check them with `lht connectors tools <connector>`
+# and override what differs in lighthouse.toml.
+connector = ""
+domain = "mail"
+
+[collections.inbox]
+tool = "list_threads"
+input = { labels = ["INBOX"], start_date = "{{since_date}}", limit = 50 }
+items = "threads"
+kind = "thread"
+
+[collections.inbox.fields]
+external_id = "thread_id"
+title = "subject"
+summary = "snippet"
+author = "messages.0.from"
+participants = "participants"
+labels = "labels"
+splits = "splits"
+last_message_id = "last_message_id"
+occurred_at = "last_message_at"
+important = { path = "splits", contains = "Important" }
+unread = { path = "labels", contains = "UNREAD" }
+
+[collections.messages]
+tool = "get_thread"
+parent = "thread"
+parents_limit = 20
+input = { thread_id = "{{parent.external_id}}", message_limit = 20, include_comments = false, include_drafts = false }
+items = "messages"
+kind = "message"
+
+[collections.messages.fields]
+external_id = "message_id"
+title = "subject"
+author = "from"
+summary = "snippet"
+body = "body"
+to = "to"
+cc = "cc"
+occurred_at = "sent_at"
+
+# Saves a reply as a draft in Superhuman. Sending stays in Superhuman.
+[actions.draft]
+tool = "create_or_update_draft"
+kind = "thread"
+input = { type = "reply", thread_id = "{{item.external_id}}", body = "{{input.body}}" }
+
+[actions.archive]
+tool = "update_thread"
+kind = "thread"
+input = { thread_id = "{{item.external_id}}", last_message_id = "{{item.data.last_message_id}}", mark_done = true }

@@ -1,6 +1,8 @@
 //! Refreshes sources through their connector tools.
 
-use crate::mapping::{DERIVED_FLAGS, MappedItem, Owner, items_of, map_item, render_value, uses};
+use crate::mapping::{
+    DERIVED_FLAGS, MappedItem, Owner, Titles, items_of, map_item_with, render_value, uses,
+};
 use crate::sources::Source;
 use crate::store::{SyncStore, SyncedItem};
 use chrono::{DateTime, Duration, Utc};
@@ -247,16 +249,16 @@ impl Syncer {
         let owner = Owner {
             accounts: source.accounts.clone(),
         };
+        let mut titles = Titles::new();
         for (collection_name, collection) in &source.collections {
             let result = self
                 .collection(
                     source,
-                    collection_name,
-                    collection,
+                    (collection_name, collection),
                     host.as_ref(),
                     &context,
-                    &owner,
-                    now,
+                    (&owner, now),
+                    &mut titles,
                     &mut report,
                 )
                 .await;
@@ -302,12 +304,11 @@ impl Syncer {
     async fn collection(
         &self,
         source: &Source,
-        name: &str,
-        collection: &CollectionConfig,
+        (name, collection): (&str, &CollectionConfig),
         host: &dyn ToolHost,
         context: &Value,
-        owner: &Owner,
-        now: DateTime<Utc>,
+        (owner, now): (&Owner, DateTime<Utc>),
+        titles: &mut Titles,
         report: &mut SyncReport,
     ) -> Result<(), String> {
         let mut mapped = Vec::new();
@@ -317,7 +318,14 @@ impl Syncer {
                 mapped.extend(
                     items
                         .iter()
-                        .filter_map(|item| map_item(collection, item, owner, now)),
+                        .filter_map(|item| map_item_with(collection, item, owner, now, titles)),
+                );
+                titles.insert(
+                    name.to_owned(),
+                    mapped
+                        .iter()
+                        .filter_map(|item| Some((item.external_id.clone(), item.title.clone()?)))
+                        .collect(),
                 );
             }
             Some(kind) => {
@@ -332,7 +340,8 @@ impl Syncer {
                     context["parent"] = parent.context();
                     let items = self.call(source, collection, host, &context).await?;
                     for item in &items {
-                        if let Some(mut child) = map_item(collection, item, owner, now) {
+                        if let Some(mut child) = map_item_with(collection, item, owner, now, titles)
+                        {
                             child.external_id =
                                 format!("{}/{}", parent.external_id, child.external_id);
                             child.parent_id = Some(parent.external_id.clone());

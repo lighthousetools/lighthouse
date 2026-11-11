@@ -3,7 +3,10 @@
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use lighthouse_config::{CollectionConfig, FieldMap, FieldRule};
 use serde_json::{Map, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Titles of the items of earlier collections, by collection name and external ID, for `lookup` rules.
+pub type Titles = BTreeMap<String, BTreeMap<String, String>>;
 
 /// Most bytes of an item kept as raw data.
 const MAX_RAW: usize = 64 * 1024;
@@ -184,10 +187,19 @@ fn apply_rule(rule: &FieldRule, value: Option<&Value>) -> Option<Value> {
     Some(Value::String(text))
 }
 
-fn field_value(item: &Value, map: &FieldMap) -> Option<Value> {
+fn field_value(item: &Value, map: &FieldMap, titles: &Titles) -> Option<Value> {
     match map {
         FieldMap::Path(path) => lookup(item, path).filter(|value| !value.is_null()).cloned(),
-        FieldMap::Rule(rule) => apply_rule(rule, lookup(item, &rule.path)),
+        FieldMap::Rule(rule) => {
+            let value = apply_rule(rule, lookup(item, &rule.path))?;
+            let Some(collection) = &rule.lookup else {
+                return Some(value);
+            };
+            let title = text_of(&value)
+                .and_then(|id| titles.get(collection)?.get(&id).cloned())
+                .map(Value::String);
+            Some(title.unwrap_or(value))
+        }
     }
 }
 
@@ -355,9 +367,20 @@ pub fn map_item(
     owner: &Owner,
     now: DateTime<Utc>,
 ) -> Option<MappedItem> {
+    map_item_with(collection, item, owner, now, &Titles::new())
+}
+
+/// Maps one item like [`map_item`], resolving `lookup` rules against the titles of earlier collections.
+pub fn map_item_with(
+    collection: &CollectionConfig,
+    item: &Value,
+    owner: &Owner,
+    now: DateTime<Utc>,
+    titles: &Titles,
+) -> Option<MappedItem> {
     let mut data = Map::new();
     for (target, map) in &collection.fields {
-        if let Some(value) = field_value(item, map) {
+        if let Some(value) = field_value(item, map, titles) {
             data.insert(target.clone(), value);
         }
     }
@@ -611,6 +634,54 @@ mod tests {
 
     fn path(text: &str) -> FieldMap {
         FieldMap::Path(text.to_owned())
+    }
+
+    #[test]
+    fn lookups_turn_ids_into_titles() {
+        let deals = collection(
+            "deal",
+            &[
+                ("external_id", path("id")),
+                (
+                    "state",
+                    FieldMap::Rule(FieldRule {
+                        lookup: Some("stages".to_owned()),
+                        ..rule("stage_id")
+                    }),
+                ),
+            ],
+        );
+        let owner = Owner {
+            accounts: Vec::new(),
+        };
+        let titles: Titles = [(
+            "stages".to_owned(),
+            [("7".to_owned(), "Proposal".to_owned())].into(),
+        )]
+        .into();
+        let now = Utc::now();
+        let known = map_item_with(
+            &deals,
+            &json!({"id": 1, "stage_id": 7}),
+            &owner,
+            now,
+            &titles,
+        );
+        assert_eq!(known.unwrap().state.as_deref(), Some("Proposal"));
+        let unknown = map_item_with(
+            &deals,
+            &json!({"id": 2, "stage_id": 8}),
+            &owner,
+            now,
+            &titles,
+        );
+        assert_eq!(
+            unknown.unwrap().state.as_deref(),
+            Some("8"),
+            "unknown IDs stay"
+        );
+        let plain = map_item(&deals, &json!({"id": 3, "stage_id": 7}), &owner, now);
+        assert_eq!(plain.unwrap().state.as_deref(), Some("7"));
     }
 
     #[test]
