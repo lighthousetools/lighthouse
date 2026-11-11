@@ -13,6 +13,11 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+/// Days before now where `{{window_start}}` lies, for lists such as calendars that take a time window.
+const WINDOW_PAST_DAYS: i64 = 7;
+/// Days after now where `{{window_end}}` lies.
+const WINDOW_AHEAD_DAYS: i64 = 60;
+
 /// How far back the first refresh reaches.
 const FIRST_WINDOW: Duration = Duration::days(30);
 /// Overlap of incremental refreshes, so nothing falls between two of them.
@@ -224,6 +229,8 @@ impl Syncer {
             "since": since.to_rfc3339(),
             "since_date": since.format("%Y-%m-%d").to_string(),
             "now": now.to_rfc3339(),
+            "window_start": (now - Duration::days(WINDOW_PAST_DAYS)).to_rfc3339(),
+            "window_end": (now + Duration::days(WINDOW_AHEAD_DAYS)).to_rfc3339(),
             "account": source.accounts.first().cloned().unwrap_or_default(),
         });
         let mut report = SyncReport {

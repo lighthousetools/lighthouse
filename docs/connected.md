@@ -96,7 +96,7 @@ These fields have a meaning. Every other field lands in the item's `data`, where
 | `external_id` | ID in the service, required |
 | `parent_id` | ID of the parent item, such as the thread of a message |
 | `title`, `summary`, `author`, `assignee`, `state`, `url` | Shown in the apps and searched |
-| `occurred_at`, `starts_at`, `ends_at` | RFC 3339 text, a date, Unix seconds or milliseconds, or an object with `dateTime` or `date` |
+| `occurred_at`, `starts_at`, `ends_at` | RFC 3339 text, a time without offset (read as UTC), a date, Unix seconds or milliseconds, or an object with `dateTime` or `date` |
 | `important`, `unread` | Truthy values set the flags of the same name |
 | `amount`, `currency` | Value of a deal, balance of an account, amount of a transaction or invoice, value of a holding. Numbers or text such as `1.234,50` |
 | `due_at`, `expires_at` | Due date of an invoice, expiry of a contract. Stored as `ends_at` |
@@ -114,7 +114,8 @@ The apps also read these fields from `data` when you map them:
 | `category` | Transaction | Such as `payroll` or `software`. Without a mapping, simple rules derive it from words in the label (`payroll`, `rent`, `taxes`, `software`, `travel`, `insurance`, `fees`, `revenue`), else `income` or `expense` by the sign |
 
 Placeholders in `input`: `{{since}}` (RFC 3339) and `{{since_date}}` (`YYYY-MM-DD`) mark the start of an incremental
-refresh, `{{now}}` the current time, and `{{account}}` the owner's account. A string that is only one placeholder keeps
+refresh, `{{now}}` the current time, `{{window_start}}` and `{{window_end}}` a window from seven days ago to 60 days
+ahead for lists such as calendars, and `{{account}}` the owner's account. A string that is only one placeholder keeps
 the type of its value, and arguments that end up empty are left out.
 
 A collection with `parent = "<kind>"` is called once per recently changed open parent, at most `parents_limit` (20)
@@ -151,7 +152,8 @@ that only incremental collections returned stay.
 | `github` | `code` | `review_requests` and `mine` (open pull requests), `checks` (with deployments) and `files` of each | `approve`, `comment`, `create_issue` |
 | `linear` | `issues` | `assigned` issues, `projects`, `comments` of each issue. Cycles need a team ID, so add them yourself | `create`, `update`, `comment` |
 | `superhuman-mail` | `mail` | `inbox` threads, `messages` of each | `draft` (a reply saved as a draft), `archive` |
-| `pipedrive` | `deals` | `stages`, `open` deals with their stage name, `won` deals, open `activities`. Connect Pipedrive as a REST API from the catalog | `create` |
+| `pipedrive` | `deals` | `stages`, `open` deals with their stage name, `won` deals, open `activities`. Connect Pipedrive as a REST API from the catalog | `create`, `move` (with the `stage_id` the apps read from a deal in the target stage) |
+| `microsoft-calendar` | `calendar` | `events` of the window, with recurring events expanded. Connect **Microsoft 365 Calendar** from the catalog | `create`, `move`, `accept`, `decline` |
 
 Presets follow the public MCP servers of these services. Tool names and result shapes change between server versions,
 so check them with `lht connectors tools <connector>` and `lht sources check`, which resolves every source and shows

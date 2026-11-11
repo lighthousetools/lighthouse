@@ -1,0 +1,48 @@
+# Preset for the Microsoft 365 calendar through Microsoft Graph, connected as the REST API
+# `lighthouse:microsoft-graph-calendar` with OAuth. Check the tools with
+# `lht connectors tools <connector>` and override what differs in lighthouse.toml.
+connector = ""
+domain = "calendar"
+
+# Events from a week ago to two months ahead, with recurring events expanded, in UTC.
+[collections.events]
+tool = "get_me_calendarview"
+input = { startDateTime = "{{window_start}}", endDateTime = "{{window_end}}", "$top" = 500, "$orderby" = "start/dateTime", "$select" = "id,subject,bodyPreview,start,end,location,organizer,attendees,isAllDay,isCancelled,showAs,webLink,onlineMeeting,responseStatus", Prefer = "outlook.timezone=\"UTC\"" }
+items = "value"
+kind = "event"
+
+[collections.events.fields]
+external_id = "id"
+title = "subject"
+summary = "bodyPreview"
+author = "organizer.emailAddress.address"
+organizer = "organizer.emailAddress.name"
+starts_at = "start"
+ends_at = "end"
+state = "showAs"
+response = "responseStatus.response"
+cancelled = "isCancelled"
+all_day = "isAllDay"
+location = "location.displayName"
+join_url = "onlineMeeting.joinUrl"
+attendees = "attendees"
+url = "webLink"
+
+[actions.create]
+tool = "post_me_events"
+input = { body = { subject = "{{input.title}}", start = { dateTime = "{{input.start}}", timeZone = "UTC" }, end = { dateTime = "{{input.end}}", timeZone = "UTC" }, showAs = "busy" } }
+
+[actions.move]
+tool = "patch_me_events_id"
+kind = "event"
+input = { id = "{{item.external_id}}", body = { start = { dateTime = "{{input.start}}", timeZone = "UTC" }, end = { dateTime = "{{input.end}}", timeZone = "UTC" } } }
+
+[actions.accept]
+tool = "post_me_events_id_accept"
+kind = "event"
+input = { id = "{{item.external_id}}", body = { comment = "{{input.comment}}", sendResponse = true } }
+
+[actions.decline]
+tool = "post_me_events_id_decline"
+kind = "event"
+input = { id = "{{item.external_id}}", body = { comment = "{{input.comment}}", sendResponse = true } }

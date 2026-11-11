@@ -71,3 +71,9 @@ occurred_at = "update_time"
 [actions.create]
 tool = "post_deals"
 input = { body = { title = "{{input.title}}", value = "{{input.amount}}" } }
+
+# The apps send the stage ID of the target column, read from a deal already in it.
+[actions.move]
+tool = "patch_deals_id"
+kind = "deal"
+input = { id = "{{item.external_id}}", body = { stage_id = "{{input.stage_id}}" } }

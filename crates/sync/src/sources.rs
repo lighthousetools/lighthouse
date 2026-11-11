@@ -8,6 +8,7 @@ use std::time::Duration;
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const GITHUB: &str = include_str!("presets/github.toml");
 const LINEAR: &str = include_str!("presets/linear.toml");
+const MICROSOFT_CALENDAR: &str = include_str!("presets/microsoft-calendar.toml");
 const PIPEDRIVE: &str = include_str!("presets/pipedrive.toml");
 const SUPERHUMAN_MAIL: &str = include_str!("presets/superhuman-mail.toml");
 
@@ -101,6 +102,7 @@ pub fn preset(name: &str) -> Option<SourceConfig> {
     let text = match name {
         "github" => GITHUB,
         "linear" => LINEAR,
+        "microsoft-calendar" => MICROSOFT_CALENDAR,
         "pipedrive" => PIPEDRIVE,
         "superhuman-mail" => SUPERHUMAN_MAIL,
         _ => return None,
@@ -111,7 +113,13 @@ pub fn preset(name: &str) -> Option<SourceConfig> {
 }
 
 /// Names of the bundled presets.
-pub const PRESETS: [&str; 4] = ["github", "linear", "pipedrive", "superhuman-mail"];
+pub const PRESETS: [&str; 5] = [
+    "github",
+    "linear",
+    "microsoft-calendar",
+    "pipedrive",
+    "superhuman-mail",
+];
 
 /// Applies the preset of a configured source and checks the result.
 ///
@@ -356,6 +364,41 @@ mod tests {
         assert_eq!(thread.author.as_deref(), Some("sam@example.com"));
         assert!(thread.flags.iter().any(|flag| flag == "important"));
         assert!(resolved.actions.contains_key("draft") && resolved.actions.contains_key("archive"));
+    }
+
+    #[test]
+    fn graph_events_become_calendar_items() {
+        let resolved =
+            resolve("calendar", &source(Some("microsoft-calendar")), Vec::new()).unwrap();
+        assert_eq!(resolved.domain, "calendar");
+        let (_, events) = resolved
+            .collections
+            .iter()
+            .find(|(name, _)| name == "events")
+            .unwrap();
+        let text = r#"{"value":[{"id":"AAMk1","subject":"Review","showAs":"busy",
+            "start":{"dateTime":"2026-11-12T09:00:00.0000000","timeZone":"UTC"},
+            "end":{"dateTime":"2026-11-12T09:30:00.0000000","timeZone":"UTC"},
+            "location":{"displayName":"Room 1"},"organizer":{"emailAddress":{"name":"Sam","address":"sam@example.com"}}}]}"#;
+        let items = crate::mapping::items_of("get_me_calendarview", text, &events.items).unwrap();
+        let owner = crate::mapping::Owner {
+            accounts: Vec::new(),
+        };
+        let event =
+            crate::mapping::map_item(events, &items[0], &owner, chrono::Utc::now()).unwrap();
+        assert_eq!(
+            event.starts_at.unwrap().to_rfc3339(),
+            "2026-11-12T09:00:00+00:00"
+        );
+        assert_eq!(
+            event.ends_at.unwrap().to_rfc3339(),
+            "2026-11-12T09:30:00+00:00"
+        );
+        assert_eq!(event.state.as_deref(), Some("busy"));
+        assert_eq!(event.data["location"], "Room 1");
+        for action in ["create", "move", "accept", "decline"] {
+            assert!(resolved.actions.contains_key(action), "{action}");
+        }
     }
 
     #[test]

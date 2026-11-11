@@ -210,6 +210,12 @@ pub fn parse_time(value: &Value) -> Option<DateTime<Utc>> {
             .map(|time| time.with_timezone(&Utc))
             .ok()
             .or_else(|| {
+                // A time without an offset, such as Microsoft Graph sends with its time zone beside it, counts as UTC.
+                let time =
+                    chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+                Some(Utc.from_utc_datetime(&time))
+            })
+            .or_else(|| {
                 let date = NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()?;
                 Some(Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0)?))
             }),
