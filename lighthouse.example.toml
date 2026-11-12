@@ -63,6 +63,12 @@ read_tools = [
   "get_pull_request_status", "get_pull_request_files",
 ]
 
+# An OAuth app registered once for the instance. Connectors that reach `url` without a client of their own sign in with
+# it. The secret comes from LIGHTHOUSE_OAUTH_APPS__GITHUB__CLIENT_SECRET.
+# [oauth_apps.github]
+# url = "https://api.githubcopilot.com/mcp/"
+# client_id = "your-github-app-client-id"
+
 [connectors.grafana]
 transport = "stdio"
 command = "mcp-grafana"

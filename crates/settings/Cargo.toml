@@ -19,6 +19,7 @@ lighthouse-store.workspace = true
 lighthouse-sync.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
+secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true

@@ -88,6 +88,8 @@ enum Pending {
         vault: Vault,
         verifier: String,
         guarded: bool,
+        /// The secret of the instance's app, if the connector signs in with it.
+        app_secret: Option<SecretString>,
     },
 }
 
@@ -182,6 +184,7 @@ impl OAuthFlows {
                         vault: vault.clone(),
                         verifier: started.verifier,
                         guarded,
+                        app_secret: config.app_secret.clone(),
                     },
                 ),
             );
@@ -221,7 +224,11 @@ impl OAuthFlows {
         }
         if let Some(client_id) = client_id {
             request = request.with_preregistered_client(client_id.clone());
-            if let Some(secret) = vault.get(&client_secret_entry(connector)).await? {
+            let secret = match &config.app_secret {
+                Some(secret) => Some(secret.clone()),
+                None => vault.get(&client_secret_entry(connector)).await?,
+            };
+            if let Some(secret) = secret {
                 request = request.with_client_secret(secret.expose_secret().to_owned());
             }
         }
@@ -261,6 +268,7 @@ impl OAuthFlows {
                 vault,
                 verifier,
                 guarded,
+                app_secret,
             } => {
                 let http = if guarded {
                     lighthouse_router::net::guarded_client()
@@ -273,6 +281,7 @@ impl OAuthFlows {
                     &oauth,
                     &connector,
                     &vault,
+                    app_secret.as_ref(),
                     code,
                     &verifier,
                     &self.redirect_uri,

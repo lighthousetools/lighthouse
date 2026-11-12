@@ -147,6 +147,36 @@ accept a registered confidential client, for example GitHub with an OAuth app of
 `client_id` and store the secret as `oauth-client:<connector>` with `lht keys set oauth-client:<connector>`. Lighthouse
 sends it when it exchanges the code and every time it refreshes a token.
 
+### OAuth apps of the instance
+
+Some servers only accept a registered app, such as GitHub or Microsoft Entra. Instead of every tenant registering its
+own, the instance can register one app and let every connector that reaches the same server sign in with it:
+
+```toml
+[oauth_apps.github]
+url = "https://api.githubcopilot.com/mcp/"
+client_id = "your-github-app-client-id"
+
+[oauth_apps.microsoft]
+url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+client_id = "your-entra-application-id"
+```
+
+`url` says what the app is for: the server URL of an MCP connector, or the token URL of a REST API connector with
+OAuth. A trailing slash does not matter. The client secret is not part of the file. Set it as
+`LIGHTHOUSE_OAUTH_APPS__<NAME>__CLIENT_SECRET`, for example `LIGHTHOUSE_OAUTH_APPS__GITHUB__CLIENT_SECRET`, so name the
+apps with letters, digits and underscores. The server refuses to start if an app has no `url`, an `http://` URL or no
+`client_id`.
+
+A connector uses the app when it signs in with OAuth, has no client ID of its own and has exactly the app's URL. A
+connector with its own client ID keeps it and its own secret from the vault, and a connector with another URL never sees
+the app, so the secret only goes to the server it was registered with. The tokens stay per person and tenant as before;
+only the app is shared. Register `<public_url>/oauth/callback` as the redirect URI of the app.
+
+In the apps, such connectors and catalog entries show no client ID: `GET /settings/effective` and
+`GET /settings/presets` mark them with `instance_app`. A REST API connector with OAuth may then be saved without a
+`client_id`.
+
 ## API
 
 `GET /openapi.json` describes the API. Everything except `/health`, `/openapi.json`, `/oauth/callback` and the public

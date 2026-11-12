@@ -134,6 +134,20 @@ pub struct PresetConnector {
     /// OAuth scopes to request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<String>,
+    /// Whether this server signs in with an OAuth app of the instance, so no client ID is needed.
+    #[serde(default)]
+    pub instance_app: bool,
+}
+
+impl PresetConnector {
+    /// The URL an OAuth app of the instance must name to serve this connector: the token URL of a REST API, or the
+    /// server URL.
+    pub fn app_url(&self) -> &str {
+        self.api
+            .as_ref()
+            .and_then(|api| api.token_url.as_deref())
+            .unwrap_or(&self.url)
+    }
 }
 
 /// A suggested connected source.

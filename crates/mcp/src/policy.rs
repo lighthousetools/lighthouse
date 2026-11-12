@@ -188,6 +188,7 @@ mod tests {
             },
             read_tools: vec!["list_issues".to_owned()],
             draft_tools: vec!["save_draft".to_owned()],
+            app_secret: None,
         };
         ToolPolicy::new(&BTreeMap::from([("linear".to_owned(), connector)]))
     }
@@ -268,6 +269,7 @@ mod tests {
                     Vec::new()
                 },
                 draft_tools: Vec::new(),
+                app_secret: None,
             };
             Arc::new(BTreeMap::from([(
                 "mail".to_owned(),

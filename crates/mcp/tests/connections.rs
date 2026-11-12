@@ -46,6 +46,7 @@ fn http_connector(url: String, auth: ConnectorAuth) -> ConnectorConfig {
         },
         read_tools: vec!["list_issues".to_owned()],
         draft_tools: Vec::new(),
+        app_secret: None,
     }
 }
 
@@ -204,6 +205,7 @@ async fn stdio_server_lists_and_calls_tools() {
         },
         read_tools: vec!["list_issues".to_owned()],
         draft_tools: Vec::new(),
+        app_secret: None,
     };
     let vault = vault().await;
     vault
@@ -227,6 +229,7 @@ async fn stdio_server_needs_its_secret() {
         },
         read_tools: Vec::new(),
         draft_tools: Vec::new(),
+        app_secret: None,
     };
     let error = McpConnector::new(connectors(config), vault().await)
         .session(&tools())
@@ -245,6 +248,7 @@ async fn tool_errors_and_unknown_tools_are_reported() {
         },
         read_tools: Vec::new(),
         draft_tools: Vec::new(),
+        app_secret: None,
     };
     let session = McpConnector::new(connectors(config), vault().await)
         .session(&tools())
@@ -400,15 +404,32 @@ fn carries_secret(form: &HashMap<String, String>, id: &str, secret: &str) -> boo
 
 #[tokio::test]
 async fn a_confidential_client_sends_its_secret_on_exchange_and_refresh() {
+    confidential_client(false).await;
+}
+
+#[tokio::test]
+async fn the_instance_app_sends_its_own_secret_on_exchange_and_refresh() {
+    confidential_client(true).await;
+}
+
+/// A confidential client signs in and refreshes. With `instance_app`, the secret is the instance's and a different
+/// one in the vault is ignored.
+async fn confidential_client(instance_app: bool) {
     let (base, server) = oauth_server().await;
     let mut demo = http_connector(format!("{base}/mcp"), ConnectorAuth::Oauth);
     if let ConnectorTransport::Http { client_id, .. } = &mut demo.transport {
         *client_id = Some("own-app".to_owned());
     }
+    demo.app_secret = instance_app.then(|| SecretString::from("app-secret"));
     let config = connectors(demo);
     let vault = vault().await;
+    let stored_secret = if instance_app {
+        "not-the-app's"
+    } else {
+        "app-secret"
+    };
     vault
-        .put("oauth-client:demo", &SecretString::from("app-secret"))
+        .put("oauth-client:demo", &SecretString::from(stored_secret))
         .await
         .unwrap();
     let flows = OAuthFlows::new(config.clone(), "https://lighthouse.test/");
@@ -515,6 +536,7 @@ async fn an_openapi_description_becomes_tools_that_call_the_api() {
         },
         read_tools: Vec::new(),
         draft_tools: Vec::new(),
+        app_secret: None,
     };
     let vault = vault().await;
     let connector = McpConnector::new(
@@ -614,6 +636,17 @@ async fn offered_tools_carry_what_their_server_says_about_them() {
 
 #[tokio::test]
 async fn a_rest_api_signs_in_with_oauth_and_refreshes_its_token() {
+    rest_oauth_round_trip(false).await;
+}
+
+#[tokio::test]
+async fn a_rest_api_signs_in_with_the_instance_app() {
+    rest_oauth_round_trip(true).await;
+}
+
+/// Signs a REST API in and refreshes its token. With `instance_app`, the secret is the instance's and a different one
+/// in the vault is ignored.
+async fn rest_oauth_round_trip(instance_app: bool) {
     async fn token(Form(form): Form<HashMap<String, String>>) -> Response {
         if form.get("client_id").map(String::as_str) != Some("app")
             || form.get("client_secret").map(String::as_str) != Some("s3")
@@ -675,10 +708,12 @@ async fn a_rest_api_signs_in_with_oauth_and_refreshes_its_token() {
         },
         read_tools: Vec::new(),
         draft_tools: Vec::new(),
+        app_secret: instance_app.then(|| SecretString::from("s3")),
     };
     let vault = vault().await;
+    let stored_secret = if instance_app { "not-the-app's" } else { "s3" };
     vault
-        .put("oauth-client:cal", &SecretString::from("s3"))
+        .put("oauth-client:cal", &SecretString::from(stored_secret))
         .await
         .unwrap();
     let connectors = BTreeMap::from([("cal".to_owned(), config.clone())]);

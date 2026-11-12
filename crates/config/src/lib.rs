@@ -79,6 +79,9 @@ pub struct Config {
     /// Users, tenants and sign-up.
     #[serde(default)]
     pub tenancy: TenancyConfig,
+    /// OAuth apps the instance registered once for everyone, by a name of your choice.
+    #[serde(default)]
+    pub oauth_apps: BTreeMap<String, OAuthAppConfig>,
     /// Settings of programs built on these crates, by program name. The core
     /// ignores them; see [`Config::extension`].
     #[serde(default)]
@@ -104,6 +107,7 @@ const SECTIONS: &[&str] = &[
     "talk",
     "weather",
     "tenancy",
+    "oauth_apps",
     "extensions",
 ];
 
@@ -527,6 +531,23 @@ pub enum ConnectorTransport {
     },
 }
 
+/// An OAuth app the instance registered once, such as a GitHub App or an Entra app. Connectors of every tenant that
+/// reach `url` and have no client of their own sign in with it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthAppConfig {
+    /// What the app is for: the URL of an MCP server, or the token URL of a REST API. Only connectors with exactly this
+    /// URL use the app, so its secret only ever goes to the server it was registered with.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// The client ID of the app.
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// The client secret. Prefer `LIGHTHOUSE_OAUTH_APPS__<NAME>__CLIENT_SECRET`.
+    #[serde(default)]
+    pub client_secret: Option<SecretString>,
+}
+
 /// An MCP connector.
 #[derive(Clone, Debug, Deserialize)]
 pub struct ConnectorConfig {
@@ -539,6 +560,10 @@ pub struct ConnectorConfig {
     /// Allowlist of reversible tools without external effect, such as saving a draft.
     #[serde(default)]
     pub draft_tools: Vec<String>,
+    /// The client secret of the instance's OAuth app, when the connector signs in with one. It is never read from a
+    /// file: Lighthouse sets it when the connector's client ID comes from `[oauth_apps]`.
+    #[serde(skip)]
+    pub app_secret: Option<SecretString>,
 }
 
 /// Second Brain settings.
@@ -723,6 +748,24 @@ impl Config {
                 publishing.connector
             )));
         }
+        for (name, app) in &self.oauth_apps {
+            let missing = |field: &str| {
+                ConfigError::Inconsistent(format!("oauth_apps.{name} needs `{field}`"))
+            };
+            let url = app.url.as_deref().ok_or_else(|| missing("url"))?;
+            if !url.starts_with("https://") {
+                return Err(ConfigError::Inconsistent(format!(
+                    "oauth_apps.{name}.url must start with https://"
+                )));
+            }
+            if app
+                .client_id
+                .as_deref()
+                .is_none_or(|id| id.trim().is_empty())
+            {
+                return Err(missing("client_id"));
+            }
+        }
         if !["info", "warning", "critical"].contains(&self.notifications.alerts.as_str()) {
             return Err(ConfigError::Inconsistent(format!(
                 "notifications.alerts is `{}`, not info, warning or critical",
@@ -817,6 +860,43 @@ mod tests {
             assert_eq!(config.database.url.expose_secret(), "postgres://override");
             Ok(())
         });
+    }
+
+    #[test]
+    fn oauth_apps_take_their_secret_from_the_environment() {
+        // Not through real variables: tests run in parallel and share the environment.
+        assert!(is_section_key("oauth_apps.github.client_secret"));
+        let toml = format!(
+            "{EXAMPLE}\n[oauth_apps.github]\nurl = \"https://mcp.example.com/mcp\"\nclient_id = \"app-1\"\n"
+        );
+        let config = Config::from_figment(
+            Figment::new()
+                .merge(Toml::string(&toml))
+                .merge(("oauth_apps.github.client_secret", "s3")),
+        )
+        .unwrap();
+        let app = &config.oauth_apps["github"];
+        assert_eq!(app.client_id.as_deref(), Some("app-1"));
+        assert_eq!(app.client_secret.as_ref().unwrap().expose_secret(), "s3");
+        assert!(
+            !format!("{app:?}").contains("s3"),
+            "the secret stays out of logs"
+        );
+    }
+
+    #[test]
+    fn oauth_apps_need_an_https_url_and_a_client_id() {
+        for app in [
+            "client_id = \"app-1\"",
+            "url = \"https://mcp.example.com/mcp\"",
+            "url = \"http://mcp.example.com/mcp\"\nclient_id = \"app-1\"",
+            "url = \"https://mcp.example.com/mcp\"\nclient_id = \" \"",
+        ] {
+            let toml = format!("{EXAMPLE}\n[oauth_apps.github]\n{app}\n");
+            with_config(&toml, |config| {
+                assert!(matches!(config, Err(ConfigError::Inconsistent(_))), "{app}");
+            });
+        }
     }
 
     #[test]

@@ -131,21 +131,28 @@ async fn token_request(
     })
 }
 
-/// Exchanges the code of the callback for tokens and stores them in `vault`.
+/// Exchanges the code of the callback for tokens and stores them in `vault`. `app_secret` is the secret of the
+/// instance's app when the connector signs in with it; otherwise the secret is the vault's.
 #[allow(clippy::too_many_arguments)]
 pub async fn finish(
     http: &reqwest::Client,
     oauth: &OpenApiOAuth,
     connector: &str,
     vault: &Vault,
+    app_secret: Option<&SecretString>,
     code: &str,
     verifier: &str,
     redirect_uri: &str,
     now: i64,
 ) -> Result<(), McpError> {
-    let secret = vault
-        .get(&crate::oauth::client_secret_entry(connector))
-        .await?;
+    let secret = match app_secret {
+        Some(secret) => Some(secret.clone()),
+        None => {
+            vault
+                .get(&crate::oauth::client_secret_entry(connector))
+                .await?
+        }
+    };
     let form = vec![
         ("grant_type", "authorization_code".to_owned()),
         ("code", code.to_owned()),
@@ -164,12 +171,14 @@ async fn save(vault: &Vault, connector: &str, token: &RestToken) -> Result<(), M
     Ok(())
 }
 
-/// The access token of a connector from the first vault that has one, refreshed when it expired.
+/// The access token of a connector from the first vault that has one, refreshed when it expired. `app_secret` is as
+/// for [`finish`].
 pub async fn access_token(
     http: &reqwest::Client,
     oauth: &OpenApiOAuth,
     connector: &str,
     vaults: &[Vault],
+    app_secret: Option<&SecretString>,
     now: i64,
 ) -> Result<SecretString, McpError> {
     let entry = format!("oauth:{connector}");
@@ -191,8 +200,8 @@ pub async fn access_token(
         return Ok(SecretString::from(token.access_token));
     }
     let refresh = token.refresh_token.clone().ok_or_else(not_connected)?;
-    let mut secret = None;
-    for vault in vaults {
+    let mut secret = app_secret.cloned();
+    for vault in vaults.iter().filter(|_| app_secret.is_none()) {
         if let Some(value) = vault
             .get(&crate::oauth::client_secret_entry(connector))
             .await?

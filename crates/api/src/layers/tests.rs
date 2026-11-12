@@ -41,6 +41,7 @@ fn defaults() -> Defaults {
         },
         read_tools: vec!["list_issues".to_owned()],
         draft_tools: Vec::new(),
+        app_secret: None,
     };
     Defaults {
         providers: BTreeMap::from([("anthropic".to_owned(), provider)]),
@@ -54,6 +55,7 @@ fn defaults() -> Defaults {
         connectors: BTreeMap::from([("issues".to_owned(), connector)]),
         values: BTreeMap::new(),
         sources: BTreeMap::new(),
+        oauth_apps: Vec::new(),
     }
 }
 
@@ -787,4 +789,65 @@ async fn rest_api_connectors_round_trip() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn connectors_with_an_instance_app_need_no_client_id() {
+    let harness = build_harness_tweaked(Some(TOKEN), None, SignupMode::Invite, None, |_| {}).await;
+    let mut defaults = defaults();
+    defaults.connectors.insert(
+        "code".to_owned(),
+        ConnectorConfig {
+            transport: ConnectorTransport::Http {
+                url: "https://api.githubcopilot.com/mcp/".to_owned(),
+                auth: ConnectorAuth::Oauth,
+                client_id: None,
+                scopes: Vec::new(),
+                allow_private_addresses: false,
+                headers: Default::default(),
+            },
+            read_tools: Vec::new(),
+            draft_tools: Vec::new(),
+            app_secret: None,
+        },
+    );
+    defaults.oauth_apps = vec![lighthouse_settings::InstanceApp {
+        url: "https://api.githubcopilot.com/mcp/".to_owned(),
+        client_id: "shared-app".to_owned(),
+        client_secret: Some(secrecy::SecretString::from("s3")),
+    }];
+    let settings = TenantSettings::open(
+        harness.accounts.store().clone(),
+        TenantId::DEFAULT,
+        Arc::new(defaults),
+        Options::default(),
+    )
+    .await
+    .unwrap();
+    harness
+        .tenants
+        .replace(TenantId::DEFAULT, |state| state.settings = settings);
+    let app = &harness.app;
+    let owner = signed_in(app).await;
+
+    let view = get(app, &owner, "/settings/effective").await;
+    let code = find(&view["connectors"], "name", "code");
+    assert_eq!(code["instance_app"], true);
+    assert_eq!(
+        code["client_id"],
+        Value::Null,
+        "the app's client ID is not a setting"
+    );
+    assert!(
+        !view.to_string().contains("s3"),
+        "the secret never leaves the server"
+    );
+    let issues = find(&view["connectors"], "name", "issues");
+    assert_eq!(issues["instance_app"], false);
+
+    let presets = get(app, &owner, "/settings/presets").await;
+    let github = find(&presets["connectors"], "id", "github");
+    assert_eq!(github["instance_app"], true);
+    let linear = find(&presets["connectors"], "id", "linear");
+    assert_eq!(linear["instance_app"], false);
 }

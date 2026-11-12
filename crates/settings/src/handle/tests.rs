@@ -291,6 +291,7 @@ async fn connectors_are_http_unique_and_switchable() {
             },
             read_tools: Vec::new(),
             draft_tools: Vec::new(),
+            app_secret: None,
         },
     );
     let settings = TenantSettings::open(
@@ -862,6 +863,61 @@ async fn rest_api_settings_are_checked() {
     };
     assert_eq!(*key, lighthouse_config::ApiKeyPlacement::None);
     assert!(key_name.is_none());
+}
+
+#[tokio::test]
+async fn a_rest_api_needs_no_client_id_when_the_instance_has_an_app_for_it() {
+    let store = fresh_store().await;
+    let mut defaults = defaults();
+    defaults.oauth_apps = vec![crate::InstanceApp {
+        url: "http://10.0.0.9/token".to_owned(),
+        client_id: "shared-app".to_owned(),
+        client_secret: Some(secrecy::SecretString::from("s3")),
+    }];
+    let settings = TenantSettings::open(
+        store.clone(),
+        TenantId::DEFAULT,
+        Arc::new(defaults),
+        options(),
+    )
+    .await
+    .unwrap();
+    let mut input = connector("lighthouse:microsoft-graph-calendar");
+    input.auth = "oauth".to_owned();
+    input.client_id = None;
+    input.api = Some(crate::RestApi {
+        key: "none".to_owned(),
+        authorize_url: Some("http://10.0.0.9/authorize".to_owned()),
+        token_url: Some("http://10.0.0.9/token".to_owned()),
+        ..Default::default()
+    });
+    settings
+        .set_connector(None, None, "calendar", &input)
+        .await
+        .unwrap();
+    let effective = settings.effective(None);
+    let calendar = &effective.connectors["calendar"];
+    assert!(calendar.instance_app);
+    let lighthouse_config::ConnectorTransport::OpenApi {
+        oauth: Some(flow), ..
+    } = &calendar.config.transport
+    else {
+        panic!("not an OpenAPI connector with OAuth");
+    };
+    assert_eq!(flow.client_id, "shared-app");
+    // Another token URL has no app, so it still needs a client of its own.
+    input.api = Some(crate::RestApi {
+        key: "none".to_owned(),
+        authorize_url: Some("http://10.0.0.8/authorize".to_owned()),
+        token_url: Some("http://10.0.0.8/token".to_owned()),
+        ..Default::default()
+    });
+    assert!(
+        settings
+            .set_connector(None, None, "calendar", &input)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

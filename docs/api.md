@@ -314,8 +314,8 @@ personal layer, and the admin token has none.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /settings/effective` | What applies to the caller: `providers` with `models`, `routing` and `connectors`, each with its `source` layer. Providers also carry `defined_at` (the layer that chose kind and URL), `key_name` (the credential that holds the key) and `key` (the layer whose key is used now, or `null`). Routes carry a `problem` if they cannot work. Connectors carry `enabled`, `disabled_by`, `token_name` and `connected` (the layer whose token is used now). Also `tasks`, `can_manage` and `allow_private_endpoints` |
-| `GET /settings/presets` | Suggested providers with models and list prices, and connectors, to prefill forms |
+| `GET /settings/effective` | What applies to the caller: `providers` with `models`, `routing` and `connectors`, each with its `source` layer. Providers also carry `defined_at` (the layer that chose kind and URL), `key_name` (the credential that holds the key) and `key` (the layer whose key is used now, or `null`). Routes carry a `problem` if they cannot work. Connectors carry `enabled`, `disabled_by`, `token_name`, `connected` (the layer whose token is used now) and `instance_app` (whether it signs in with an [OAuth app of the instance](configuration.md#oauth-apps-of-the-instance), in which case `client_id` is `null`). Also `tasks`, `can_manage` and `allow_private_endpoints` |
+| `GET /settings/presets` | Suggested providers with models and list prices, and connectors, to prefill forms. A connector with `instance_app` signs in with an OAuth app of the instance and needs no client ID |
 | `GET /settings/{layer}/entries` | What one layer stores, without what it inherits |
 | `GET /settings/{layer}/changes` | Who changed what in a layer and when. Values are not recorded. The tenant layer's list needs the `owner` or `admin` role |
 | `PUT /settings/{layer}/providers/{name}` | Adds a provider or changes it: `{"kind": "anthropic" or "openai", "base_url"}`. A name of a lower layer keeps that layer's kind and URL (409 otherwise) |

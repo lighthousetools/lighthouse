@@ -117,6 +117,10 @@ pub struct ConnectorView {
     /// Where the credential used for the caller comes from now: `personal`,
     /// `tenant`, or `instance` for connectors that need none.
     pub connected: Option<Layer>,
+    /// Whether it signs in with an OAuth app of the instance. Its client ID is then not shown, since it is not one
+    /// of the connector's settings.
+    #[serde(default)]
+    pub instance_app: bool,
 }
 
 /// Everything that applies to the caller, with the layer of every entry.
@@ -420,7 +424,7 @@ fn connector_view(
         url,
         api,
         auth: auth.to_owned(),
-        client_id,
+        client_id: client_id.filter(|_| !connector.instance_app),
         scopes,
         read_tools: connector.config.read_tools.clone(),
         draft_tools: connector.config.draft_tools.clone(),
@@ -429,6 +433,7 @@ fn connector_view(
         disabled_by: connector.disabled_by,
         token_name: (auth == "bearer").then(|| format!("mcp:{name}")),
         connected,
+        instance_app: connector.instance_app,
     }
 }
 
@@ -589,8 +594,14 @@ fn layer_view(layer: Layer, data: &LayerData, allow_private: bool) -> LayerView 
     responses((status = 200, body = Presets)),
     security(("bearer" = []))
 )]
-pub(crate) async fn presets() -> Json<Presets> {
-    Json(lighthouse_settings::presets().clone())
+pub(crate) async fn presets(Scoped(state): Scoped) -> Json<Presets> {
+    let mut presets = lighthouse_settings::presets().clone();
+    let defaults = state.settings.defaults();
+    for connector in &mut presets.connectors {
+        connector.instance_app =
+            connector.auth == "oauth" && defaults.app_for(connector.app_url()).is_some();
+    }
+    Json(presets)
 }
 
 /// Shows the providers, models, routes and connectors that apply to the

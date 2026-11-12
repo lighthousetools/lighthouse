@@ -27,7 +27,7 @@ mod values;
 
 pub use effective::{
     Defaults, Effective, EffectiveConnector, EffectiveFile, EffectiveModel, EffectiveProvider,
-    EffectiveRoute, EffectiveSource,
+    EffectiveRoute, EffectiveSource, InstanceApp,
 };
 pub use handle::{Options, TenantSettings, source_problem};
 pub use presets::{PresetConnector, PresetModel, PresetProvider, PresetSource, Presets, presets};

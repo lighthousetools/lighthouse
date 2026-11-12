@@ -121,6 +121,7 @@ async fn fixture() -> Fixture {
         },
         read_tools: vec!["list_issues".to_owned()],
         draft_tools: Vec::new(),
+        app_secret: None,
     };
     let calls = Calls::default();
     let mailbox = Arc::new(Mailbox::default());

@@ -2280,6 +2280,7 @@ dependencies = [
  "lighthouse-router",
  "lighthouse-store",
  "lighthouse-sync",
+ "secrecy",
  "serde",
  "serde_json",
  "sqlx",

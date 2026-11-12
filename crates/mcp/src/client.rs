@@ -148,7 +148,15 @@ async fn openapi_server(
     let api_key = if let Some(oauth) = oauth {
         let now = chrono::Utc::now().timestamp();
         ApiKey::Bearer(
-            crate::rest_oauth::access_token(&http, oauth, name, &connection.vaults, now).await?,
+            crate::rest_oauth::access_token(
+                &http,
+                oauth,
+                name,
+                &connection.vaults,
+                connection.config.app_secret.as_ref(),
+                now,
+            )
+            .await?,
         )
     } else if key == ApiKeyPlacement::None {
         ApiKey::None
@@ -352,10 +360,13 @@ impl McpConnector {
                             });
                         }
                         let secret_entry = crate::oauth::client_secret_entry(name);
-                        if let (Some(client_id), Some((_, secret))) = (
-                            client_id,
-                            first_with(&connection.vaults, &secret_entry).await?,
-                        ) {
+                        let secret = match &connection.config.app_secret {
+                            Some(secret) => Some(secret.clone()),
+                            None => first_with(&connection.vaults, &secret_entry)
+                                .await?
+                                .map(|(_, secret)| secret),
+                        };
+                        if let (Some(client_id), Some(secret)) = (client_id, secret) {
                             // Refreshing needs the secret too. The redirect URI is only used
                             // by the authorization step, which already happened.
                             let client =

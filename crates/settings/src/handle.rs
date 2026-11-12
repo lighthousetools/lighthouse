@@ -579,9 +579,16 @@ impl TenantSettings {
             validate::endpoint(&input.url, allow_private).await?
         };
         let api = match &input.api {
-            Some(api) => Some(
-                validate::rest_api(api, auth, input.client_id.as_deref(), allow_private).await?,
-            ),
+            Some(api) => {
+                // Without a client of its own, the instance's app for the token URL signs the connector in.
+                let app = api
+                    .token_url
+                    .as_deref()
+                    .and_then(|url| self.inner.defaults.app_for(url.trim()))
+                    .map(|app| app.client_id.as_str());
+                let client_id = input.client_id.as_deref().or(app);
+                Some(validate::rest_api(api, auth, client_id, allow_private).await?)
+            }
             None => None,
         };
         let entry = ConnectorEntry {

@@ -124,6 +124,7 @@ async fn fixture(script: Vec<ChatResponse>, fail_delivery: bool) -> Fixture {
         },
         read_tools: vec!["list_issues".to_owned()],
         draft_tools: vec!["save_draft".to_owned()],
+        app_secret: None,
     };
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("brief")).unwrap();

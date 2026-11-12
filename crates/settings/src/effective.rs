@@ -6,6 +6,7 @@ use lighthouse_config::{
     ProviderKind, RouteConfig, SourceConfig,
 };
 use lighthouse_router::{PlannedProvider, RouterPlan};
+use secrecy::SecretString;
 use std::collections::BTreeMap;
 
 /// The instance layer: what `lighthouse.toml` says.
@@ -21,9 +22,32 @@ pub struct Defaults {
     pub values: BTreeMap<String, serde_json::Value>,
     /// Connected sources by name.
     pub sources: BTreeMap<String, SourceConfig>,
+    /// OAuth apps of the instance.
+    pub oauth_apps: Vec<InstanceApp>,
+}
+
+/// An OAuth app the instance registered once for every tenant.
+#[derive(Clone, Debug)]
+pub struct InstanceApp {
+    /// The MCP server URL or REST token URL it is for.
+    pub url: String,
+    /// Its client ID.
+    pub client_id: String,
+    /// Its client secret, if it has one.
+    pub client_secret: Option<SecretString>,
+}
+
+/// Two URLs that name the same endpoint, ignoring a trailing slash.
+fn same_url(a: &str, b: &str) -> bool {
+    a.trim_end_matches('/') == b.trim_end_matches('/')
 }
 
 impl Defaults {
+    /// The app of the instance for a connector that reaches `url`, if there is one.
+    pub fn app_for(&self, url: &str) -> Option<&InstanceApp> {
+        self.oauth_apps.iter().find(|app| same_url(&app.url, url))
+    }
+
     /// The defaults of a configuration file.
     pub fn from_config(config: &Config) -> Self {
         Self {
@@ -32,6 +56,17 @@ impl Defaults {
             connectors: config.connectors.clone(),
             values: crate::values::instance_values(config),
             sources: config.sources.clone(),
+            oauth_apps: config
+                .oauth_apps
+                .values()
+                .filter_map(|app| {
+                    Some(InstanceApp {
+                        url: app.url.clone()?,
+                        client_id: app.client_id.clone()?,
+                        client_secret: app.client_secret.clone(),
+                    })
+                })
+                .collect(),
         }
     }
 
@@ -130,6 +165,8 @@ pub struct EffectiveConnector {
     pub enabled: bool,
     /// The layer that switched it off, if one did.
     pub disabled_by: Option<Layer>,
+    /// Whether it signs in with an OAuth app of the instance.
+    pub instance_app: bool,
 }
 
 impl EffectiveConnector {
@@ -220,14 +257,15 @@ pub(crate) fn connector_config(entry: &ConnectorEntry, allow_private: bool) -> C
             headers: Default::default(),
             operations: api.operations.clone(),
             reads_are_safe: true,
-            oauth: match (&api.authorize_url, &api.token_url, &entry.client_id) {
-                (Some(authorize_url), Some(token_url), Some(client_id))
+            // Without a client ID of its own, the instance's app may fill it in; see `use_instance_app`.
+            oauth: match (&api.authorize_url, &api.token_url) {
+                (Some(authorize_url), Some(token_url))
                     if entry.auth == lighthouse_config::ConnectorAuth::Oauth =>
                 {
                     Some(lighthouse_config::OpenApiOAuth {
                         authorize_url: authorize_url.clone(),
                         token_url: token_url.clone(),
-                        client_id: client_id.clone(),
+                        client_id: entry.client_id.clone().unwrap_or_default(),
                         scopes: entry.scopes.clone(),
                     })
                 }
@@ -247,7 +285,45 @@ pub(crate) fn connector_config(entry: &ConnectorEntry, allow_private: bool) -> C
         transport,
         read_tools: entry.read_tools.clone(),
         draft_tools: entry.draft_tools.clone(),
+        app_secret: None,
     }
+}
+
+/// Signs a connector without a client of its own in with the instance's app for its URL. An MCP server matches by
+/// its URL, a REST API by its token URL, so the secret only goes where the app was registered. A REST API with OAuth
+/// that has no client ID afterwards loses its OAuth settings, since it cannot sign in. Whether an app was used.
+fn use_instance_app(config: &mut ConnectorConfig, defaults: &Defaults) -> bool {
+    let app = match &mut config.transport {
+        ConnectorTransport::Http {
+            url,
+            auth: lighthouse_config::ConnectorAuth::Oauth,
+            client_id,
+            ..
+        } if client_id.as_deref().is_none_or(|id| id.trim().is_empty()) => {
+            let Some(app) = defaults.app_for(url) else {
+                return false;
+            };
+            *client_id = Some(app.client_id.clone());
+            app
+        }
+        ConnectorTransport::OpenApi { oauth, .. } => {
+            let Some(settings) = oauth else {
+                return false;
+            };
+            if !settings.client_id.trim().is_empty() {
+                return false;
+            }
+            let Some(app) = defaults.app_for(&settings.token_url) else {
+                *oauth = None;
+                return false;
+            };
+            settings.client_id = app.client_id.clone();
+            app
+        }
+        _ => return false,
+    };
+    config.app_secret = app.client_secret.clone();
+    true
 }
 
 /// How a REST API connector sends its key. Unknown values send none.
@@ -309,6 +385,7 @@ impl Effective {
                     source: Layer::Instance,
                     enabled: true,
                     disabled_by: None,
+                    instance_app: false,
                 },
             );
         }
@@ -336,6 +413,9 @@ impl Effective {
             if let Some(data) = data {
                 effective.apply(layer, data, allow_private);
             }
+        }
+        for connector in effective.connectors.values_mut() {
+            connector.instance_app = use_instance_app(&mut connector.config, defaults);
         }
         effective
     }
@@ -464,6 +544,7 @@ impl Effective {
                     source: layer,
                     enabled: entry.enabled,
                     disabled_by: (!entry.enabled).then_some(layer),
+                    instance_app: false,
                 },
             );
         }
@@ -562,6 +643,7 @@ mod tests {
             },
             read_tools: vec!["list".to_owned()],
             draft_tools: Vec::new(),
+            app_secret: None,
         };
         Defaults {
             providers: BTreeMap::from([("anthropic".to_owned(), provider)]),
@@ -575,6 +657,7 @@ mod tests {
             connectors: BTreeMap::from([("grafana".to_owned(), connector)]),
             values: BTreeMap::from([("talk.agent".to_owned(), serde_json::json!("brief"))]),
             sources: BTreeMap::new(),
+            oauth_apps: Vec::new(),
         }
     }
 
@@ -589,6 +672,126 @@ mod tests {
             enabled: true,
             api: None,
         }
+    }
+
+    fn with_apps() -> Defaults {
+        let mut defaults = defaults();
+        defaults.oauth_apps = vec![
+            InstanceApp {
+                url: "https://mcp.example.com/mcp/".to_owned(),
+                client_id: "shared-app".to_owned(),
+                client_secret: Some(SecretString::from("s3")),
+            },
+            InstanceApp {
+                url: "https://login.example.com/token".to_owned(),
+                client_id: "shared-rest-app".to_owned(),
+                client_secret: Some(SecretString::from("s4")),
+            },
+        ];
+        defaults
+    }
+
+    fn oauth_connector(url: &str, client_id: Option<&str>) -> ConnectorEntry {
+        ConnectorEntry {
+            auth: ConnectorAuth::Oauth,
+            client_id: client_id.map(str::to_owned),
+            ..connector(url)
+        }
+    }
+
+    fn rest_oauth_connector(token_url: &str) -> ConnectorEntry {
+        ConnectorEntry {
+            auth: ConnectorAuth::Oauth,
+            api: Some(crate::RestApi {
+                key: "none".to_owned(),
+                authorize_url: Some("https://login.example.com/authorize".to_owned()),
+                token_url: Some(token_url.to_owned()),
+                ..Default::default()
+            }),
+            ..connector("https://api.example.com/openapi.yaml")
+        }
+    }
+
+    #[test]
+    fn connectors_without_a_client_sign_in_with_the_instance_app_for_their_url() {
+        use secrecy::ExposeSecret;
+        let mut tenant = LayerData::default();
+        tenant.connectors.insert(
+            "code".to_owned(),
+            oauth_connector("https://mcp.example.com/mcp", None),
+        );
+        tenant.connectors.insert(
+            "own".to_owned(),
+            oauth_connector("https://mcp.example.com/mcp", Some("their-app")),
+        );
+        tenant.connectors.insert(
+            "elsewhere".to_owned(),
+            oauth_connector("https://evil.example.com/mcp", None),
+        );
+        tenant.connectors.insert(
+            "calendar".to_owned(),
+            rest_oauth_connector("https://login.example.com/token"),
+        );
+        tenant.connectors.insert(
+            "unknown-rest".to_owned(),
+            rest_oauth_connector("https://other.example.com/token"),
+        );
+        let effective = Effective::resolve(&with_apps(), Some(&tenant), None, false);
+        let client_id = |name: &str| match &effective.connectors[name].config.transport {
+            ConnectorTransport::Http { client_id, .. } => client_id.clone(),
+            ConnectorTransport::OpenApi { oauth, .. } => {
+                oauth.as_ref().map(|oauth| oauth.client_id.clone())
+            }
+            ConnectorTransport::Stdio { .. } => None,
+        };
+
+        let code = &effective.connectors["code"];
+        assert!(code.instance_app);
+        assert_eq!(client_id("code").as_deref(), Some("shared-app"));
+        assert_eq!(
+            code.config.app_secret.as_ref().unwrap().expose_secret(),
+            "s3"
+        );
+
+        // A client of its own wins, and the app's secret never goes to another server.
+        for name in ["own", "elsewhere"] {
+            let connector = &effective.connectors[name];
+            assert!(!connector.instance_app, "{name}");
+            assert!(connector.config.app_secret.is_none(), "{name}");
+        }
+        assert_eq!(client_id("own").as_deref(), Some("their-app"));
+        assert_eq!(client_id("elsewhere"), None);
+
+        let calendar = &effective.connectors["calendar"];
+        assert!(calendar.instance_app);
+        assert_eq!(client_id("calendar").as_deref(), Some("shared-rest-app"));
+        assert_eq!(
+            calendar.config.app_secret.as_ref().unwrap().expose_secret(),
+            "s4"
+        );
+
+        // A REST API without a client cannot sign in, so it has no OAuth settings.
+        assert_eq!(client_id("unknown-rest"), None);
+        assert!(!effective.connectors["unknown-rest"].instance_app);
+    }
+
+    #[test]
+    fn instance_apps_come_from_the_configuration() {
+        let toml = format!(
+            "{}\n[oauth_apps.code]\nurl = \"https://mcp.example.com/mcp\"\nclient_id = \"shared-app\"\n",
+            include_str!("../../../lighthouse.example.toml")
+        );
+        let dir = std::env::temp_dir().join(format!("lighthouse-apps-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lighthouse.toml");
+        std::fs::write(&path, toml).unwrap();
+        let config = Config::load(&path);
+        std::fs::remove_dir_all(&dir).ok();
+        let defaults = Defaults::from_config(&config.unwrap());
+        let app = defaults.app_for("https://mcp.example.com/mcp/").unwrap();
+        assert_eq!(app.client_id, "shared-app");
+        assert!(app.client_secret.is_none());
+        assert!(defaults.app_for("https://mcp.example.com/other").is_none());
     }
 
     #[test]
